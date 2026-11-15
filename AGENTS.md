@@ -43,9 +43,9 @@ DSH 宿主插件，让用户在聊天中安全操作数据库。核心不是「�
 | **外部产品对照与文献引用** | 不为了让某个设计显得有依据而引用 DBeaver / Airbyte / AWS DMS 的文档链接；产品行为自解释即可 |
 | **贡献者 PR 细节** | README 只留姓名 + PR 链接 + 一句话；完整贡献记录在 `CONTRIBUTORS.md` |
 
-### 中英双版
+### 多语言版本（三份）
 
-`README.md`（简体中文）与 `README_EN.md`（英文）**结构必须逐节对齐**，章节顺序、表格列数、边界说明一一对应。改一版必须同步另一版。
+`README.md`（俄语，GitHub 默认展示）、`README_EN.md`（英语）、`README.zh.md`（简体中文，上游原版）**结构必须逐节对齐**，章节顺序、表格列数、边界说明一一对应。改一版必须同步另两版，并保持首行的语言切换链接指向正确文件名。
 
 语言规则：正文用目标语言；代码标识符、参数名、SQL 关键字、文件名、命令一律保留原文不翻译。
 
@@ -125,18 +125,18 @@ UI 改动的 PR 必须带 Before/After 视觉证据。截图曾整图发黑：�
 
 ### 提交信息
 
-简体中文，格式 `类型(范围): 简略描述`。
+俄语，格式 `Тип(область): краткое описание`。上游历史提交是简体中文，保留不动；新提交一律俄语。
 
 | 类型 | 对应 conventional commit |
 | --- | --- |
-| 新增 | feat |
-| 修复 | fix |
-| 文档 | docs |
-| 重构 | refactor |
-| 测试 | test |
-| 性能 | perf |
-| 杂项 | chore |
-| 回滚 | revert |
+| Новое | feat |
+| Исправление | fix |
+| Документация | docs |
+| Рефакторинг | refactor |
+| Тесты | test |
+| Производительность | perf |
+| Прочее | chore |
+| Откат | revert |
 
 ### 发版：三处版本号必须同步
 
@@ -148,21 +148,20 @@ package-lock.json  packages[""].version
 
 任一不一致，`npm ci` 直接 EUSAGE，CI 第一步就挂。
 
-**发版流程**：改三处版本号 → `CHANGELOG.md` 的「未发布」改成版本号（不保留「未发布」层级，版本序列保持连续）→ 推送 `master`。`publish.yml` 会比对 `package.json` 版本与 npm 上现有版本：相同则跳过，不同才 `npm install → build → test → npm publish --provenance` 并自动打 `v<版本>` 标签。
+**发版流程**：改三处版本号 → `CHANGELOG.md` 增加当次条目 → 构建并提交 `dist/` 与 `vendor/`（本仓库通过 GitHub 分发，不发布到 npm，安装端不会跑 `prepack`）→ 推送 `master` → 打标签 `v<版本>` 并推送。`.github/workflows/release.yml` 在标签上跑 build / typecheck / test，再用 `gh release create` 上传 `npm pack` 产物。
 
-**发版后必须核实 npm 真实可用**，不能只看工作流 success：
+**发版后必须核实发布真实可用**，不能只看工作流 success：
 
 ```bash
-npm view dsh-db-tool version                    # dist-tags.latest 是否为新版本
-curl -s -o /dev/null -w "%{http_code}" "$(npm view dsh-db-tool@<版本> dist.tarball)"
-git ls-remote --tags origin | grep "v<版本>"     # 标签是否推送
+gh api repos/steelunicorn/dsh-db-tool-ru/releases/tags/v<版本> --jq '.assets[].name'
+git ls-remote --tags origin | grep "v<版本>"
 ```
 
-CDN 同步有延迟，「元数据有、tarball 404」时先等待，**不要重发同版本号**。
+标签与资产就绪后再在本机升级 profile 内的插件包。
 
 ### 发布内容
 
-`package.json` 的 `files` 白名单决定发布内容。**元数据文件必须逐条显式列出**（`LICENSE`、`README.md`、`README_EN.md`、`CHANGELOG.md`、`CONTRIBUTORS.md`、`docs/...`），不依赖 npm 默认收录；目录会连 `.gitignore` 的草稿一起发布，所以路由类路径写精确文件而非目录。
+`package.json` 的 `files` 白名单决定发布内容。**元数据文件必须逐条显式列出**（`LICENSE`、`README.md`、`README_EN.md`、`README.zh.md`、`CHANGELOG.md`、`CONTRIBUTORS.md`、`docs/...`），不依赖 npm 默认收录；目录会连 `.gitignore` 的草稿一起发布，所以路由类路径写精确文件而非目录。
 
 本地核对：
 

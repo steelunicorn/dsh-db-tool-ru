@@ -1,6 +1,6 @@
 # dsh-db-tool-ru
 
-[Русский](README_RU.md) | English | [简体中文](README.md)
+[Русский](README.md) | [简体中文](README.zh.md) | English
 
 This repository is a fork of [dsh-db-tool](https://github.com/mengqi1436/dsh-db-tool) by mengqi1436. It adds two capabilities on top: per-grant database allowlists inside a connection grant, and Russian UI localization; upstream copyright and the Apache-2.0 license are preserved. The fork is distributed through GitHub only and is not published to npm; the repository is [steelunicorn/dsh-db-tool-ru](https://github.com/steelunicorn/dsh-db-tool-ru).
 

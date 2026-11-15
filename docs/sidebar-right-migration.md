@@ -409,7 +409,7 @@ if (layout === undefined || tab === undefined || navigation === undefined) {
 
 ### 7.3 文档
 
-`README.md:110-113` 已改「通过 DSH 官方右侧栏注册一个页签，不依赖任何第三方侧边栏」；`README_EN.md:110-112` 已同步；`client/README.md:5-9`、`:17`、`:34-38` 已写明两段式注册、`priority`、`keepMounted` 及原因。三处仍需人工确认没有残留旧截图/旧动图（本次未逐图核对）。
+`README.zh.md:110-113` 已改「通过 DSH 官方右侧栏注册一个页签，不依赖任何第三方侧边栏」；`README_EN.md:110-112` 已同步；`client/README.md:5-9`、`:17`、`:34-38` 已写明两段式注册、`priority`、`keepMounted` 及原因。三处仍需人工确认没有残留旧截图/旧动图（本次未逐图核对）。
 
 ### 7.4 目录残留
 
