@@ -2200,8 +2200,10 @@ window.__ModuleLoader__.load({
 			}
 			async function load() {
 				setErr("");
+				// 路径为空时接口只会返回 UNAUTHORIZED_PROJECT；就地说明原因，不发无意义的请求
+				if (!props.projectPath) { setErr(t("needProjectPath")); return; }
 				try {
-					const data = await api("grant-databases" + qs({ projectPath: props.projectPath, connId: g.connId }));
+					const data = await api("grant-databases" + qs({ project: props.projectPath, connId: g.connId }));
 					setList(Array.isArray(data) ? data.map(String) : []);
 				} catch (e) {
 					setErr(String((e && e.message) || e));

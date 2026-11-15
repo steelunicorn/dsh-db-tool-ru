@@ -79,7 +79,8 @@ describe('库白名单选择器：折叠列表 + 勾选', () => {
 
 	it('折叠头带 aria-expanded，展开时才拉库列表', () => {
 		expect(text).toContain('"aria-expanded": open');
-		expect(text).toContain('api("grant-databases" + qs({');
+		expect(text).toContain('api("grant-databases" + qs({ project: props.projectPath, connId: g.connId })');
+		expect(text).toContain('if (!props.projectPath) { setErr(t("needProjectPath")); return; }');
 		expect(text).toContain('if (next && list === null && !sqlite) load();');
 	});
 
