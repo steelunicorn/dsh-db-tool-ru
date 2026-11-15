@@ -15151,7 +15151,7 @@ var ruleNodeProp = new NodeProp({
   combine(a, b) {
     let cur2, root, take;
     while (a || b) {
-      if (!a || b && a.depth < b.depth) {
+      if (!a || b && a.depth <= b.depth) {
         take = b;
         b = b.next;
       } else {

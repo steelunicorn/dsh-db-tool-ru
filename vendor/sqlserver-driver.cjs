@@ -1939,6 +1939,7 @@ var require_utils2 = __commonJS({
     var QUALIFIED_NAME = new RegExp(`^(?:${QUALIFIED_NAME_PART}(?:\\.${QUALIFIED_NAME_PART}?)*\\.)?${QUALIFIED_NAME_PART}$`, "u");
     var TYPE_SIZE = /^\w*$/;
     var escapesQuotedIdentifier = (name) => String(name).replace(/]]/g, "").includes("]");
+    var ODBC_PREFIX = /^(?:\[Microsoft\]\[ODBC Driver Manager\] |\[unixODBC\]\[Driver Manager\]|\[Microsoft\]\[[^\]]+\](?:\[SQL Server\])?)/;
     module2.exports = {
       objectHasProperty: (object, property) => Object.prototype.hasOwnProperty.call(object, property),
       isValidParameterName: (name) => {
@@ -1983,6 +1984,7 @@ var require_utils2 = __commonJS({
         }
         return column;
       },
+      stripOdbcPrefix: (message) => typeof message === "string" ? message.replace(ODBC_PREFIX, "") : message,
       INCREMENT,
       IDS: {
         get: IDS.get.bind(IDS),
@@ -2292,13 +2294,17 @@ var require_table = __commonJS({
               }
             }
             break;
+          // these are sent as `max` values, so a column without a length is given `max`, which
+          // is how Table#declare creates it anyway
           case TYPES.Xml:
             col.type = TYPES.NVarChar(MAX).type;
+            if (col.length == null) col.length = MAX;
             break;
           case TYPES.UDT:
           case TYPES.Geography:
           case TYPES.Geometry:
             col.type = TYPES.VarBinary(MAX).type;
+            if (col.length == null) col.length = MAX;
             break;
           default:
             break;
@@ -2535,6 +2541,7 @@ var require_request_error = __commonJS({
   "node_modules/mssql/lib/error/request-error.js"(exports2, module2) {
     "use strict";
     var MSSQLError = require_mssql_error();
+    var { stripOdbcPrefix } = require_utils2();
     var RequestError = class extends MSSQLError {
       /**
        * Creates a new RequestError.
@@ -2562,10 +2569,7 @@ var require_request_error = __commonJS({
           }
         }
         this.name = "RequestError";
-        const parsedMessage = /^\[Microsoft\]\[SQL Server Native Client 11\.0\](?:\[SQL Server\])?([\s\S]*)$/.exec(this.message);
-        if (parsedMessage) {
-          this.message = parsedMessage[1];
-        }
+        this.message = stripOdbcPrefix(this.message);
       }
     };
     module2.exports = RequestError;
@@ -3079,7 +3083,10 @@ var require_connection_pool = __commonJS({
           requestId
         }));
         if (typeof callback === "function") {
-          acquirePromise.then((connection) => callback(null, connection, this.config)).catch(callback);
+          acquirePromise.then(
+            (connection) => process.nextTick(callback, null, connection, this.config),
+            (err) => process.nextTick(callback, err)
+          );
           return this;
         }
         return acquirePromise;
@@ -3090,7 +3097,12 @@ var require_connection_pool = __commonJS({
         } else if (this.pool.destroyed) {
           return shared.Promise.reject(new ConnectionError("Connection is closing", "ENOTOPEN"));
         }
-        return this.pool.acquire().promise;
+        return this.pool.acquire().promise.catch((err) => {
+          if (err instanceof tarn.TimeoutError) {
+            err.message = `Failed to acquire a connection from the pool: ${err.message}`;
+          }
+          throw err;
+        });
       }
       /**
        * Release connection back to the pool.
@@ -3461,7 +3473,7 @@ var require_prepared_statement = __commonJS({
     var { EventEmitter } = require("node:events");
     var { IDS, objectHasProperty: objectHasProperty2, getPoolId, isValidParameterName } = require_utils2();
     var globalConnection = require_global_connection();
-    var { TransactionError, PreparedStatementError } = require_error();
+    var { ConnectionError, TransactionError, PreparedStatementError } = require_error();
     var shared = require_shared();
     var { TYPES, declare } = require_datatypes();
     var { CHANNELS, tracePromise, traceCallback, publish } = require_diagnostics();
@@ -3651,6 +3663,12 @@ var require_prepared_statement = __commonJS({
           return setImmediate(callback, new PreparedStatementError("Statement is already prepared.", "EALREADYPREPARED"));
         }
         this.statement = statement || this.statement;
+        if (!this.parent) {
+          return setImmediate(callback, new PreparedStatementError("No connection is specified for that prepared statement.", "ENOCONN"));
+        }
+        if (!this.parent.connected) {
+          return setImmediate(callback, new ConnectionError("Connection is closed.", "ECONNCLOSED"));
+        }
         this.parent.acquire(this, (err, connection, config) => {
           if (err) return callback(err);
           this._acquiredConnection = connection;
@@ -3834,6 +3852,13 @@ var require_request = __commonJS({
     var { TYPES } = require_datatypes();
     var shared = require_shared();
     var { CHANNELS, tracePromise, traceCallback, publish } = require_diagnostics();
+    function withDestroyHook(streamOptions, destroy) {
+      const { destroy: hook } = { ...streamOptions };
+      if (typeof hook !== "function") return destroy;
+      return function(error, callback) {
+        destroy(error, () => hook.call(this, error, callback));
+      };
+    }
     var Request = class extends EventEmitter {
       /**
        * Create new Request.
@@ -4177,22 +4202,30 @@ var require_request = __commonJS({
       toReadableStream(streamOptions = {}) {
         this.stream = true;
         this.pause();
+        let requestDone = false;
+        let requestCanceled = false;
         const readableStream = new Readable({
           ...streamOptions,
           objectMode: true,
           read: () => {
             this.resume();
-          }
+          },
+          destroy: withDestroyHook(streamOptions, (error, callback) => {
+            if (!requestDone && !requestCanceled && this.paused) this.resume();
+            callback(error);
+          })
         });
         this.on("row", (row) => {
-          if (!readableStream.push(row)) {
+          if (!readableStream.push(row) && !readableStream.destroyed) {
             this.pause();
           }
         });
         this.on("error", (error) => {
-          readableStream.emit("error", error);
+          if (error.code === "ECANCEL") requestCanceled = true;
+          readableStream.destroy(error);
         });
         this.on("done", () => {
+          requestDone = true;
           readableStream.push(null);
         });
         return readableStream;
@@ -4200,12 +4233,21 @@ var require_request = __commonJS({
       /**
        * Wrap original request in a Readable stream that supports back pressure and pipe to the Writable stream.
        * It also sets request to `stream` mode and pulls all rows from all recordsets to a given stream.
+       * The Writable stream is destroyed with the request's first error. If the Writable stream fails or
+       * closes first, the request runs to the end and its remaining rows are discarded.
        *
        * @param {Stream} stream Stream to pipe data into.
        * @return {Stream}
        */
       pipe(writableStream) {
         const readableStream = this.toReadableStream();
+        readableStream.on("error", (error) => {
+          writableStream.destroy(error);
+        });
+        writableStream.on("unpipe", (source) => {
+          if (source === readableStream && !readableStream.readableEnded) readableStream.destroy();
+        });
+        if (writableStream.destroyed) readableStream.destroy();
         return readableStream.pipe(writableStream);
       }
       /**
@@ -4455,7 +4497,7 @@ var require_transaction = __commonJS({
     var { EventEmitter } = require("node:events");
     var { IDS, getPoolId } = require_utils2();
     var globalConnection = require_global_connection();
-    var { TransactionError } = require_error();
+    var { ConnectionError, TransactionError } = require_error();
     var shared = require_shared();
     var ISOLATION_LEVEL = require_isolationlevel();
     var { CHANNELS, publish } = require_diagnostics();
@@ -4485,7 +4527,7 @@ var require_transaction = __commonJS({
         return this.parent.config;
       }
       get connected() {
-        return this.parent.connected;
+        return this.parent ? this.parent.connected : false;
       }
       /**
        * Acquire connection from connection pool.
@@ -4581,6 +4623,12 @@ var require_transaction = __commonJS({
           } else {
             throw new TransactionError("Invalid isolation level.");
           }
+        }
+        if (!this.parent) {
+          return setImmediate(callback, new TransactionError("No connection is specified for that transaction.", "ENOCONN"));
+        }
+        if (!this.parent.connected) {
+          return setImmediate(callback, new ConnectionError("Connection is closed.", "ECONNCLOSED"));
         }
         setImmediate(callback);
       }
@@ -7953,6 +8001,33 @@ var require_constants2 = __commonJS({
     9007199254740991;
     var MAX_SAFE_COMPONENT_LENGTH = 16;
     var MAX_SAFE_BUILD_LENGTH = MAX_LENGTH - 6;
+    var WHITESPACE_CHARACTERS = [
+      "	",
+      "\n",
+      "\v",
+      "\f",
+      "\r",
+      " ",
+      "\xA0",
+      "\u1680",
+      "\u2000",
+      "\u2001",
+      "\u2002",
+      "\u2003",
+      "\u2004",
+      "\u2005",
+      "\u2006",
+      "\u2007",
+      "\u2008",
+      "\u2009",
+      "\u200A",
+      "\u2028",
+      "\u2029",
+      "\u202F",
+      "\u205F",
+      "\u3000",
+      "\uFEFF"
+    ];
     var RELEASE_TYPES = [
       "major",
       "premajor",
@@ -7967,6 +8042,7 @@ var require_constants2 = __commonJS({
       MAX_SAFE_COMPONENT_LENGTH,
       MAX_SAFE_BUILD_LENGTH,
       MAX_SAFE_INTEGER,
+      WHITESPACE_CHARACTERS,
       RELEASE_TYPES,
       SEMVER_SPEC_VERSION,
       FLAG_INCLUDE_PRERELEASE: 1,
@@ -8867,6 +8943,197 @@ var require_lrucache = __commonJS({
   }
 });
 
+// node_modules/semver/internal/trim-comparator-whitespace.js
+var require_trim_comparator_whitespace = __commonJS({
+  "node_modules/semver/internal/trim-comparator-whitespace.js"(exports2, module2) {
+    "use strict";
+    var {
+      MAX_LENGTH,
+      MAX_SAFE_BUILD_LENGTH,
+      WHITESPACE_CHARACTERS
+    } = require_constants2();
+    var whitespace = new Uint8Array(65536);
+    for (const char of WHITESPACE_CHARACTERS) {
+      whitespace[char.charCodeAt(0)] = 1;
+    }
+    var isWhitespace = (char) => char !== void 0 && whitespace[char.charCodeAt(0)] === 1;
+    var isVersionPrefix = (char) => char === "v" || char === "=" || isWhitespace(char);
+    var isDigit = (char) => char !== void 0 && char >= "0" && char <= "9";
+    var isLetter = (char) => char !== void 0 && (char >= "a" && char <= "z" || char >= "A" && char <= "Z");
+    var isIdentifierCharacter = (char) => isDigit(char) || isLetter(char) || char === "-";
+    var isVersionStart = (char) => isDigit(char) || char === "x" || char === "X" || char === "*";
+    var findDigitsEndIndex = (range, start, limit, digitRuns) => {
+      if (!isDigit(range[start])) {
+        return start;
+      }
+      if (start >= digitRuns.start && start < digitRuns.end) {
+        return Math.min(start + limit, digitRuns.end);
+      }
+      if (start >= digitRuns.previousStart && start < digitRuns.previousEnd) {
+        return Math.min(start + limit, digitRuns.previousEnd);
+      }
+      let end = start + 1;
+      while (isDigit(range[end])) {
+        end++;
+      }
+      digitRuns.previousStart = digitRuns.start;
+      digitRuns.previousEnd = digitRuns.end;
+      digitRuns.start = start;
+      digitRuns.end = end;
+      return Math.min(start + limit, end);
+    };
+    var findVersionNumberEndIndex = (range, start, loose, digitRuns) => {
+      if (!loose && range[start] === "0") {
+        return start + 1;
+      }
+      return findDigitsEndIndex(range, start, loose ? MAX_LENGTH : MAX_LENGTH + 1, digitRuns);
+    };
+    var findPrereleaseIdentifierEndIndex = (range, start, loose, digitRuns) => {
+      const digitsEnd = findDigitsEndIndex(range, start, MAX_LENGTH, digitRuns);
+      if (isLetter(range[digitsEnd]) || range[digitsEnd] === "-") {
+        let end = digitsEnd + 1;
+        const limit = end + MAX_SAFE_BUILD_LENGTH;
+        while (end < limit && isIdentifierCharacter(range[end])) {
+          end++;
+        }
+        return end;
+      }
+      return findVersionNumberEndIndex(range, start, loose, digitRuns);
+    };
+    var findPrereleaseEndIndex = (range, start, loose, digitRuns) => {
+      const hyphen = range[start] === "-";
+      if (!loose && !hyphen) {
+        return start;
+      }
+      const identifierStart = start + (hyphen ? 1 : 0);
+      let end = findPrereleaseIdentifierEndIndex(range, identifierStart, loose, digitRuns);
+      if (end === identifierStart) {
+        if (!loose || !hyphen) {
+          return start;
+        }
+        end = findPrereleaseIdentifierEndIndex(range, start, loose, digitRuns);
+      }
+      while (range[end] === ".") {
+        const next = findPrereleaseIdentifierEndIndex(range, end + 1, loose, digitRuns);
+        if (next === end + 1) {
+          break;
+        }
+        end = next;
+      }
+      return end;
+    };
+    var findBuildIdentifierEndIndex = (range, start) => {
+      let end = start;
+      while (end - start < MAX_SAFE_BUILD_LENGTH && isIdentifierCharacter(range[end])) {
+        end++;
+      }
+      return end;
+    };
+    var findBuildEndIndex = (range, start) => {
+      if (range[start] !== "+") {
+        return start;
+      }
+      let end = findBuildIdentifierEndIndex(range, start + 1);
+      if (end === start + 1) {
+        return start;
+      }
+      while (range[end] === ".") {
+        const next = findBuildIdentifierEndIndex(range, end + 1);
+        if (next === end + 1) {
+          break;
+        }
+        end = next;
+      }
+      return end;
+    };
+    var findLooseFullVersionEndIndex = (range, start, digitRuns) => {
+      let end = start;
+      for (let component = 0; component < 3; component++) {
+        const next = findVersionNumberEndIndex(range, end, true, digitRuns);
+        if (next === end) {
+          return start;
+        }
+        end = next;
+        if (component < 2) {
+          if (range[end] !== ".") {
+            return start;
+          }
+          end++;
+        }
+      }
+      const prereleaseEnd = findPrereleaseEndIndex(range, end, true, digitRuns);
+      return findBuildEndIndex(range, prereleaseEnd);
+    };
+    var findPartialVersionComponentEndIndex = (range, start, digitRuns) => {
+      if (isDigit(range[start])) {
+        return findVersionNumberEndIndex(range, start, false, digitRuns);
+      }
+      return isVersionStart(range[start]) ? start + 1 : start;
+    };
+    var findPartialVersionEndIndex = (range, start, digitRuns) => {
+      let end = findPartialVersionComponentEndIndex(range, start, digitRuns);
+      for (let component = 0; component < 2; component++) {
+        if (range[end] !== ".") {
+          return end;
+        }
+        const next = findPartialVersionComponentEndIndex(range, end + 1, digitRuns);
+        if (next === end + 1) {
+          return end;
+        }
+        end = next;
+      }
+      const prereleaseEnd = findPrereleaseEndIndex(range, end, false, digitRuns);
+      return findBuildEndIndex(range, prereleaseEnd);
+    };
+    var findVersionEndIndex = (range, start, digitRuns) => {
+      const fullVersionEnd = findLooseFullVersionEndIndex(range, start, digitRuns);
+      return fullVersionEnd !== start ? fullVersionEnd : findPartialVersionEndIndex(range, start, digitRuns);
+    };
+    var findRemovableWhitespaceIndex = (range, matchStart) => {
+      let position = matchStart;
+      if (isWhitespace(range[position])) {
+        position++;
+      }
+      if (range[position] === "<" || range[position] === ">") {
+        position++;
+      }
+      if (range[position] === "=") {
+        position++;
+      }
+      return isWhitespace(range[position]) ? position : -1;
+    };
+    var trimComparatorWhitespace = (range) => {
+      let result = "";
+      let copyFrom = 0;
+      let cursor = 0;
+      const digitRuns = { start: -1, end: -1, previousStart: -1, previousEnd: -1 };
+      while (cursor < range.length) {
+        const matchStart = cursor;
+        if (range[cursor] === "<" || range[cursor] === ">") {
+          cursor++;
+        } else if (!isVersionPrefix(range[cursor]) && !isVersionStart(range[cursor])) {
+          cursor++;
+          continue;
+        }
+        while (cursor < range.length && isVersionPrefix(range[cursor])) {
+          cursor++;
+        }
+        if (!isVersionStart(range[cursor])) {
+          continue;
+        }
+        const whitespacePosition = findRemovableWhitespaceIndex(range, matchStart);
+        if (whitespacePosition !== -1) {
+          result += range.slice(copyFrom, whitespacePosition);
+          copyFrom = whitespacePosition + 1;
+        }
+        cursor = findVersionEndIndex(range, cursor, digitRuns);
+      }
+      return result + range.slice(copyFrom);
+    };
+    module2.exports = trimComparatorWhitespace;
+  }
+});
+
 // node_modules/semver/classes/range.js
 var require_range = __commonJS({
   "node_modules/semver/classes/range.js"(exports2, module2) {
@@ -8948,7 +9215,7 @@ var require_range = __commonJS({
         const hr = loose ? re[t.HYPHENRANGELOOSE] : re[t.HYPHENRANGE];
         range = range.replace(hr, hyphenReplace(this.options.includePrerelease));
         debug("hyphen replace", range);
-        range = range.replace(re[t.COMPARATORTRIM], comparatorTrimReplace);
+        range = trimComparatorWhitespace(range);
         debug("comparator trim", range);
         range = range.replace(re[t.TILDETRIM], tildeTrimReplace);
         debug("tilde trim", range);
@@ -9018,11 +9285,11 @@ var require_range = __commonJS({
     var Comparator = require_comparator();
     var debug = require_debug2();
     var SemVer = require_semver();
+    var trimComparatorWhitespace = require_trim_comparator_whitespace();
     var {
       safeRe: re,
       src,
       t,
-      comparatorTrimReplace,
       tildeTrimReplace,
       caretTrimReplace
     } = require_re();
@@ -72966,6 +73233,10 @@ var require_connection_pool2 = __commonJS({
           const poolId = IDS.get(this);
           if (tedious.closed) {
             debug("connection(%d): already closed", IDS.get(tedious));
+            publish(CHANNELS.CONNECTION_DESTROY, () => ({
+              connectionId,
+              poolId
+            }));
             resolve();
           } else {
             tedious.once("end", () => {
@@ -73023,11 +73294,29 @@ var require_transaction3 = __commonJS({
             this._acquiredConnection = connection;
             this._acquiredConnection.on("rollbackTransaction", this._abort);
             this._acquiredConfig = config;
-            connection.beginTransaction((err3) => {
-              if (err3) err3 = new TransactionError(err3);
-              debug("transaction(%d): begun", IDS.get(this));
-              callback(err3);
-            }, this.name, this.isolationLevel);
+            let calledBack = false;
+            const done = (err3, discard) => {
+              if (calledBack) return;
+              calledBack = true;
+              if (!err3) {
+                debug("transaction(%d): begun", IDS.get(this));
+                return callback(null);
+              }
+              debug("transaction(%d): failed to begin", IDS.get(this), err3);
+              connection.removeListener("rollbackTransaction", this._abort);
+              this._acquiredConnection = null;
+              this._acquiredConfig = null;
+              setImmediate(() => {
+                if (discard) connection.close();
+                this.parent.release(connection);
+                callback(new TransactionError(err3));
+              });
+            };
+            try {
+              connection.beginTransaction((err3) => done(err3, true), this.name, this.isolationLevel);
+            } catch (err3) {
+              done(err3, false);
+            }
           });
         });
       }
@@ -73673,7 +73962,9 @@ var require_request3 = __commonJS({
               }
               bulk = connection.newBulkLoad(table.path, bulkOptions, done);
               for (const col of table.columns) {
-                bulk.addColumn(assertSafeColumnName(col.name), getTediousType(col.type), { nullable: col.nullable, length: tediousLength(assertSafeTypeSize(col.length)), scale: assertSafeTypeSize(col.scale), precision: assertSafeTypeSize(col.precision) });
+                const type = getTediousType(col.type);
+                const length = assertSafeTypeSize(col.length);
+                bulk.addColumn(assertSafeColumnName(col.name), type, { nullable: col.nullable, length: length == null && table.create && MAX_LENGTH_TYPES.has(type) ? MAX : tediousLength(length), scale: assertSafeTypeSize(col.scale), precision: assertSafeTypeSize(col.precision) });
               }
               if (table.create) {
                 const objectid = table.temporary ? `tempdb..[${table.name}]` : table.path;
