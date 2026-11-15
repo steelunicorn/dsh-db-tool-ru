@@ -1,12 +1,55 @@
-﻿name: Release
+name: Release
+
+# 本 fork 只通过 GitHub 分发（不发布到 npm）：推送 v* 标签即构建产物并挂到 Release。
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
+
 jobs:
-  probe:
+  release:
     runs-on: ubuntu-latest
     steps:
-      - run: echo probe
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Pack
+        run: npm pack
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V=$(node -p "require('./package.json').version")
+          if gh release view "v$V" >/dev/null 2>&1; then
+            echo "release v$V already exists, uploading asset"
+            gh release upload "v$V" "dsh-db-tool-ru-$V.tgz" --clobber
+          else
+            gh release create "v$V" "dsh-db-tool-ru-$V.tgz" \
+              --title "dsh-db-tool-ru $V" \
+              --notes-file .github/release-notes.md \
+              --target "$GITHUB_SHA"
+          fi
