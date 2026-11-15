@@ -385,7 +385,7 @@ window.__ModuleLoader__.load({
 			fieldsPassword: "Password",
 			passwordSaved: "Saved (leave blank to keep)",
 			fieldsDatabase: "Database",
-			lblUrl: "Connection string",
+			lblUrl: "Connection",
 			lblHost: "Host",
 			lblPort: "Port",
 			lblDatabase: "Database",
@@ -648,7 +648,7 @@ window.__ModuleLoader__.load({
 			fieldsPassword: "Пароль",
 			passwordSaved: "Сохранён (оставьте пустым, чтобы не менять)",
 			fieldsDatabase: "База данных",
-			lblUrl: "Строка подключения",
+			lblUrl: "Подключение",
 			lblHost: "Хост",
 			lblPort: "Порт",
 			lblDatabase: "База данных",
@@ -937,14 +937,14 @@ window.__ModuleLoader__.load({
 				".dbt-card{background:var(--dbt-surface);border:none;border-radius:var(--dbt-radius-card);padding:12px;display:flex;flex-direction:column;gap:8px;}",
 				".dbt-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}",
 				"/* ===== 表单字段：左侧标签 + 输入框（连接表单的字段列表） ===== */",
-				// 标签宽度按文案自适应（11px 下最长「Пользователь」约 70px）：侧栏只有 320~420px，
-				// 固定标签列会把「主机 / 端口」这类同排字段的输入框挤成一条缝
+				// 标签列固定宽度：标签文案长短不一，固定列让所有输入框左边缘落在同一条竖线上
 				".dbt-field{display:flex;align-items:center;gap:8px;min-width:0;flex:1 1 0;}",
-				".dbt-field>span{flex:0 0 auto;max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dbt-text-secondary);font-size:var(--dbt-caption,11px);}",
-				// 同一行放两个字段时给最小宽度：侧栏过窄就让第二个字段换行，而不是把输入框挤成一条缝
-				".dbt-row>.dbt-field{min-width:132px;}",
-				// 输入框规则在后面（.dbt-card input 设了 min-width:60px），这里用更高优先级把字段内输入框压到容器宽度
+				".dbt-field>span{flex:0 0 92px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dbt-text-secondary);font-size:var(--dbt-caption,11px);}",
+				// 输入框规则在后面（.dbt-card input 设了 flex:1;min-width:60px），这里用更高优先级：
+				// 字段内输入框拉满剩余宽度（右缘对齐到卡片内容右缘，与「端口」右缘同一条竖线）
 				".dbt-card .dbt-field>input,.dbt-card .dbt-field>select{flex:1 1 auto;min-width:0;}",
+				// 同一行放两个字段时给最小宽度：侧栏过窄（<340px）就让「端口」换行，而不是把「主机」挤成一条缝
+				".dbt-row>.dbt-field{min-width:150px;}",
 				"/* ===== 共享列布局（T1 逐步替换各视图内联 flex-column） ===== */",
 				".dbt-col{display:flex;flex-direction:column;gap:8px;}",
 				".dbt-col.dbt-col-tight{gap:2px;}",
@@ -1861,12 +1861,12 @@ window.__ModuleLoader__.load({
 			// aria-label 局部文案：与 placeholder 同源，避免表达式重复
 			const pwLabel = props.initial && props.initial.hasPassword ? t("passwordSaved") : t("fieldsPassword");
 			const idLabel = t("connId") + "（" + t("idAutoHint") + "）";
-			// 表单字段：左侧标签 + 输入框，输入框继承 aria-label，标签不再另起一套文案。
-			// opts.flex 控制字段占宽（同一行两个字段时用 1.6 比 1，给主机多留一点）。
+			// 表单字段：左侧固定宽度标签列 + 输入框，输入框右缘统一对齐到卡片内容右缘。
+			// opts.field / opts.label 供同行字段（「端口」）去掉固定列宽，opts.input 给它固定宽度。
 			const dbField = (label, input, opts) => React.createElement(
 				"label",
-				{ className: "dbt-field", style: { flex: (opts && opts.flex) || "1 1 0" } },
-				React.createElement("span", null, label),
+				{ className: "dbt-field", style: opts && opts.field },
+				React.createElement("span", { style: opts && opts.label }, label),
 				input,
 			);
 			return React.createElement(
@@ -1902,11 +1902,11 @@ window.__ModuleLoader__.load({
 					: React.createElement(
 						"div",
 						{ style: { display: "flex", flexDirection: "column", gap: 6 } },
-						// 主机与端口同一行：主机可占更多宽度（sqlserver 命名实例地址相对更长）
+						// 主机与端口同一行：主机吃掉剩余宽度，端口只占一小段；两者右缘与下方各行的输入框右缘对齐
 						React.createElement("div", { className: "dbt-row" },
 							// sqlserver：官方模型 port 可选（默认 1433）且与命名实例互斥——host 直接填 主机\实例名，端口留空
-							dbField(t("lblHost"), React.createElement("input", { placeholder: form.kind === "sqlserver" ? t("fieldsHostInstance") : "", "aria-label": t("fieldsHost") + t("requiredMark"), "aria-required": "true", ref: firstInputRef, value: form.host, onChange: (e) => patch({ host: e.target.value }) }), { flex: "1.6 1 0" }),
-							dbField(t("lblPort"), React.createElement("input", { "aria-label": t("fieldsPort"), value: form.port, onChange: (e) => patch({ port: e.target.value }) }), { flex: "1 1 0" })),
+							dbField(t("lblHost"), React.createElement("input", { placeholder: form.kind === "sqlserver" ? t("fieldsHostInstance") : "", "aria-label": t("fieldsHost") + t("requiredMark"), "aria-required": "true", ref: firstInputRef, value: form.host, onChange: (e) => patch({ host: e.target.value }) })),
+							dbField(t("lblPort"), React.createElement("input", { style: { flex: "0 0 auto", width: 64 }, "aria-label": t("fieldsPort"), value: form.port, onChange: (e) => patch({ port: e.target.value }) }), { field: { flex: "0 0 auto", minWidth: 0 }, label: { flex: "0 0 auto" } })),
 						dbField(t("lblDatabase"), React.createElement("input", { "aria-label": t("fieldsDatabase"), value: form.database, onChange: (e) => patch({ database: e.target.value }) })),
 						dbField(t("lblUser"), React.createElement("input", { "aria-label": t("fieldsUser") + t("requiredMark"), "aria-required": "true", value: form.user, onChange: (e) => patch({ user: e.target.value }) })),
 						dbField(t("lblPassword"), React.createElement("input", { type: "password", placeholder: props.initial && props.initial.hasPassword ? t("passwordSaved") : "", "aria-label": pwLabel, value: form.password, onChange: (e) => patch({ password: e.target.value }) })),

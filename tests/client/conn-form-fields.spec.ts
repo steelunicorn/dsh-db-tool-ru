@@ -4,8 +4,8 @@
  * 背景：表单原先是一排没有标签的输入框，用户只能靠 placeholder 猜字段含义（填上内容后
  * placeholder 消失，字段含义也随之消失）。本测试锁住改动后的结构契约：
  *   1) 首行（类型 / 名称 / id / ssl）保持原样，不参与重排；
- *   2) 分字段模式下每个输入框都有一行「固定宽度标签 + 输入框」，主机与端口同排，
- *      库名 / 用户名 / 密码各占一行；
+ *   2) 分字段模式下主机与端口同排，其余字段各占一行「固定宽度标签 + 输入框」：
+ *      所有输入框左缘对齐（固定标签列），右缘对齐到同一竖线（同行字段除外）；
  *   3) aria-label 与 placeholder 的既有语义不变（只读屏与既有测试依赖它们）；
  *   4) 标签文案来自字典（zh/en/ru 三份都有），且输入框仍然写回表单值。
  *
@@ -169,7 +169,7 @@ describe('1 首行保持原样（类型 / 名称 / id / ssl 不参与重排）',
 });
 
 describe('2 分字段模式：每个输入框一行「标签 + 输入框」', () => {
-	it('标签顺序与文案：主机 / 端口（同排）/ 数据库 / 用户名 / 密码', () => {
+	it('标签顺序与文案：主机 / 端口 / 数据库 / 用户名 / 密码', () => {
 		const tree = renderFields();
 		const rows = fields(tree);
 		const labels = rows.map(fieldLabel);
@@ -182,13 +182,31 @@ describe('2 分字段模式：每个输入框一行「标签 + 输入框」', ()
 		]);
 	});
 
-	it('主机与端口在同一 .dbt-row 内，其余各占一行', () => {
+	it('主机与端口同一行，其余各占一行；同行字段之外没有内联宽度', () => {
 		const tree = renderFields();
 		const rows = fields(tree);
-		const hostRow = collect(tree).find((n) => n.props && n.props.className === 'dbt-row' && collect(n).includes(rows[0]!));
-		expect(hostRow, '主机字段不在 dbt-row 内').toBeDefined();
-		expect(collect(hostRow!).includes(rows[1]!), '端口与主机不同排').toBe(true);
-		expect(collect(hostRow!).includes(rows[2]!), '数据库不应与主机同排').toBe(false);
+		expect(rows).toHaveLength(5);
+		// 主机藏在同一 .dbt-row 里与端口同排（.dbt-row 会换行，窄侧栏时端口自动落到下一行）
+		const hostRow = rows[0]!;
+		const portRow = rows[1]!;
+		const sharedRow = collect(tree).find((n) => n.props && n.props.className === 'dbt-row'
+			&& collect(n).includes(hostRow) && collect(n).includes(portRow));
+		expect(sharedRow, '主机与端口不在同一个 .dbt-row 内').toBeDefined();
+		// 单独成行的字段不带内联样式：宽度由固定标签列 + flex 决定，右缘自然对齐
+		for (const row of rows.slice(2)) {
+			expect(row.props.style, '单独成行的字段不应带内联样式').toBeUndefined();
+		}
+	});
+
+	it('端口的标签和输入框都是自适应宽（不吃掉固定标签列，也不吃满剩余宽度）', () => {
+		const tree = renderFields();
+		const rows = fields(tree);
+		const portRow = rows[1]!;
+		expect(portRow.props.style).toMatchObject({ flex: '0 0 auto', minWidth: 0 });
+		const span = portRow.children.find((c: any) => c && c.type === 'span');
+		expect(span.props.style).toMatchObject({ flex: '0 0 auto' });
+		const portInput = fieldInput(portRow);
+		expect(portInput.props.style).toMatchObject({ flex: '0 0 auto', width: 64 });
 	});
 
 	it('aria-label 保持既有语义（含必填标记）', () => {
@@ -221,13 +239,10 @@ describe('2 分字段模式：每个输入框一行「标签 + 输入框」', ()
 		expect(hostInput.props.placeholder).toBe(probe.t('fieldsHostInstance'));
 		expect(portInput.props.placeholder).toBeUndefined();
 	});
-	it('主机与端口同排时按 1.6:1 分配宽度（主机留更多）', () => {
+	it('端口行不带 placeholder（只有 sqlserver 主机有命名实例提示）', () => {
 		const tree = renderFields();
-		const rows = fields(tree);
-		expect(rows[0]!.props.style.flex).toBe('1.6 1 0');
-		expect(rows[1]!.props.style.flex).toBe('1 1 0');
-		// 单独成行的字段等分占满整行
-		expect(rows[2]!.props.style.flex).toBe('1 1 0');
+		const portInput = byLabel(tree, probe.t('fieldsPort'))!;
+		expect(portInput.props.placeholder).toBeUndefined();
 	});
 });
 
@@ -252,17 +267,24 @@ describe('4 URL 模式同样带标签（连接串 / 用户名 / 密码）', () =
 	});
 });
 
-describe('5 样式契约：标签自适应宽度，字段内输入框可压缩', () => {
-	it('dbt-field 规则存在且标签不被挤压', () => {
+describe('5 样式契约：固定标签列左对齐，输入框右缘拉到同一条线', () => {
+	it('标签列固定 92px（所有输入框左缘对齐），文案过长才省略', () => {
 		expect(src).toContain('.dbt-field{display:flex;align-items:center;gap:8px;min-width:0;flex:1 1 0;}');
 		const spanRule = /\.dbt-field>span\{([^}]*)\}/.exec(src);
 		expect(spanRule, '缺 .dbt-field>span 规则').not.toBeNull();
-		expect(spanRule![1]).toContain('flex:0 0 auto');
+		expect(spanRule![1]).toContain('flex:0 0 92px');
 		expect(spanRule![1]).toContain('text-overflow:ellipsis');
-		expect(spanRule![1]).not.toContain('0 0 96px');
 	});
 
-	it('字段内输入框的高优先级规则存在（覆盖 .dbt-card input 的 min-width）', () => {
-		expect(src).toContain('.dbt-card .dbt-field>input,.dbt-card .dbt-field>select{flex:1 1 auto;min-width:0;}');
+	it('字段内输入框拉满剩余宽度（覆盖 .dbt-card input 的 min-width，不再有宽度上限）', () => {
+		const rule = /\.dbt-card \.dbt-field>input,\.dbt-card \.dbt-field>select\{([^}]*)\}/.exec(src);
+		expect(rule, '缺字段内输入框规则').not.toBeNull();
+		expect(rule![1]).toContain('flex:1 1 auto');
+		expect(rule![1]).toContain('min-width:0');
+		expect(rule![1]).not.toContain('max-width');
+	});
+
+	it('同行字段保留最小宽度，窄侧栏让端口换行而不是把主机挤成一条缝', () => {
+		expect(src).toContain('.dbt-row>.dbt-field{min-width:150px;}');
 	});
 });
