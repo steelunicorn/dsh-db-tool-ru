@@ -184,20 +184,20 @@ async function callHandler(
 
 describe('handleDbToolRequest 直调（prefix 挂载形态 + trust）', () => {
   it('非 loopback Host → 403 FORBIDDEN', async () => {
-    const r = await callHandler('GET', '/dsh-db-tool/api/state', { host: 'evil.example' });
+    const r = await callHandler('GET', '/dsh-db-tool-ru/api/state', { host: 'evil.example' });
     expect(r.status).toBe(403);
     expect(r.body).toMatchObject({ ok: false, code: 'FORBIDDEN' });
   });
 
   it('恶意 Origin → 403', async () => {
-    const r = await callHandler('GET', '/dsh-db-tool/api/state', {
+    const r = await callHandler('GET', '/dsh-db-tool-ru/api/state', {
       host: '127.0.0.1:3080', origin: 'https://evil.example',
     });
     expect(r.status).toBe(403);
   });
 
-  it('loopback 同端口 + prefix 路径 /dsh-db-tool/api/state → 200', async () => {
-    const r = await callHandler('GET', '/dsh-db-tool/api/state', { host: '127.0.0.1:3080' });
+  it('loopback 同端口 + prefix 路径 /dsh-db-tool-ru/api/state → 200', async () => {
+    const r = await callHandler('GET', '/dsh-db-tool-ru/api/state', { host: '127.0.0.1:3080' });
     expect(r.status).toBe(200);
     expect(r.body.ok).toBe(true);
   });
@@ -222,7 +222,7 @@ describe('handleDbToolRequest 直调（prefix 挂载形态 + trust）', () => {
     });
     expect(r.status).toBe(200);
     expect(r.body).toMatchObject({ ok: false, code: 'INVALID_ARGUMENT' });
-    expect(String(r.body.error)).toContain('2MB');
+    expect(String(r.body.error)).toContain('2 MB');
   });
 
   it('isTrustedRequest 纯函数：0.0.0.0 非 loopback；空 Host 拒绝', () => {
@@ -259,7 +259,7 @@ describe('handleDbToolRequest 直调（prefix 挂载形态 + trust）', () => {
 
   it('POST body 直打：query 路由经 handler 正常返回', async () => {
     const { fx } = await ensureStarted();
-    const r = await callHandler('POST', '/dsh-db-tool/api/query', {
+    const r = await callHandler('POST', '/dsh-db-tool-ru/api/query', {
       host: '127.0.0.1', 'content-type': 'application/json',
     }, { projectPath: fx.projectA, connId: CONN_ID, sql: 'SELECT 1' });
     expect(r.status).toBe(200);
@@ -340,6 +340,34 @@ describe('连接管理与授权路由', () => {
     expect(((await restore.json()) as any).ok).toBe(true);
   });
 
+  it('PUT /api/grants 的 databases 白名单：未列入库的查询 → DATABASE_NOT_GRANTED', async () => {
+    const { fx } = await ensureStarted();
+    const put = await fetch(`${(await ensureStarted()).base}/api/grants`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ projectPath: fx.projectA, connId: CONN_ID, mode: 'rw', databases: ['app'] }),
+    });
+    expect(((await put.json()) as any).ok).toBe(true);
+    const list = await get(`/api/grants?project=${encodeURIComponent(fx.projectA)}`);
+    expect(list.json.data).toEqual([{ connId: CONN_ID, mode: 'rw', databases: ['app'] }]);
+
+    const denied = await post('/api/query', { projectPath: fx.projectA, connId: CONN_ID, sql: 'SELECT 1', database: 'test' });
+    expect(denied.json).toMatchObject({ ok: false, code: 'DATABASE_NOT_GRANTED' });
+    const allowed = await post('/api/query', { projectPath: fx.projectA, connId: CONN_ID, sql: 'SELECT 1', database: 'app' });
+    expect(allowed.json).toMatchObject({ ok: true, data: { rowCount: 1 } });
+
+    // 空数组解除库限制，恢复后续用例的无库限制基线
+    const restore = await fetch(`${(await ensureStarted()).base}/api/grants`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ projectPath: fx.projectA, connId: CONN_ID, mode: 'rw', databases: [] }),
+    });
+    expect(((await restore.json()) as any).ok).toBe(true);
+    expect((await get(`/api/state?project=${encodeURIComponent(fx.projectA)}`)).json.data).toMatchObject({
+      grants: [{ connId: CONN_ID, mode: 'rw' }],
+    });
+  });
+
   it('mode 非法 → INVALID_ARGUMENT', async () => {
     const { fx } = await ensureStarted();
     const res = await fetch(`${(await ensureStarted()).base}/api/grants`, {
@@ -393,7 +421,7 @@ describe('业务路由与确认流程', () => {
     const first = await post('/api/execute', { projectPath: fx.projectA, connId: CONN_ID, statement: 'DROP TABLE users' });
     expect(first.json).toMatchObject({ ok: false, code: 'NEEDS_CONFIRMATION', statement: 'DROP TABLE users', danger: 'danger' });
     expect(first.json.challengeId).toMatch(/^c_[0-9a-f]{24}$/);
-    expect(first.json.reason).toContain('不可回滚');
+    expect(first.json.reason).toContain('cannot be rolled back');
 
     const second = await post('/api/execute', {
       projectPath: fx.projectA, connId: CONN_ID, statement: 'DROP TABLE users', challengeId: first.json.challengeId,
@@ -538,7 +566,7 @@ describe('连接导出/导入路由', () => {
     expect(bad.json).toMatchObject({
       ok: false,
       code: 'INVALID_ARGUMENT',
-      error: '口令错误或文件已损坏',
+      error: 'Incorrect passphrase or corrupted file',
     });
   });
 });
@@ -558,7 +586,7 @@ describe('/api/version 插件版本', () => {
   it('非 GET 不匹配该路由（保持 REST 语义，不误接 POST）', async () => {
     const { json } = await post('/api/version', {});
     expect(json.ok).toBe(false);
-    expect(String(json.error)).toMatch(/未知路由/);
+    expect(String(json.error)).toMatch(/Unknown route/);
   });
 });
 

@@ -77,14 +77,14 @@ describe('Oracle 纯函数', () => {
     expect(sanitizeIdentifier('1abc', '表名')).toBe('1abc');
     expect(sanitizeIdentifier('a-b', '表名')).toBe('a-b');
     expect(sanitizeIdentifier('订单表', '表名')).toBe('订单表');
-    expect(() => sanitizeIdentifier('', '表名')).toThrow('非法 Oracle');
-    expect(() => sanitizeIdentifier('a\nb', '表名')).toThrow('非法 Oracle');
-    expect(() => sanitizeIdentifier('a'.repeat(129), '表名')).toThrow('非法 Oracle');
+    expect(() => sanitizeIdentifier('', '表名')).toThrow('Invalid Oracle');
+    expect(() => sanitizeIdentifier('a\nb', '表名')).toThrow('Invalid Oracle');
+    expect(() => sanitizeIdentifier('a'.repeat(129), '表名')).toThrow('Invalid Oracle');
   });
   it('humanizeOraError 转中文提示', () => {
-    expect(humanizeOraError(new Error('ORA-01017: invalid username/password')).message).toContain('用户名或密码错误');
-    expect(humanizeOraError(new Error('ORA-12154: TNS:could not resolve')).message).toContain('服务名');
-    expect(humanizeOraError(new Error('ORA-28040: no matching authentication protocol')).message).toContain('密码验证器');
+    expect(humanizeOraError(new Error('ORA-01017: invalid username/password')).message).toContain('invalid username or password');
+    expect(humanizeOraError(new Error('ORA-12154: TNS:could not resolve')).message).toContain('service name');
+    expect(humanizeOraError(new Error('ORA-28040: no matching authentication protocol')).message).toContain('password verifier');
   });
   it('ORA_HINTS 覆盖 12 条', () => {
     expect(ORA_HINTS.length).toBeGreaterThanOrEqual(12);
@@ -94,7 +94,7 @@ describe('Oracle 纯函数', () => {
 describe('Oracle query/execute（mock pool）', () => {
   it('query 非 SELECT 拒绝', async () => {
     const a = await createOracleAdapter(oraConn, { pool: makeOraPool() });
-    await expect(a.query('DELETE FROM t')).rejects.toThrow('仅允许 SELECT/WITH');
+    await expect(a.query('DELETE FROM t')).rejects.toThrow('only allows SELECT/WITH');
   });
   it('query 规范化：Date → ISO、列名取 metaData', async () => {
     const pool = makeOraPool(
@@ -117,7 +117,7 @@ describe('Oracle query/execute（mock pool）', () => {
   it('DDL 返回 message 附注隐式提交', async () => {
     const a = await createOracleAdapter(oraConn, { pool: makeOraPool() });
     const r = await a.execute('CREATE TABLE t (id NUMBER)');
-    expect(r.message).toContain('DDL 已隐式提交，不可回滚');
+    expect(r.message).toContain('DDL is committed implicitly and cannot be rolled back');
   });
   it('query 传 maxRows=501（用于截断判定）', async () => {
     const pool = makeOraPool();
@@ -152,7 +152,7 @@ describe('Oracle query/execute（mock pool）', () => {
   });
   it('ro 模式拒绝 execute（错误信息含「连接为只读(ro)模式」）', async () => {
     const a = await createOracleAdapter(oraConn, { mode: 'ro', pool: makeOraPool() });
-    await expect(a.execute('DELETE FROM t')).rejects.toThrow('连接为只读(ro)模式');
+    await expect(a.execute('DELETE FROM t')).rejects.toThrow('Connection is in read-only (ro) mode');
   });
   it('ro 模式仍允许 query', async () => {
     const a = await createOracleAdapter(oraConn, { mode: 'ro', pool: makeOraPool([{ A: 1 }]) });
@@ -175,7 +175,7 @@ describe('Oracle 元数据（mock pool）', () => {
     const a = await createOracleAdapter(oraConn, { pool });
     const r = await a.testConnect();
     expect(r.ok).toBe(true);
-    expect(r.serverInfo).toContain('版本信息不可读');
+    expect(r.serverInfo).toContain('version information unreadable');
   });
   it('listDatabases 列 all_tables 有表 schema，过滤内建系统 schema，空/失败回退当前用户', async () => {
     const pool = makeOraPool([{ OWNER: 'SCOTT' }, { OWNER: 'SYSTEM' }, { OWNER: 'APEX_2400' }, { OWNER: 'HR' }], [{ name: 'OWNER' }]);
@@ -284,7 +284,7 @@ describe('达梦 DM（mock pool）', () => {
   });
   it('query 非 SELECT 拒绝', async () => {
     const a = await createDmAdapter(dmConn, { pool: makeDmPool() });
-    await expect(a.query('DROP TABLE t')).rejects.toThrow('仅允许 SELECT/WITH');
+    await expect(a.query('DROP TABLE t')).rejects.toThrow('only allows SELECT/WITH');
   });
   it('testConnect：V$VERSION 不可用时以 SELECT 1 FROM DUAL 兜底判活（推断路径）', async () => {
     const pool = makeDmPool();
@@ -293,7 +293,7 @@ describe('达梦 DM（mock pool）', () => {
     const a = await createDmAdapter(dmConn, { pool });
     const r = await a.testConnect();
     expect(r.ok).toBe(true);
-    expect(r.serverInfo).toContain('版本信息不可读');
+    expect(r.serverInfo).toContain('version information unreadable');
   });
   it('query 显式 autoCommit:true 且 maxRows=501（SELECT 立即结束隐式事务，避免事务悬挂）', async () => {
     const pool = makeDmPool();
@@ -322,7 +322,7 @@ describe('达梦 DM（mock pool）', () => {
   it('DDL 附注隐式提交（推断标注）', async () => {
     const a = await createDmAdapter(dmConn, { pool: makeDmPool() });
     const r = await a.execute('TRUNCATE TABLE t');
-    expect(r.message).toContain('DDL 已隐式提交，不可回滚');
+    expect(r.message).toContain('DDL is committed implicitly and cannot be rolled back');
   });
   it('previewRows 统一 ANSI 分页，OFFSET/FETCH 内联 clamp 整数（ROW_LIMIT 语法图为字面整数，绑定无官方佐证）', async () => {
     const pool = makeDmPool([{ A: 1 }], [{ name: 'A' }]);
@@ -357,10 +357,10 @@ describe('达梦 DM（mock pool）', () => {
   });
   it('ro 模式拒绝 execute（错误信息含「连接为只读(ro)模式」）', async () => {
     const a = await createDmAdapter(dmConn, { mode: 'ro', pool: makeDmPool() });
-    await expect(a.execute('DELETE FROM t')).rejects.toThrow('连接为只读(ro)模式');
+    await expect(a.execute('DELETE FROM t')).rejects.toThrow('Connection is in read-only (ro) mode');
   });
   it('humanizeDmError 通用包装', () => {
-    expect(humanizeDmError(new Error('网络异常')).message).toContain('达梦 DM 错误');
+    expect(humanizeDmError(new Error('网络异常')).message).toContain('DM error');
   });
   it('humanizeDmError 对 6071 通信加密能力错误给出 COMM_ENCRYPT_NAME 提示', () => {
     expect(humanizeDmError(new Error('[6071] 消息加密失败\nError: Unknown cipher')).message)
@@ -375,8 +375,8 @@ describe('达梦 DM（mock pool）', () => {
     expect(sanitizeDmIdent('$TMP', '表名')).toBe('$TMP');
     expect(sanitizeDmIdent('1t', '表名')).toBe('1t');
     expect(sanitizeDmIdent('a-b', '表名')).toBe('a-b');
-    expect(() => sanitizeDmIdent('', '表名')).toThrow('非法 DM');
-    expect(() => sanitizeDmIdent('a\nb', '表名')).toThrow('非法 DM');
+    expect(() => sanitizeDmIdent('', '表名')).toThrow('Invalid DM');
+    expect(() => sanitizeDmIdent('a\nb', '表名')).toThrow('Invalid DM');
   });
 });
 
@@ -385,7 +385,7 @@ describe('Oracle / DM 端口校验（fail-closed，sqlserver validPort 同口径
     for (const port of ['abc', 0, -1, 99999, 1433.5]) {
       expect(() =>
         resolveOracleConn({ meta: { id: 'x', kind: 'oracle' }, fields: { host: 'h', service: 'svc', user: 'u', port } }),
-      ).toThrow(`oracle 连接的端口取值非法：${JSON.stringify(port)}`);
+      ).toThrow(`oracle connection has an invalid port: ${JSON.stringify(port)}`);
     }
   });
   it('resolveOracleConn fields 缺省端口 → 1521；合法字符串端口不回退', () => {
@@ -402,13 +402,13 @@ describe('Oracle / DM 端口校验（fail-closed，sqlserver validPort 同口径
   });
   it("resolveOracleConn URL 端口段 ':0' 抛中文错误（不再 host:0 直传驱动）", () => {
     expect(() => resolveOracleConn({ meta: { id: 'x', kind: 'oracle' }, url: 'oracle://u:p@h:0/SVC' })).toThrow(
-      'oracle 连接的端口取值非法："0"',
+      'oracle connection has an invalid port: "0"',
     );
   });
   it('resolveDmConn fields 端口非法值抛中文错误；缺省 → 5236；合法字符串端口不回退', () => {
     for (const port of ['abc', 0, -1, 99999, 1433.5]) {
       expect(() => resolveDmConn({ meta: { id: 'x', kind: 'dmdb' }, fields: { host: 'h', port } })).toThrow(
-        `dmdb 连接的端口取值非法：${JSON.stringify(port)}`,
+        `dmdb connection has an invalid port: ${JSON.stringify(port)}`,
       );
     }
     expect(resolveDmConn({ meta: { id: 'x', kind: 'dmdb' }, fields: { host: 'h' } }).connectString).toContain(':5236');
@@ -418,7 +418,7 @@ describe('Oracle / DM 端口校验（fail-closed，sqlserver validPort 同口径
   });
   it("resolveDmConn URL 端口段 ':0' 抛中文错误（不再透传驱动报晦涩 EADDRNOTAVAIL）", () => {
     expect(() => resolveDmConn({ meta: { id: 'x', kind: 'dmdb' }, url: 'dm://u:p@h:0' })).toThrow(
-      'dmdb 连接的端口取值非法："0"',
+      'dmdb connection has an invalid port: "0"',
     );
   });
 });

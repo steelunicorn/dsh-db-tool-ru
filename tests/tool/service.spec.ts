@@ -85,7 +85,7 @@ describe('DbToolService: 危险确认与 challenge', () => {
       const nc = await confirmFlow(fx, 'DROP TABLE users');
       expect(nc.challengeId).toMatch(/^c_[0-9a-f]{24}$/);
       expect(nc.statement).toBe('DROP TABLE users');
-      expect(nc.reason).toContain('不可回滚');
+      expect(nc.reason).toContain('cannot be rolled back');
 
       const r = await fx.service.execute(fx.projectA, CONN_ID, 'DROP TABLE users', undefined, nc.challengeId);
       expect(r).toMatchObject({ affectedRows: 1 });

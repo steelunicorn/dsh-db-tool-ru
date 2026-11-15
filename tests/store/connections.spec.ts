@@ -49,7 +49,7 @@ describe('ConnectionStore', () => {
 
   it('create 重复 id 抛错', () => {
     store.connections.create({ id: 'a', kind: 'redis' });
-    expect(() => store.connections.create({ id: 'a', kind: 'redis' })).toThrow('连接已存在');
+    expect(() => store.connections.create({ id: 'a', kind: 'redis' })).toThrow('Connection already exists');
   });
 
   it('list / get 返回脱敏数据，get 不存在返回 undefined', () => {
@@ -174,7 +174,7 @@ describe('ConnectionStore', () => {
     expect(target.fields).toEqual({ host: 'localhost', password: 'FIELDSECRET' });
     expect(target.ssl).toBe(true);
 
-    expect(() => store.connections.testTarget('ghost')).toThrow('连接不存在');
+    expect(() => store.connections.testTarget('ghost')).toThrow('Connection not found');
   });
 
   it('remove 级联删除 secrets 与全部项目的 grants', () => {

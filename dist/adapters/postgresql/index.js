@@ -1,0 +1,19 @@
+/**
+ * PostgreSQL 适配器（pg 8.x）。核心逻辑在 sql-shared/pg-like.ts，此处仅做驱动绑定。
+ * ro 模式：pool 'connect' 事件设只读会话（服务器级）+ 服务层拦截 execute（双保险）。
+ *
+ * 说明：pg 包未提供 ESM 类型入口（exports 无 types 条件），统一用 createRequire
+ * 加载 CJS 入口并按 PgLikeDriver 结构使用——与 gaussdb vendor 加载路径对称。
+ */
+import { createRequire } from 'node:module';
+import { createPgLikeAdapter } from '../sql-shared/pg-like.js';
+const require = createRequire(import.meta.url);
+/** 数据传输模块用的驱动加载入口（与适配器同一份 require 缓存） */
+export function getPgDriver() {
+    return require('pg');
+}
+export async function createPostgresqlAdapter(conn, opts) {
+    const driver = require('pg');
+    return createPgLikeAdapter('postgresql', driver, conn, opts);
+}
+export const factory = (conn) => createPostgresqlAdapter(conn);

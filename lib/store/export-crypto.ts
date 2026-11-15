@@ -13,7 +13,7 @@
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:crypto';
 
 /** 解密失败/文件损坏的统一错误信息 */
-export const DECRYPT_FAIL_MESSAGE = '口令错误或文件已损坏';
+export const DECRYPT_FAIL_MESSAGE = 'Incorrect passphrase or corrupted file';
 
 /** 加密输出的 JSON 信封结构 */
 interface EncryptedBox {
@@ -28,7 +28,7 @@ interface EncryptedBox {
 /** 口令断言：必须为非空字符串 */
 function assertPassphrase(passphrase: unknown): asserts passphrase is string {
   if (typeof passphrase !== 'string' || passphrase.length === 0) {
-    throw new Error('口令必须为非空字符串');
+    throw new Error('The passphrase must be a non-empty string');
   }
 }
 
@@ -72,13 +72,13 @@ export function decryptPayload(encryptedJson: string, passphrase: string): unkno
   assertPassphrase(passphrase);
   try {
     const box: unknown = JSON.parse(encryptedJson);
-    if (!isEncryptedBox(box)) throw new Error('结构非法');
+    if (!isEncryptedBox(box)) throw new Error('Invalid structure');
     const salt = Buffer.from(box.salt, 'base64');
     const iv = Buffer.from(box.iv, 'base64');
     const tag = Buffer.from(box.tag, 'base64');
     const data = Buffer.from(box.data, 'base64');
     // base64 解码静默容错，需显式校验解码后长度（iv 12B / tag 16B / salt 非空）
-    if (iv.length !== 12 || tag.length !== 16 || salt.length === 0) throw new Error('长度非法');
+    if (iv.length !== 12 || tag.length !== 16 || salt.length === 0) throw new Error('Invalid length');
     const key = scryptSync(passphrase, salt, 32, { N: 16384, r: 8, p: 1 });
     const decipher = createDecipheriv('aes-256-gcm', key, iv);
     decipher.setAuthTag(tag);

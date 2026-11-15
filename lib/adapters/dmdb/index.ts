@@ -54,7 +54,7 @@ export function sanitizeIdentifier(name: string, label: string): string {
     typeof name !== 'string' || name.length === 0 || name.length > 128 ||
     /[\0\r\n]/.test(name)
   ) {
-    throw new Error(`非法 DM ${label}「${name}」：不允许为空、超 128 字符或含 NUL/换行`);
+    throw new Error(`Invalid DM ${label} "${name}": must not be empty, exceed 128 characters, or contain NUL/newline`);
   }
   return name;
 }
@@ -65,7 +65,7 @@ function escIdent(name: string): string {
 }
 
 function trunc(s: string, max = CELL_TRUNC): string {
-  return s.length > max ? `${s.slice(0, max)}…[截断,共${s.length}字符]` : s;
+  return s.length > max ? `${s.slice(0, max)}…[truncated, ${s.length} chars total]` : s;
 }
 
 /** 行值规范化为 NormalizedCell */
@@ -97,16 +97,16 @@ function isDmCipherUnavailableError(e: unknown): boolean {
 export function humanizeDmError(e: unknown): Error {
   const msg = e instanceof Error ? e.message : String(e);
   const hint = isDmCipherUnavailableError(e)
-    ? '（提示：当前 Node.js/OpenSSL 不支持达梦服务器的通信加密算法（DES-CFB/RC4）；可在连接串设置 loginEncrypt=false，或把服务器 dm.ini 的 COMM_ENCRYPT_NAME 设为 AES_256_CFB/留空后重启）'
-    : '（提示：请检查连接串/凭据；错误码含义见达梦官方《DM8 错误码手册》）';
-  return new Error(`达梦 DM 错误：${msg}${hint}`);
+    ? ' (hint: this Node.js/OpenSSL does not support the DM server communication encryption algorithm (DES-CFB/RC4); set loginEncrypt=false in the connect string, or set COMM_ENCRYPT_NAME in the server dm.ini to AES_256_CFB/empty and restart)'
+    : ' (hint: check the connect string/credentials; see the official DM8 error code manual for the meaning of the error code)';
+  return new Error(`DM error: ${msg}${hint}`);
 }
 
 /** 连接参数解析：url（dm://user:pass@host:5236 直接可用）或 fields 拼 connectString */
 export function resolveDmConn(conn: ResolvedConnection): { connectString: string; user: string; password: string } {
   if (conn.url) {
     if (!conn.url.startsWith('dm://')) {
-      throw new Error('DM URL 应以 dm:// 开头，如 dm://user:pass@host:5236');
+      throw new Error('DM URL must start with dm://, e.g. dm://user:pass@host:5236');
     }
     const u = new URL(conn.url);
     // 端口段校验：'dm://host:0' 等非法值抛中文错误，不再透传驱动报晦涩的 EADDRNOTAVAIL
@@ -124,7 +124,7 @@ export function resolveDmConn(conn: ResolvedConnection): { connectString: string
   // 静默丢弃回退 5236，且驱动侧 parseInt 对非法形态还有第二重静默回退
   const port = validPort(f.port, 5236, 'dmdb');
   if (host === '') {
-    throw new Error('DM 连接需要 url（dm://user:pass@host:5236）或 fields（host/port）');
+    throw new Error('DM connection requires a url (dm://user:pass@host:5236) or fields (host/port)');
   }
   const user = typeof f.user === 'string' ? f.user : '';
   const password = typeof f.password === 'string' ? f.password : '';
@@ -273,9 +273,9 @@ async function createDmPoolOnce(conn: ResolvedConnection, connectString: string)
  */
 function dmFallbackFailedHint(retryError: unknown): string {
   if (isDmCipherUnavailableError(retryError)) {
-    return '（提示：已按 loginEncrypt=false 重试仍报消息加密失败，说明握手阶段仍在协商加密；请检查服务器 dm.ini 的 COMM_ENCRYPT_NAME（建议设为 AES_256_CFB 或留空）后重启实例）';
+    return ' (hint: retried with loginEncrypt=false and message encryption still fails, so encryption is still being negotiated during the handshake; check COMM_ENCRYPT_NAME in the server dm.ini (recommended: AES_256_CFB or empty) and restart the instance)';
   }
-  return '（提示：已按 loginEncrypt=false 重试，加密握手已绕过，仍失败请按上一条错误排查凭据/权限/网络；错误码含义见达梦官方《DM8 错误码手册》）';
+  return ' (hint: retried with loginEncrypt=false and the encryption handshake was bypassed; if it still fails, use the previous error to check credentials/permissions/network; see the official DM8 error code manual for the meaning of the error code)';
 }
 
 /**
@@ -306,7 +306,7 @@ async function createDmPool(conn: ResolvedConnection, onLoginEncryptFallback?: (
   } catch (e) {
     // 命中记忆时已经用过 loginEncrypt=false，humanizeDmError 的「请设置 loginEncrypt=false」
     // 提示同样自相矛盾，统一走降级失败文案
-    if (useMemo) throw new Error(`达梦 DM 错误：${e instanceof Error ? e.message : String(e)}${dmFallbackFailedHint(e)}`);
+    if (useMemo) throw new Error(`DM error: ${e instanceof Error ? e.message : String(e)}${dmFallbackFailedHint(e)}`);
     if (!isDmCipherUnavailableError(e) || explicit) {
       throw humanizeDmError(e);
     }
@@ -318,7 +318,7 @@ async function createDmPool(conn: ResolvedConnection, onLoginEncryptFallback?: (
     } catch (retryError) {
       // 降级后仍失败：抛重试错误（例如 -2501 说明已绕过加密握手、是凭据问题），
       // 不把原始 6071 混进来误导排查方向。提示换成本场景专用文案，原因见 dmFallbackFailedHint。
-      throw new Error(`达梦 DM 错误：${retryError instanceof Error ? retryError.message : String(retryError)}${dmFallbackFailedHint(retryError)}`);
+      throw new Error(`DM error: ${retryError instanceof Error ? retryError.message : String(retryError)}${dmFallbackFailedHint(retryError)}`);
     }
   }
 }
@@ -354,7 +354,7 @@ export async function createDmAdapter(
   }
   /** 降级提示：只在本次建池确实发生 loginEncrypt=false 重试时展示 */
   const fallbackNote = (): string => (loginEncryptFallback
-    ? '（注意：当前 Node.js 不支持 DM 的 DES-CFB 通信加密，已自动使用 loginEncrypt=false 连接）'
+    ? ' (note: this Node.js does not support DM DES-CFB communication encryption; the connection was established automatically with loginEncrypt=false)'
     : '');
 
   /** 默认 execute 选项：显式 maxRows（dmdb 默认 0=无限制，必须覆盖）+ 显式 autoCommit:true
@@ -378,7 +378,7 @@ export async function createDmAdapter(
 
   function requireRw(action: string): void {
     if (mode === 'ro') {
-      throw new Error(`连接为只读(ro)模式，拒绝执行${action}；请使用 rw 连接或只发查询(query)`);
+      throw new Error(`Connection is in read-only (ro) mode; refusing to execute ${action}; use an rw connection or send queries (query) only`);
     }
   }
 
@@ -389,10 +389,10 @@ export async function createDmAdapter(
 
   async function toExecResult(sql: string, r: DmResultLike): Promise<ExecResult> {
     // ⚠️ 推断：DDL 隐式提交语义按 Oracle 同等处理（未真机验证）
-    const ddlNote = isDdl(sql) ? '（DDL 已隐式提交，不可回滚）' : '';
+    const ddlNote = isDdl(sql) ? ' (DDL is committed implicitly and cannot be rolled back)' : '';
     return {
       affectedRows: typeof r.rowsAffected === 'number' && r.rowsAffected > 0 ? r.rowsAffected : undefined,
-      message: `${sql.trim().split(/\s+/)[0]?.toUpperCase() ?? 'SQL'} 完成${r.rowsAffected ? `，影响 ${r.rowsAffected} 行` : ''}${ddlNote}`,
+      message: `${sql.trim().split(/\s+/)[0]?.toUpperCase() ?? 'SQL'} completed${r.rowsAffected ? `, ${r.rowsAffected} rows affected` : ''}${ddlNote}`,
     };
   }
 
@@ -409,7 +409,7 @@ export async function createDmAdapter(
 
   /** owner 解析：database 参数或默认当前用户（保留原样——引用创建的 schema 大小写敏感） */
   function ownerOf(database?: string): string {
-    return sanitizeIdentifier(database ?? connUser, 'schema/owner 名');
+    return sanitizeIdentifier(database ?? connUser, 'schema/owner name');
   }
 
   /** DM 内建系统 schema：受安全体系保护，任何用户（含 SYSDBA）无 SELECT 权，列表中过滤 */
@@ -442,7 +442,7 @@ export async function createDmAdapter(
         // 版本信息尽力而为，连通性本身用 dual 兜底判定，避免误报连接失败
         try {
           await withConn((c) => c.execute('SELECT 1 FROM DUAL', [], execOpts));
-          return { ok: true, serverInfo: `DM 数据库（版本信息不可读：V$VERSION 不可用）${fallbackNote()}` };
+          return { ok: true, serverInfo: `DM database (version information unreadable: V$VERSION unavailable)${fallbackNote()}` };
         } catch (e) {
           return { ok: false, error: humanizeDmError(e).message };
         }
@@ -452,7 +452,7 @@ export async function createDmAdapter(
     async query(sql: string, params?: unknown[]): Promise<QueryResult> {
       const head = sql.trim().split(/\s+/)[0]?.toUpperCase() ?? '';
       if (head !== 'SELECT' && head !== 'WITH') {
-        throw new Error('DM query 仅允许 SELECT/WITH 语句；写操作或 DDL 请走 execute');
+        throw new Error('DM query only allows SELECT/WITH statements; use execute for writes or DDL');
       }
       try {
         const r = await withConn((c) => c.execute(sql, params ?? [], execOpts));
@@ -482,7 +482,7 @@ export async function createDmAdapter(
     async tx<T>(
       fn: (exec: (sql: string, binds?: unknown[]) => Promise<ExecResult | QueryResult>) => Promise<T>,
     ): Promise<T> {
-      requireRw('事务(tx)');
+      requireRw('transaction (tx)');
       const c = await pool.getConnection();
       try {
         const exec = async (sql: string, binds?: unknown[]): Promise<ExecResult | QueryResult> => {
@@ -556,7 +556,7 @@ export async function createDmAdapter(
     async describeTable(table: string, database?: string): Promise<ColumnInfo[]> {
       const owner = ownerOf(database);
       // 原名精确匹配优先；未引用创建的表名在字典中为大写存储，UPPER 兜底
-      const tab = sanitizeIdentifier(table, '表名');
+      const tab = sanitizeIdentifier(table, 'table name');
       try {
         // ⚠️ 推断：ALL_TAB_COLUMNS / ALL_CONSTRAINTS / ALL_CONS_COLUMNS 兼容（未真机验证）；同连接内两查保证一致性
         const { colsR, pkR } = await withConn(async (c) => ({
@@ -606,7 +606,7 @@ export async function createDmAdapter(
 
     async previewRows(table: string, limit: number, database?: string, offset?: number): Promise<QueryResult> {
       const owner = ownerOf(database);
-      const tab = sanitizeIdentifier(table, '表名'); // 拼接前经 escIdent 转义
+      const tab = sanitizeIdentifier(table, 'table name'); // 拼接前经 escIdent 转义
       const n = Math.max(1, Math.min(Math.floor(limit) || 20, ROWS_MAX));
       const off = Math.max(0, Math.floor(offset ?? 0) || 0);
       try {
@@ -648,7 +648,7 @@ export async function openDmPool(conn: ResolvedConnection): Promise<DmPoolLike> 
     if (dmFallbackWarned.has(key)) return;
     dmFallbackWarned.add(key);
     console.warn(
-      `[dmdb] 连接「${conn.meta.id}」的达梦服务器协商了本机 Node/OpenSSL 不支持的通信加密算法，已自动以 loginEncrypt=false 建池（数据传输每表新建池，本目标不再重复尝试加密）`,
+      `[dmdb] the DM server for connection "${conn.meta.id}" negotiated a communication encryption algorithm unsupported by this Node/OpenSSL; pooling with loginEncrypt=false (transfer creates a pool per table, so encryption is not retried for this target)`,
     );
   });
 }

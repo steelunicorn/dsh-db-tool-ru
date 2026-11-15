@@ -1,7 +1,7 @@
 /**
  * 官方右侧栏注册契约断言（离线，照 console-view.spec.ts 先例）：
  * - exports.inject 恰为 slots / sidebarRightTabs / locale 三项；
- * - 阶段一 sidebarRightTabs.register 的类型定义：id 与 kind 同为 dsh-db-tool、
+ * - 阶段一 sidebarRightTabs.register 的类型定义：id 与 kind 同为 dsh-db-tool-ru、
  *   keepMounted=true（不声明则切标签/切会话/收起右栏会卸载正文丢状态）、
  *   priority=extension、guide 单条 order 45、且为页类型（无 patterns、无 multiple）；
  * - 阶段二两个席位 key 必须等于类型 id 而非 kind（官方允许 extension 接管 builtin 的 kind，
@@ -130,12 +130,12 @@ describe('官方右侧栏注册契约', () => {
 		expect(mod.inject).toEqual(['slots', 'sidebarRightTabs', 'locale']);
 	});
 
-	it('阶段一：类型定义 id 与 kind 同为 dsh-db-tool', () => {
+	it('阶段一：类型定义 id 与 kind 同为 dsh-db-tool-ru', () => {
 		const { ctx, state } = makeCtx();
 		mod.apply(ctx);
 		expect(state.types).toHaveLength(1);
-		expect(state.types[0].id).toBe('dsh-db-tool');
-		expect(state.types[0].kind).toBe('dsh-db-tool');
+		expect(state.types[0].id).toBe('dsh-db-tool-ru');
+		expect(state.types[0].kind).toBe('dsh-db-tool-ru');
 	});
 
 	it('阶段一：keepMounted 为 true（否则切标签/切会话/收起右栏会丢面板状态）', () => {
@@ -162,7 +162,7 @@ describe('官方右侧栏注册契约', () => {
 		mod.apply(ctx);
 		const guide = state.types[0].guide;
 		expect(guide).toHaveLength(1);
-		expect(guide[0].id).toBe('dsh-db-tool');
+		expect(guide[0].id).toBe('dsh-db-tool-ru');
 		expect(guide[0].order).toBe(45);
 		expect(typeof guide[0].title).toBe('function');
 		expect(typeof guide[0].description).toBe('function');
@@ -181,8 +181,8 @@ describe('官方右侧栏注册契约', () => {
 		expect(bodySeat).toBeTruthy();
 		expect(titleSeat).toBeTruthy();
 		// key 必须等于类型 id（不是 kind）：官方允许 extension 接管 builtin 的 kind，按 id 派发才不串位
-		expect(bodySeat!.key).toBe('dsh-db-tool');
-		expect(titleSeat!.key).toBe('dsh-db-tool');
+		expect(bodySeat!.key).toBe('dsh-db-tool-ru');
+		expect(titleSeat!.key).toBe('dsh-db-tool-ru');
 		expect(typeof bodySeat!.comp).toBe('function');
 		expect(typeof titleSeat!.comp).toBe('function');
 	});
@@ -196,7 +196,7 @@ describe('官方右侧栏注册契约', () => {
 			useTabInfo: () => ({
 				sidebar: { expanded: true, fullscreen: false },
 				panel: { id: 'p1' },
-				tab: { visible: true, id: 't1', kind: 'dsh-db-tool' },
+				tab: { visible: true, id: 't1', kind: 'dsh-db-tool-ru' },
 			}),
 			useSessions: (sel: any) => sel({ byId: { s1: { cwd: 'D:/demo' } } }),
 		});
@@ -248,6 +248,24 @@ describe('官方右侧栏注册契约', () => {
 		expect(def.title()).toBe('Databases');
 		active = 'zh';
 		expect(def.title()).toBe('数据库');
+	});
+
+	it('ru 词典已注册且与 en 键集合一致：切到 ru 时文案取俄文', () => {
+		let active = 'ru';
+		const { ctx, state } = makeCtx();
+		ctx.locale.getSnapshot = () => ({ active });
+		mod.apply(ctx);
+		// 注册顺序固定：zh / en / ru（宿主 locale 为 ru 时才有俄文可读）
+		expect(state.localeRegisterCalls.map((c) => c[1])).toEqual(['zh', 'en', 'ru']);
+		const ru = state.localeRegisterCalls.find((c) => c[1] === 'ru')![2] as Record<string, string>;
+		const en = state.localeRegisterCalls.find((c) => c[1] === 'en')![2] as Record<string, string>;
+		// 键集合必须与英文一致：缺键静默回落英文，多键则是死词条
+		expect(Object.keys(ru).sort()).toEqual(Object.keys(en).sort());
+		expect(state.types[0].title()).toBe('Базы данных');
+		active = 'en';
+		expect(state.types[0].title()).toBe('Databases');
+		active = 'zh';
+		expect(state.types[0].title()).toBe('数据库');
 	});
 
 	it('重新 apply 时 locale 快照暂缺 active，不得把已切好的语言打回默认', () => {

@@ -212,9 +212,9 @@ describe('sqlserver 配置校验（离线，手法 A）', () => {
       (e: unknown) => e,
     );
     const msg = msgOf(err);
-    expect(msg).toMatch(/缺少 url 或 fields/);
+    expect(msg).toMatch(/is missing url or fields/);
     // 双断言：配置错误不能在驱动加载之后才报（否则用户会照 build 指引白跑一趟）
-    expect(msg).not.toMatch(/驱动|vendor|build:sqlserver/);
+    expect(msg).not.toMatch(/driver|vendor|build:sqlserver/);
   });
 
   it('非法 tdsVersion：抛中文错误而非静默回退', async () => {
@@ -228,7 +228,7 @@ describe('sqlserver 配置校验（离线，手法 A）', () => {
       (e: unknown) => e,
     );
     expect(msgOf(err)).toMatch(/tdsVersion/);
-    expect(msgOf(err)).not.toMatch(/连接超时|登录失败/);
+    expect(msgOf(err)).not.toMatch(/connection timed out|login failed/);
   });
 
   it('非法 encrypt 取值：抛中文错误', async () => {
@@ -250,8 +250,8 @@ describe('sqlserver 配置校验（离线，手法 A）', () => {
         (e: unknown) => e,
       );
       const msg = msgOf(err);
-      expect(msg, `port=${JSON.stringify(port)}`).toMatch(/端口取值非法/);
-      expect(msg).toMatch(/1-65535/);
+      expect(msg, `port=${JSON.stringify(port)}`).toMatch(/port has an invalid value/);
+      expect(msg).toMatch(/between 1 and 65535/);
       // 错误里保留原值（fail-closed：用户配错的端口必须可见，不能被假端口掩盖）
       expect(msg).toContain(JSON.stringify(port));
       // 校验发生在建池之前：不该有任何池配置产出
@@ -263,7 +263,7 @@ describe('sqlserver 配置校验（离线，手法 A）', () => {
     const h = harness();
     await expect(
       createSqlserverAdapter(connByUrl('sqlserver://sa:pw@host:0/db'), { driver: h.driver }),
-    ).rejects.toThrow(/端口取值非法/);
+    ).rejects.toThrow(/port has an invalid value/);
     expect(h.configs).toHaveLength(0);
   });
 
@@ -283,7 +283,7 @@ describe('sqlserver 配置校验（离线，手法 A）', () => {
     // 仍能定位：保留 scheme 与 host，给出形态说明
     expect(msg).toMatch(/\*\*\*@host/);
     expect(msg).toMatch(/sqlserver:\/\//);
-    expect(msg).toMatch(/期望形态/);
+    expect(msg).toMatch(/expected form/);
     // 命名实例（host\SQLEXPRESS）是 WHATWG URL 必然解析失败的合法场景：必须给出正确出口
     expect(msg).toMatch(/\?instanceName=/);
   });
@@ -438,7 +438,7 @@ describe('sqlserver 加密与证书配置', () => {
       );
       const msg = msgOf(err);
       expect(msg, `encrypt=${bad}`).toMatch(/encrypt/);
-      expect(msg).toMatch(/非法/);
+      expect(msg).toMatch(/has an invalid value/);
       expect(msg).toMatch(/strict/);
       expect(h.configs).toHaveLength(0);
     }
@@ -528,9 +528,9 @@ describe('sqlserver 加密与证书配置', () => {
     );
     const msg = msgOf(err);
     expect(msg).toMatch(/caCert/);
-    expect(msg).toMatch(/无法读取/);
+    expect(msg).toMatch(/cannot be read/);
     // 不能变成「继续用默认校验」或「已关闭校验」的暗示
-    expect(msg).not.toMatch(/继续连接|已忽略|跳过/);
+    expect(msg).not.toMatch(/continue connecting|(?<!not )ignored|skipped/i);
     expect(h.configs).toHaveLength(0);
   });
 
@@ -629,7 +629,7 @@ describe('sqlserver encrypt=auto（先明文，服务器强制加密才升级重
       },
       (e: unknown) => e,
     );
-    expect(msgOf(err)).toMatch(/强制加密/);
+    expect(msgOf(err)).toMatch(/this instance requires encryption/);
     // 只有两个池：明文池 + 加密池，没有第三次尝试
     expect(h.pools).toHaveLength(2);
     expect(h.pools[1]!.connectCalls).toBe(1);
@@ -648,15 +648,15 @@ describe('sqlserver encrypt=auto（先明文，服务器强制加密才升级重
       (e: unknown) => e,
     );
     const msg = msgOf(err);
-    expect(msg).toMatch(/强制加密/);
-    expect(msg).toMatch(/原始原因①/);
-    expect(msg).toMatch(/原始原因②/);
+    expect(msg).toMatch(/this instance requires encryption/);
+    expect(msg).toMatch(/Original cause ①/);
+    expect(msg).toMatch(/original cause ②/);
     // 两条原始原因都在：明文侧的 EENCRYPT 原文 + 加密侧的失败原文
     expect(msg).toMatch(/Server requires encryption/);
     expect(msg).toMatch(/self signed certificate/);
-    expect(msg).toMatch(/sqlserver 查询失败/);
+    expect(msg).toMatch(/sqlserver query failed/);
     // 不追加证书族建议（已带 trustServerCertificate=true，重复指引等于反向误导）
-    expect(msg).not.toMatch(/官方推荐先在客户端装 CA/);
+    expect(msg).not.toMatch(/officially recommended fix is to install the CA on the client/);
     expect(msg).not.toMatch(/caCert=/);
     await a.close();
   });
@@ -671,7 +671,7 @@ describe('sqlserver encrypt=auto（先明文，服务器强制加密才升级重
       (e: unknown) => e,
     );
     const msg = msgOf(err);
-    expect(msg).toMatch(/服务器要求加密/);
+    expect(msg).toMatch(/the server requires an encrypted connection/);
     expect(msg).toMatch(/encrypt=true/);
     // 只建了一个池，connect 只尝试一次
     expect(h.pools).toHaveLength(1);
@@ -689,7 +689,7 @@ describe('sqlserver encrypt=auto（先明文，服务器强制加密才升级重
       },
       (e: unknown) => e,
     );
-    expect(msgOf(err)).toMatch(/服务器要求加密|强制执行/);
+    expect(msgOf(err)).toMatch(/the server requires an encrypted connection|requires encryption/);
     expect(h.pools).toHaveLength(1);
     expect(pool.connectCalls).toBe(1);
     await a.close();
@@ -710,7 +710,7 @@ describe('sqlserver encrypt=auto（先明文，服务器强制加密才升级重
       },
       (e: unknown) => e,
     );
-    expect(msgOf(err)).toMatch(/未协商加密/);
+    expect(msgOf(err)).toMatch(/did not negotiate encryption/);
     expect(h.pools).toHaveLength(1);
     await a.close();
   });
@@ -731,13 +731,13 @@ describe('sqlserver encrypt=auto（先明文，服务器强制加密才升级重
       },
       (e: unknown) => e,
     );
-    expect(msgOf(err)).toMatch(/未协商加密/);
+    expect(msgOf(err)).toMatch(/did not negotiate encryption/);
     expect(h.pools).toHaveLength(1);
     // 关键区分断言：反方向文案绝不能被当成「服务器强制加密」。
     // 只看「池数=1」不足以锁定——若重试判据被放宽，池会变成 2 且错误会变成
     // autoEncryptFailure 的合并文案（含「该实例强制加密」）。这两条同时断言才真正锁住分支。
-    expect(msgOf(err)).not.toMatch(/该实例强制加密/);
-    expect(msgOf(err)).not.toMatch(/自动改用 encrypt=true/);
+    expect(msgOf(err)).not.toMatch(/this instance requires encryption/);
+    expect(msgOf(err)).not.toMatch(/retried once with encrypt=true/);
     await a.close();
   });
 
@@ -791,7 +791,7 @@ describe('sqlserver encrypt=auto（先明文，服务器强制加密才升级重
       (e: unknown) => e,
     );
     const msg = msgOf(err);
-    expect(msg).toMatch(/非法/);
+    expect(msg).toMatch(/has an invalid value/);
     expect(msg).toMatch(/auto/);
     expect(h.configs).toHaveLength(0);
   });
@@ -832,14 +832,14 @@ describe('sqlserver ? → @pN 重写（手法 B）', () => {
 
   it('占位符多于参数：抛中文错误（不触达驱动）', async () => {
     const { a, pool } = await make();
-    await expect(a.query('SELECT ? , ?', [1])).rejects.toThrow(/占位符/);
+    await expect(a.query('SELECT ? , ?', [1])).rejects.toThrow(/placeholders/);
     expect(pool.requests).toHaveLength(0);
     await a.close();
   });
 
   it('参数多于占位符：抛中文错误', async () => {
     const { a } = await make();
-    await expect(a.query('SELECT 1', [1])).rejects.toThrow(/占位符/);
+    await expect(a.query('SELECT 1', [1])).rejects.toThrow(/placeholders/);
     await a.close();
   });
 
@@ -855,8 +855,8 @@ describe('sqlserver ? → @pN 重写（手法 B）', () => {
 
   it('? 与 @pN 混用：抛中文错误（不静默错值）', async () => {
     const { a, pool } = await make();
-    await expect(a.query('SELECT * FROM t WHERE a = @p1 AND b = ?', [1])).rejects.toThrow(/混用/);
-    await expect(a.execute('UPDATE t SET a = @p1 WHERE b = ?', [1])).rejects.toThrow(/混用/);
+    await expect(a.query('SELECT * FROM t WHERE a = @p1 AND b = ?', [1])).rejects.toThrow(/Mixing \? and @pN/);
+    await expect(a.execute('UPDATE t SET a = @p1 WHERE b = ?', [1])).rejects.toThrow(/Mixing \? and @pN/);
     expect(pool.requests).toHaveLength(0);
     await a.close();
   });
@@ -884,7 +884,7 @@ describe('sqlserver ? → @pN 重写（手法 B）', () => {
         () => null,
         (e: unknown) => e,
       );
-      if (wantMix) expect(msgOf(err), sql).toMatch(/混用/);
+      if (wantMix) expect(msgOf(err), sql).toMatch(/Mixing \? and @pN/);
       else expect(err, sql).toBeNull();
     }
     await a.close();
@@ -912,8 +912,8 @@ describe('sqlserver ro 模式（手法 B）', () => {
         },
         (e: unknown) => e,
       );
-      expect(msgOf(err)).toMatch(/DRIVER_ERROR[\s\S]*只读/);
-      expect(msgOf(err)).not.toMatch(/超时|登录失败|网络/);
+      expect(msgOf(err)).toMatch(/DRIVER_ERROR[\s\S]*read-only \(ro\) mode/);
+      expect(msgOf(err)).not.toMatch(/timed out|login failed|network/);
     }
     expect(pool.requests).toHaveLength(0);
     await a.close();
@@ -932,7 +932,7 @@ describe('sqlserver ro 模式（手法 B）', () => {
   it('ro 拒绝多语句（防堆叠写），但允许结尾单个分号', async () => {
     const { a, pool } = await make('ro');
     pool.queue = [rec([{ n: 1 }], cols('n'))];
-    await expect(a.query('SELECT 1; UPDATE t SET x = 1')).rejects.toThrow(/多条语句/);
+    await expect(a.query('SELECT 1; UPDATE t SET x = 1')).rejects.toThrow(/several statements at once/);
     await expect(a.query("SELECT 'a;b' AS v; -- 尾注释")).resolves.toBeDefined();
     await expect(a.query('SELECT 1;')).resolves.toBeDefined();
     expect(pool.requests).toHaveLength(2);
@@ -955,8 +955,8 @@ describe('sqlserver ro 模式（手法 B）', () => {
         },
         (e: unknown) => e,
       );
-      expect(msgOf(err)).toMatch(/DRIVER_ERROR[\s\S]*只读/);
-      expect(msgOf(err)).not.toMatch(/超时|登录失败|网络/);
+      expect(msgOf(err)).toMatch(/DRIVER_ERROR[\s\S]*read-only \(ro\) mode/);
+      expect(msgOf(err)).not.toMatch(/timed out|login failed|network/);
     }
     expect(pool.requests).toHaveLength(0);
     await a.close();
@@ -997,7 +997,7 @@ describe('sqlserver ro 模式（手法 B）', () => {
         },
         (e: unknown) => e,
       );
-      expect(msgOf(err), stmt).toMatch(/DRIVER_ERROR[\s\S]*(只读|多条语句)/);
+      expect(msgOf(err), stmt).toMatch(/DRIVER_ERROR[\s\S]*(read-only \(ro\) mode|several statements at once)/);
     }
     expect(pool.requests).toHaveLength(0);
     await a.close();
@@ -1048,7 +1048,7 @@ describe('sqlserver ro 模式（手法 B）', () => {
 
   it('ro 跨库池同样受白名单约束', async () => {
     const { a, h } = await make('ro');
-    await expect(a.query('UPDATE t SET x = 1', [], 'otherdb')).rejects.toThrow(/只读/);
+    await expect(a.query('UPDATE t SET x = 1', [], 'otherdb')).rejects.toThrow(/read-only \(ro\) mode/);
     expect(h.pools).toHaveLength(1); // 拒绝发生在建跨库池之前
     await a.close();
   });
@@ -1214,7 +1214,7 @@ describe('sqlserver previewRows 分页（手法 B）', () => {
 
   it('含换行的表名被标识符校验拦截（不拼进 SQL、不发请求）', async () => {
     const { a, pool } = await make();
-    await expect(a.previewRows('a\nb', 1)).rejects.toThrow(/非法/);
+    await expect(a.previewRows('a\nb', 1)).rejects.toThrow(/Invalid table name/);
     expect(pool.requests).toHaveLength(0);
     await a.close();
   });
@@ -1305,7 +1305,7 @@ describe('sqlserver execute（手法 B）', () => {
     pool.queue = [{ recordset: [] }];
     const r = await a.execute('CREATE TABLE t (id INT)');
     expect(r.affectedRows).toBeUndefined();
-    expect(r.message).toMatch(/执行成功/);
+    expect(r.message).toMatch(/executed successfully/);
     await a.close();
   });
 });
@@ -1408,7 +1408,7 @@ describe('sqlserver 元数据方法（手法 B）', () => {
   it('describeTable：表不存在抛「表不存在: <名>」', async () => {
     const { a, pool } = await make();
     pool.queue = [rec([], cols('column_name'))];
-    await expect(a.describeTable('ghost')).rejects.toThrow(/表不存在: dbo\.ghost/);
+    await expect(a.describeTable('ghost')).rejects.toThrow(/table does not exist: dbo\.ghost/);
     await a.close();
   });
 
@@ -1448,15 +1448,15 @@ function mssqlErr(name: string, code: string, extra?: Record<string, unknown>): 
 
 describe('sqlserver 错误中文映射（手法 B）', () => {
   const CASES: Array<[string, Error, RegExp]> = [
-    ['ELOGIN', mssqlErr('ConnectionError', 'ELOGIN'), /登录失败/],
-    ['ETIMEOUT(ConnectionError)', mssqlErr('ConnectionError', 'ETIMEOUT'), /连接超时/],
-    ['ETIMEOUT(RequestError)', mssqlErr('RequestError', 'ETIMEOUT'), /请求超时/],
-    ['ESOCKET', mssqlErr('ConnectionError', 'ESOCKET'), /网络不可达/],
-    ['EINSTLOOKUP', mssqlErr('ConnectionError', 'EINSTLOOKUP'), /「主机，端口」直连，如 host,1433/],
-    ['ENOTOPEN', mssqlErr('ConnectionError', 'ENOTOPEN'), /连接已关闭|未打开/],
-    ['ECONNCLOSED', mssqlErr('ConnectionError', 'ECONNCLOSED'), /连接已关闭/],
+    ['ELOGIN', mssqlErr('ConnectionError', 'ELOGIN'), /login failed/],
+    ['ETIMEOUT(ConnectionError)', mssqlErr('ConnectionError', 'ETIMEOUT'), /connection timed out/],
+    ['ETIMEOUT(RequestError)', mssqlErr('RequestError', 'ETIMEOUT'), /request timed out/],
+    ['ESOCKET', mssqlErr('ConnectionError', 'ESOCKET'), /network unreachable/],
+    ['EINSTLOOKUP', mssqlErr('ConnectionError', 'EINSTLOOKUP'), /you can connect directly using "host,port"/],
+    ['ENOTOPEN', mssqlErr('ConnectionError', 'ENOTOPEN'), /is closed or not open/],
+    ['ECONNCLOSED', mssqlErr('ConnectionError', 'ECONNCLOSED'), /the connection is closed or not open/],
     ['EREQUEST', mssqlErr('RequestError', 'EREQUEST', { number: 208, severity: 16, lineNumber: 3 }), /208/],
-    ['ECANCEL', mssqlErr('RequestError', 'ECANCEL'), /取消/],
+    ['ECANCEL', mssqlErr('RequestError', 'ECANCEL'), /request cancelled/],
   ];
   it.each(CASES)('%s → 中文提示', async (_label, err, re) => {
     const { a, pool } = await make();
@@ -1469,7 +1469,7 @@ describe('sqlserver 错误中文映射（手法 B）', () => {
     );
     const msg = msgOf(got);
     expect(msg).toMatch(re);
-    expect(msg).toMatch(/sqlserver 查询失败/);
+    expect(msg).toMatch(/sqlserver query failed/);
     await a.close();
   });
 
@@ -1491,8 +1491,8 @@ describe('sqlserver 错误中文映射（手法 B）', () => {
     );
     const msg = msgOf(err);
     // 保留「网络不可达」字样（既有断言/用户检索习惯），但明确否定它（TCP 实际已连通，避免误查网络）
-    expect(msg).toMatch(/网络不可达/);
-    expect(msg).toMatch(/TCP 已连通/);
+    expect(msg).toMatch(/network unreachable/);
+    expect(msg).toMatch(/TCP is connected/);
     expect(msg).toMatch(/trustServerCertificate/);
     expect(msg).toMatch(/2008/);
     await a.close();
@@ -1520,16 +1520,16 @@ describe('sqlserver 错误中文映射（手法 B）', () => {
       (e: unknown) => e,
     );
     const msg = msgOf(err);
-    expect(msg).toMatch(/TCP 已连通/);
+    expect(msg).toMatch(/TCP is connected/);
     // UNSUPPORTED_PROTOCOL = 双方没有共同 TLS 协议版本，握手根本没走到证书校验：诊断必须指向
     // 协议版本（tlsMinVersion）。允许否定式说明「跳过证书校验无效」（比沉默更省排查轮次），
     // 但不得给出可照抄的 ?trustServerCertificate=true —— 那是开错药方。
-    expect(msg).toMatch(/协议版本/);
+    expect(msg).toMatch(/protocol version/);
     expect(msg).toMatch(/tlsMinVersion/);
-    expect(msg).toMatch(/无效|不起作用/);
+    expect(msg).toMatch(/does not help/);
     expect(msg).not.toMatch(/\?trustServerCertificate=true/);
     // 协议版本类错误不含证书字样，修复前会落「网络不可达」兜底
-    expect(msg).not.toMatch(/^网络不可达/);
+    expect(msg).not.toMatch(/^network unreachable/);
     await a.close();
   });
 
@@ -1544,8 +1544,8 @@ describe('sqlserver 错误中文映射（手法 B）', () => {
       },
       (e: unknown) => e,
     );
-    expect(msgOf(err)).toMatch(/网络不可达/);
-    expect(msgOf(err)).not.toMatch(/TCP 已连通/);
+    expect(msgOf(err)).toMatch(/network unreachable/);
+    expect(msgOf(err)).not.toMatch(/TCP is connected/);
     expect(msgOf(err)).not.toMatch(/trustServerCertificate/);
     await a.close();
   });
@@ -1571,11 +1571,11 @@ describe('sqlserver 错误中文映射（手法 B）', () => {
       (e: unknown) => e,
     );
     const msg = msgOf(err);
-    expect(msg).toMatch(/TCP 已连通/);
-    expect(msg).toMatch(/协议版本/);
+    expect(msg).toMatch(/TCP is connected/);
+    expect(msg).toMatch(/protocol version/);
     expect(msg).toMatch(/tlsMinVersion/);
     // 协议协商阶段就失败了，证书校验根本没执行：允许明说「跳过证书校验无效」，但不给可照抄参数
-    expect(msg).toMatch(/无效|不起作用/);
+    expect(msg).toMatch(/does not help/);
     expect(msg).not.toMatch(/\?trustServerCertificate=true/);
     await a.close();
   });
@@ -1592,10 +1592,10 @@ describe('sqlserver 错误中文映射（手法 B）', () => {
       (e: unknown) => e,
     );
     const msg = msgOf(err);
-    expect(msg).toMatch(/TCP 已连通/);
-    expect(msg).toMatch(/协议版本/);
+    expect(msg).toMatch(/TCP is connected/);
+    expect(msg).toMatch(/protocol version/);
     expect(msg).toMatch(/tlsMinVersion/);
-    expect(msg).toMatch(/无效|不起作用/);
+    expect(msg).toMatch(/does not help/);
     expect(msg).not.toMatch(/\?trustServerCertificate=true/);
     await a.close();
   });
@@ -1612,12 +1612,12 @@ describe('sqlserver 错误中文映射（手法 B）', () => {
       (e: unknown) => e,
     );
     const msg = msgOf(err);
-    expect(msg).toMatch(/TCP 已连通/);
+    expect(msg).toMatch(/TCP is connected/);
     expect(msg).toMatch(/trustServerCertificate=true/);
     expect(msg).toMatch(/encrypt=false/);
     expect(msg).toMatch(/2008/);
     // 两族互斥：证书类不能顺带推销 tlsMinVersion（会让用户去改协议版本，白跑）
-    expect(msg).not.toMatch(/协议版本|tlsMinVersion/);
+    expect(msg).not.toMatch(/protocol version|tlsMinVersion/);
     await a.close();
   });
 
@@ -1633,8 +1633,8 @@ describe('sqlserver 错误中文映射（手法 B）', () => {
       (e: unknown) => e,
     );
     const msg = msgOf(err);
-    expect(msg).toMatch(/网络不可达/);
-    expect(msg).not.toMatch(/TCP 已连通/);
+    expect(msg).toMatch(/network unreachable/);
+    expect(msg).not.toMatch(/TCP is connected/);
     expect(msg).not.toMatch(/tlsMinVersion/);
     expect(msg).not.toMatch(/trustServerCertificate/);
     await a.close();
@@ -1652,8 +1652,8 @@ describe('sqlserver 错误中文映射（手法 B）', () => {
       (e: unknown) => e,
     );
     const msg = msgOf(err);
-    expect(msg).toMatch(/网络不可达/);
-    expect(msg).not.toMatch(/TCP 已连通/);
+    expect(msg).toMatch(/network unreachable/);
+    expect(msg).not.toMatch(/TCP is connected/);
     expect(msg).not.toMatch(/tlsMinVersion/);
     expect(msg).not.toMatch(/trustServerCertificate/);
     await a.close();
@@ -1669,7 +1669,7 @@ describe('sqlserver 错误中文映射（手法 B）', () => {
       (e: unknown) => e,
     );
     const msg = msgOf(err);
-    expect(msg).toMatch(/服务器要求加密/);
+    expect(msg).toMatch(/the server requires an encrypted connection/);
     expect(msg).toMatch(/\?encrypt=true/);
     expect(msg).not.toMatch(/trustServerCertificate/);
     await a.close();
@@ -1686,8 +1686,8 @@ describe('sqlserver 错误中文映射（手法 B）', () => {
       (e: unknown) => e,
     );
     const msg = msgOf(err);
-    expect(msg).toMatch(/TCP 已连通/);
-    expect(msg).toMatch(/协议版本/);
+    expect(msg).toMatch(/TCP is connected/);
+    expect(msg).toMatch(/protocol version/);
     expect(msg).toMatch(/tlsMinVersion/);
     // 不重复堆底层原文：message 未包含 cause 全文，补一条「原始错误」即可
     expect(msg.split(causeText)).toHaveLength(2);
@@ -1708,9 +1708,9 @@ describe('sqlserver 错误中文映射（手法 B）', () => {
     );
     const msg = msgOf(err);
     // 与「服务器要求加密」是相反方向：此情形是客户端要加密但服务器没谈成，不能反过来说要开 encrypt
-    expect(msg).toMatch(/未协商加密|没有协商加密/);
+    expect(msg).toMatch(/did not negotiate encryption/);
     expect(msg).toMatch(/encrypt=false/);
-    expect(msg).not.toMatch(/服务器要求加密/);
+    expect(msg).not.toMatch(/the server requires an encrypted connection/);
     // 该情形与证书无关
     expect(msg).not.toMatch(/trustServerCertificate|caCert/);
     await a.close();
@@ -1731,7 +1731,7 @@ describe('sqlserver 错误中文映射（手法 B）', () => {
     // 证书族必须给出「官方推荐装 CA」的正解出口，而不是只教用户关校验
     expect(msg).toMatch(/caCert/);
     expect(msg).toMatch(/serverName/);
-    expect(msg).toMatch(/官方|推荐/);
+    expect(msg).toMatch(/officially recommended/);
     // 两族互斥断言保持：证书族不出现协议版本建议
     expect(msg).not.toMatch(/tlsMinVersion/);
     await a.close();
@@ -1771,7 +1771,7 @@ describe('sqlserver 错误中文映射（手法 B）', () => {
       (e: unknown) => e,
     );
     const msg = msgOf(err);
-    expect(msg).toMatch(/17835|强制加密|要求加密/);
+    expect(msg).toMatch(/17835|requires an encrypted connection/);
     expect(msg).toMatch(/encrypt=true/);
     expect(msg).not.toMatch(/trustServerCertificate/);
     await a.close();
@@ -1790,7 +1790,7 @@ describe('sqlserver 错误中文映射（手法 B）', () => {
       const msg = msgOf(err);
       expect(msg, `number=${num}`).toMatch(new RegExp(String(num)));
       expect(msg).toMatch(/TDS/);
-      expect(msg).toMatch(/升级/);
+      expect(msg).toMatch(/upgrade/);
       // 官方协议保证服务器降级：下调 tdsVersion 是错药方
       expect(msg).not.toMatch(/tdsVersion=7_[0-3]/);
       await a.close();
@@ -1809,7 +1809,7 @@ describe('sqlserver 错误中文映射（手法 B）', () => {
       );
       const msg = msgOf(err);
       expect(msg, `number=${num}`).toMatch(new RegExp(String(num)));
-      expect(msg).toMatch(/代理|中间层|加密/);
+      expect(msg).toMatch(/proxy|middlebox|encryption/);
       expect(msg).not.toMatch(/tdsVersion/);
       await a.close();
     }
@@ -1872,9 +1872,9 @@ describe('sqlserver 错误中文映射（手法 B）', () => {
       (e: unknown) => e,
     );
     const msg = msgOf(err);
-    expect(msg).toMatch(/协议版本/);
+    expect(msg).toMatch(/protocol version/);
     expect(msg).toMatch(/tlsMinVersion/);
-    expect(msg).toMatch(/原始错误/);
+    expect(msg).toMatch(/Original error/);
     expect(msg).toContain(original);
     expect(msg).not.toContain('ECONNRESET');
     await a.close();
@@ -1890,8 +1890,8 @@ describe('sqlserver 错误中文映射（手法 B）', () => {
       (e: unknown) => e,
     );
     const msg = msgOf(err);
-    expect(msg).toMatch(/网络不可达/);
-    expect(msg).not.toMatch(/原始错误/);
+    expect(msg).toMatch(/network unreachable/);
+    expect(msg).not.toMatch(/Original error/);
     expect(msg).not.toMatch(/undefined/);
     await a.close();
   });
@@ -1922,9 +1922,9 @@ describe('sqlserver 错误中文映射（手法 B）', () => {
       );
       const msg = msgOf(err);
       expect(msg, `tlsMinVersion=${bad}`).toMatch(/tlsMinVersion/);
-      expect(msg).toMatch(/非法/);
+      expect(msg).toMatch(/has an invalid value/);
       // TLSv1.3 被拒必须说清真实原因（tedious 上限封顶），不能只写「不支持」让用户以为是我们杜撰的限制
-      if (bad === 'TLSv1.3') expect(msg).toMatch(/上限|封顶|1\.2/);
+      if (bad === 'TLSv1.3') expect(msg).toMatch(/caps TLS at 1\.2/);
       expect(h2.configs).toHaveLength(0);
     }
 
@@ -1981,7 +1981,7 @@ describe('sqlserver 错误中文映射（手法 B）', () => {
       );
       const msg = msgOf(err);
       expect(msg, JSON.stringify(fields)).toMatch(new RegExp(key));
-      expect(msg).toMatch(/非法/);
+      expect(msg).toMatch(/has an invalid value/);
       // 校验发生在建池之前：不该有任何池配置产出
       expect(h2.configs).toHaveLength(0);
     }
@@ -2052,7 +2052,7 @@ describe('sqlserver 池与事务（手法 B）', () => {
     expect(pool.requests).toHaveLength(0);
     await tx.commit();
     expect(t.events).toEqual(['begin', 'commit']);
-    await expect(tx.commit()).rejects.toThrow(/没有进行中的事务/);
+    await expect(tx.commit()).rejects.toThrow(/no transaction in progress/);
     await a.close();
   });
 
@@ -2060,7 +2060,7 @@ describe('sqlserver 池与事务（手法 B）', () => {
     const { a, h } = await make();
     const tx = a.tx as { begin(): Promise<void>; commit(): Promise<void>; rollback(): Promise<void> };
     await tx.begin();
-    await expect(tx.begin()).rejects.toThrow(/事务已开启/);
+    await expect(tx.begin()).rejects.toThrow(/transaction already open/);
     await tx.rollback();
     expect(h.txs[0]!.events).toEqual(['begin', 'rollback']);
     expect(h.txs[0]!.requests).toHaveLength(0);
@@ -2070,19 +2070,19 @@ describe('sqlserver 池与事务（手法 B）', () => {
   it('tx：未 begin 时 commit/rollback 报中文错误', async () => {
     const { a } = await make();
     const tx = a.tx as { begin(): Promise<void>; commit(): Promise<void>; rollback(): Promise<void> };
-    await expect(tx.commit()).rejects.toThrow(/没有进行中的事务/);
-    await expect(tx.rollback()).rejects.toThrow(/没有进行中的事务/);
+    await expect(tx.commit()).rejects.toThrow(/no transaction in progress/);
+    await expect(tx.rollback()).rejects.toThrow(/no transaction in progress/);
     await a.close();
   });
 
   it('close 后再用：抛「连接已关闭」中文错误，且不新建跨库池（不泄漏）', async () => {
     const { a, h } = await make();
     await a.close();
-    await expect(a.query('SELECT 1')).rejects.toThrow(/已关闭/);
-    await expect(a.execute('UPDATE t SET x = 1')).rejects.toThrow(/已关闭/);
-    await expect(a.query('SELECT 1', [], 'otherdb')).rejects.toThrow(/已关闭/);
-    await expect(a.listTables()).rejects.toThrow(/已关闭/);
-    await expect(a.previewRows('users', 1)).rejects.toThrow(/已关闭/);
+    await expect(a.query('SELECT 1')).rejects.toThrow(/is closed: reconnect and retry/);
+    await expect(a.execute('UPDATE t SET x = 1')).rejects.toThrow(/is closed: reconnect and retry/);
+    await expect(a.query('SELECT 1', [], 'otherdb')).rejects.toThrow(/is closed: reconnect and retry/);
+    await expect(a.listTables()).rejects.toThrow(/is closed: reconnect and retry/);
+    await expect(a.previewRows('users', 1)).rejects.toThrow(/is closed: reconnect and retry/);
     expect(h.pools).toHaveLength(1); // 关闭后未新建跨库池
     await expect(a.close()).resolves.toBeUndefined();
   });
@@ -2193,7 +2193,7 @@ describe('sqlserver 登录阶段错误分诊（真实形态：ELOGIN + 无 numbe
     );
     expect(msg).toMatch(/encrypt=strict/);
     // 真实链路上 number 缺失，旧实现会退化成这句 —— 方向完全错
-    expect(msg).not.toMatch(/用户名或密码错误/);
+    expect(msg).not.toMatch(/wrong user name or password/);
     // 且不得误给"装 CA / 关校验"这类对协议配置无效的药方
     expect(msg).not.toMatch(/caCert/);
   });
@@ -2203,27 +2203,27 @@ describe('sqlserver 登录阶段错误分诊（真实形态：ELOGIN + 无 numbe
       'Encryption is required to connect to this server but the client library does not support encryption; the connection has been closed.',
     );
     expect(msg).toMatch(/encrypt=true/);
-    expect(msg).not.toMatch(/用户名或密码错误/);
+    expect(msg).not.toMatch(/wrong user name or password/);
   });
 
   it('17836 原文（包长度错配）：指向链路/代理，不得误判为认证问题', async () => {
     const msg = await reasonOf(
       'Length specified in network packet payload did not match number of bytes read; the connection has been closed.',
     );
-    expect(msg).toMatch(/代理|中间设备|端口/);
-    expect(msg).not.toMatch(/用户名或密码错误/);
+    expect(msg).toMatch(/proxy|intermediate devices|port/);
+    expect(msg).not.toMatch(/wrong user name or password/);
   });
 
   it('17832 原文（登录包结构非法）：指向链路中间设备', async () => {
     const msg = await reasonOf(
       'The login packet used to open the connection is structurally invalid; the connection has been closed.',
     );
-    expect(msg).toMatch(/中间设备|中间层|端口/);
+    expect(msg).toMatch(/intermediate layer|intermediate devices|port/);
   });
 
   it('真正的账号错误（无任何已知特征）仍报用户名密码错误 —— 兜底不能被吞掉', async () => {
     const msg = await reasonOf("Login failed for user 'sa'.");
-    expect(msg).toMatch(/用户名或密码错误/);
+    expect(msg).toMatch(/login failed: wrong user name or password/);
   });
 });
 
@@ -2250,10 +2250,12 @@ describe('sqlserver CA 合并不缩小信任范围', () => {
 
     // 关键：内置 bundle 必须在列，否则用户装一张 CA 就把公网实例全掐掉
     const bundled = getter('default');
+    const uniqueBundled = [...new Set(bundled)];
     const caSet = new Set(ca);
-    const bundledPresent = bundled.filter((p) => caSet.has(p)).length;
-    expect(bundledPresent).toBeGreaterThan(0);
-    // 允许去重导致的数量差异，但不能"只剩用户那张"
+    expect(caSet.size).toBe(ca.length); // 合并结果已去重（Node 24 的默认库本身含重复证书）
+    const bundledPresent = uniqueBundled.filter((p) => caSet.has(p)).length;
+    expect(bundledPresent).toBe(uniqueBundled.length); // 内置 bundle 一张都不能少
+    // 用户 CA 仍在：合并结果严格多于 bundle（不能被 bundle 覆盖掉）
     expect(ca.length).toBeGreaterThan(bundledPresent);
     await a.close();
   });

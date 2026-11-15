@@ -208,8 +208,8 @@ describe('sqlserver 类型映射（离线）', () => {
     expect(sqlserverIdent('users')).toBe('[users]');
     expect(sqlserverIdent('a]b')).toBe('[a]]b]');
     expect(sqlserverIdent('weird name')).toBe('[weird name]');
-    expect(() => sqlserverIdent('')).toThrow(/非法标识符/);
-    expect(() => sqlserverIdent('a\nb')).toThrow(/非法标识符/);
+    expect(() => sqlserverIdent('')).toThrow(/Invalid identifier/);
+    expect(() => sqlserverIdent('a\nb')).toThrow(/Invalid identifier/);
   });
 
   it('绑定值转换：bigint→十进制字符串、bytes→Buffer、日期列剥 Z（T-SQL 不接受 Z 后缀）', () => {
@@ -593,7 +593,7 @@ describe('sqlserver 写端（mock pool + mock 事务）', () => {
   it('writeBatch 行宽不匹配：事务前抛出，不产生语句', async () => {
     const { pool, recs, openTx, counts } = makePool();
     const w = createSqlserverTransferWriter(pool as never, openTx, 'dbo', 'insert');
-    await expect(w.writeBatch({ name: 't', columns: cols3 }, [[1, 'a']])).rejects.toThrow(/行宽不匹配/);
+    await expect(w.writeBatch({ name: 't', columns: cols3 }, [[1, 'a']])).rejects.toThrow(/row width mismatch/);
     expect(recs.length).toBe(0);
     expect(counts.begin).toBe(0);
   });
@@ -625,7 +625,7 @@ describe('sqlserver 写端（mock pool + mock 事务）', () => {
     expect(sql).toContain('WHEN MATCHED THEN UPDATE SET tgt.[name] = src.[name], tgt.[amount] = src.[amount]');
     expect(sql).toContain('WHEN NOT MATCHED THEN INSERT');
     const w2 = createSqlserverTransferWriter(pool as never, openTx, 'dbo', 'replace');
-    await expect(w2.writeBatch({ name: 't', columns: [col({ name: 'a' })] }, [[1]])).rejects.toThrow(/replace 模式需要主键/);
+    await expect(w2.writeBatch({ name: 't', columns: [col({ name: 'a' })] }, [[1]])).rejects.toThrow(/replace mode requires a primary key/);
   });
 
   it('beforeLoad：SET LOCK_TIMEOUT 15000 → TRUNCATE → 复位默认；拿不到锁降级 DELETE', async () => {
@@ -703,8 +703,8 @@ describe('sqlserver 写端（mock pool + mock 事务）', () => {
   it('列数为 0：createTable / writeBatch 抛中文错误，不拼非法 SQL', async () => {
     const { pool, openTx, recs } = makePool();
     const w = createSqlserverTransferWriter(pool as never, openTx, 'dbo', 'insert');
-    await expect(w.createTable({ name: 't', columns: [] })).rejects.toThrow(/无列定义/);
-    await expect(w.writeBatch({ name: 't', columns: [] }, [[]])).rejects.toThrow(/无列定义/);
+    await expect(w.createTable({ name: 't', columns: [] })).rejects.toThrow(/has no column definitions/);
+    await expect(w.writeBatch({ name: 't', columns: [] }, [[]])).rejects.toThrow(/has no column definitions/);
     expect(recs.length).toBe(0);
   });
 
@@ -735,8 +735,8 @@ describe('sqlserverLocate（离线）', () => {
 
   it('loc.schema 经 assertIdent 校验（空串/换行拒绝）', () => {
     expect(sqlserverLocate(rcOf(), { schema: 'sales' }).schema).toBe('sales');
-    expect(() => sqlserverLocate(rcOf(), { schema: '' })).toThrow(/非法模式名/);
-    expect(() => sqlserverLocate(rcOf(), { schema: 'a\nb' })).toThrow(/非法模式名/);
+    expect(() => sqlserverLocate(rcOf(), { schema: '' })).toThrow(/Invalid schema name/);
+    expect(() => sqlserverLocate(rcOf(), { schema: 'a\nb' })).toThrow(/Invalid schema name/);
   });
 });
 

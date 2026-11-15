@@ -19,7 +19,7 @@ const PASSWORD_KEY = 'password';
  *  替代对 create() 中文错误文案的字符串匹配（文案改动不破坏幂等契约） */
 export class DuplicateConnectionError extends Error {
   constructor(readonly connId: string) {
-    super(`连接已存在: ${connId}`);
+    super(`Connection already exists: ${connId}`);
     this.name = 'DuplicateConnectionError';
   }
 }
@@ -117,7 +117,7 @@ export function mergeUrlCredentials(opts: {
   // 非标准 URL 形态（jdbc: 前缀、多主机逗号端口等）无法可靠合并 → 明确报错要求重输。
   if (url !== undefined && url.includes(':***@')) {
     if (secretsUrl === undefined) {
-      throw new Error('URL 中含脱敏占位（***）且无已存真实 URL 可回退，请重新输入完整 URL 或清空用户名/密码框');
+      throw new Error('The URL contains the redacted placeholder (***) and there is no stored real URL to fall back to; re-enter the full URL or clear the username/password fields');
     }
     try {
       const sec = new URL(secretsUrl);
@@ -128,7 +128,7 @@ export function mergeUrlCredentials(opts: {
       url = edit.toString();
     } catch {
       throw new Error(
-        '连接 URL 含脱敏占位（***）且无法与已存凭据合并（非标准 URL 形态，如 jdbc: 前缀或多主机串）：请重新输入完整 URL',
+        'The connection URL contains the redacted placeholder (***) and cannot be merged with the stored credentials (non-standard URL shape, e.g. jdbc: prefix or multi-host string): re-enter the full URL',
       );
     }
   }
@@ -151,7 +151,7 @@ export function mergeUrlCredentials(opts: {
   // 回退条件：解析失败；或 opaque path（host 为空、setter no-op）且 authority 非空。
   // authority 为空（sqlite:// 等无主机形态）不回退，维持 setter no-op 的现状语义。
   if (u === undefined || (u.host === '' && (m?.[2] ?? '') !== '')) {
-    if (m === null) throw new Error('连接 URL 无效，无法注入用户名/密码');
+    if (m === null) throw new Error('Invalid connection URL: cannot inject the username/password');
     return injectUserInfo(base, m, urlUser, urlPassword);
   }
   if (urlUser !== undefined && urlUser !== '') u.username = urlUser;
@@ -364,7 +364,7 @@ export class ConnectionStore {
    */
   testTarget(id: string): ResolvedConnection {
     const rec = this.findRec(this.load(), id);
-    if (!rec) throw new Error(`连接不存在: ${id}`);
+    if (!rec) throw new Error(`Connection not found: ${id}`);
     const meta = toMeta(rec, this.secrets.get(id)?.password !== undefined);
     const rc: ResolvedConnection = { meta };
     const sec = this.secrets.get(id);
@@ -410,7 +410,7 @@ export class ConnectionStore {
         typeof rec.kind !== 'string' ||
         (rec.kind as string) === ''
       ) {
-        result.errors.push({ id: String((rec as { id?: unknown } | null)?.id ?? ''), message: '记录结构非法（缺少 id/kind）' });
+        result.errors.push({ id: String((rec as { id?: unknown } | null)?.id ?? ''), message: 'Invalid record structure (missing id/kind)' });
         continue;
       }
       const sec = bundle.secrets?.[rec.id];

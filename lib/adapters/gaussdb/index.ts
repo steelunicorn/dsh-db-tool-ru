@@ -48,8 +48,8 @@ function loadGaussDriver(): PgLikeDriver {
     // 附原始错误：区分「依赖未安装」与「安装产物损坏」两类故障
     const msg = e instanceof Error ? e.message : String(e);
     throw new Error(
-      'GaussDB 驱动未找到：请重新安装插件（npm install gaussdb-node 或重装 dsh-db-tool）。' +
-        `原始错误: ${msg}`,
+      'GaussDB driver not found: please reinstall the plugin (npm install gaussdb-node or reinstall dsh-db-tool-ru). ' +
+        `Original error: ${msg}`,
     );
   }
 }

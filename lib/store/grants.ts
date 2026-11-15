@@ -11,6 +11,39 @@ export interface GrantEntry {
   connId: string;
   mode: AccessMode;
   grantedAt: string;
+  /**
+   * 该授权可见的库白名单（连接内的库级收窄）。缺省或空数组 = 不限制（全部库）。
+   * 名称精确匹配、大小写不敏感；sqlite 单文件库不参与库级校验。
+   */
+  databases?: string[];
+}
+
+/** 授权解析结果：模式 + 可选库白名单 */
+export interface GrantResolution {
+  mode: 'ro' | 'rw';
+  databases?: string[];
+}
+
+/** 库白名单归一：去首尾空白、丢弃空项、大小写不敏感去重；无有效项返回 undefined（= 全部库） */
+export function normalizeDatabases(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of value) {
+    if (typeof item !== 'string') continue;
+    const name = item.trim();
+    if (name === '') continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(name);
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+/** 两条授权的库白名单合并：非空优先（首条非空生效），都空则保持不限制 */
+function mergeDatabases(a: string[] | undefined, b: string[] | undefined): string[] | undefined {
+  return normalizeDatabases(a) ?? normalizeDatabases(b);
 }
 
 /** 迁移合并：同键两条授权列表按连接去重，rw 胜出（rw > ro，对齐 check），grantedAt 取较新 */
@@ -19,11 +52,18 @@ function mergeGrantLists(a: GrantEntry[], b: GrantEntry[]): GrantEntry[] {
   for (const g of [...a, ...b]) {
     const prev = map.get(g.connId);
     if (!prev) {
-      map.set(g.connId, { ...g });
+      const entry: GrantEntry = { ...g };
+      const databases = normalizeDatabases(entry.databases);
+      if (databases) entry.databases = databases;
+      else delete entry.databases;
+      map.set(g.connId, entry);
       continue;
     }
     const mode: AccessMode = prev.mode === 'rw' || g.mode === 'rw' ? 'rw' : g.mode;
-    map.set(g.connId, { connId: g.connId, mode, grantedAt: prev.grantedAt > g.grantedAt ? prev.grantedAt : g.grantedAt });
+    const merged: GrantEntry = { connId: g.connId, mode, grantedAt: prev.grantedAt > g.grantedAt ? prev.grantedAt : g.grantedAt };
+    const databases = mergeDatabases(prev.databases, g.databases);
+    if (databases) merged.databases = databases;
+    map.set(g.connId, merged);
   }
   return [...map.values()];
 }
@@ -33,7 +73,7 @@ interface GrantsFile {
 }
 
 /** 绝对路径形态的键（盘符开头或 POSIX 根开头）：仅这类键参与迁移归一 */
-const PATH_KEY = /^(?:[a-z]:\/|\/)/i;
+const PATH_KEY = /^(?:[a-z]:[\\/]|\/)/i;
 
 export class GrantStore {
   private readonly file: string;
@@ -66,23 +106,38 @@ export class GrantStore {
     writeJsonAtomic(this.file, data, 0o600);
   }
 
-  /** 某项目的全部授权（不含 grantedAt，展示层无需时间戳） */
-  grantsFor(projectKey: string): { connId: string; mode: 'ro' | 'rw' }[] {
+  /** 某项目的全部授权（含可选库白名单，不含 grantedAt，展示层无需时间戳） */
+  grantsFor(projectKey: string): { connId: string; mode: 'ro' | 'rw'; databases?: string[] }[] {
     const key = normalizeProjectKey(projectKey);
-    return (this.load().grants[key] ?? []).map(({ connId, mode }) => ({ connId, mode }));
+    return (this.load().grants[key] ?? []).map(({ connId, mode, databases }) => {
+      const out: { connId: string; mode: 'ro' | 'rw'; databases?: string[] } = { connId, mode };
+      const normalized = normalizeDatabases(databases);
+      if (normalized) out.databases = normalized;
+      return out;
+    });
   }
 
-  /** 授权或改授权（同连接重复授权视为更新模式）。键在入口归一化，调用方传原始路径亦可 */
-  grant(projectKey: string, connId: string, mode: AccessMode): void {
+  /**
+   * 授权或改授权（同连接重复授权视为更新模式）。键在入口归一化，调用方传原始路径亦可。
+   * databases 为 undefined 表示「保持既有库白名单不变」，数组表示覆盖（空数组 = 解除限制）。
+   */
+  grant(projectKey: string, connId: string, mode: AccessMode, databases?: string[]): void {
     const key = normalizeProjectKey(projectKey);
     const data = this.load();
     const list = data.grants[key] ?? [];
     const existing = list.find((g) => g.connId === connId);
+    const normalized = databases === undefined ? undefined : normalizeDatabases(databases);
     if (existing) {
       existing.mode = mode;
       existing.grantedAt = new Date().toISOString();
+      if (databases !== undefined) {
+        if (normalized) existing.databases = normalized;
+        else delete existing.databases;
+      }
     } else {
-      list.push({ connId, mode, grantedAt: new Date().toISOString() });
+      const entry: GrantEntry = { connId, mode, grantedAt: new Date().toISOString() };
+      if (normalized) entry.databases = normalized;
+      list.push(entry);
     }
     data.grants[key] = list;
     this.save(data);
@@ -101,14 +156,28 @@ export class GrantStore {
     this.save(data);
   }
 
+  /**
+   * 解析某项目对某连接的授权：模式 + 库白名单；未授权返回 undefined。
+   * 同连接存在多条（历史迁移残留）时 rw 覆盖 ro，库白名单取首条非空。
+   */
+  resolve(projectKey: string, connId: string): GrantResolution | undefined {
+    const key = normalizeProjectKey(projectKey);
+    const entries = (this.load().grants[key] ?? []).filter((g) => g.connId === connId);
+    if (entries.length === 0) return undefined;
+    const mode: 'ro' | 'rw' = entries.some((g) => g.mode === 'rw') ? 'rw' : 'ro';
+    let databases: string[] | undefined;
+    for (const e of entries) {
+      databases = normalizeDatabases(e.databases);
+      if (databases) break;
+    }
+    const out: GrantResolution = { mode };
+    if (databases) out.databases = databases;
+    return out;
+  }
+
   /** 检查授权模式；未授权返回 undefined（ro < rw，rw 覆盖 ro）。键在入口归一化 */
   check(projectKey: string, connId: string): AccessMode | undefined {
-    const key = normalizeProjectKey(projectKey);
-    const modes = (this.load().grants[key] ?? [])
-      .filter((g) => g.connId === connId)
-      .map((g) => g.mode);
-    if (modes.includes('rw')) return 'rw';
-    return modes.includes('ro') ? 'ro' : undefined;
+    return this.resolve(projectKey, connId)?.mode;
   }
 
   /** 级联清理：删除某连接在全项目范围的授权（由 ConnectionStore.remove 调用） */

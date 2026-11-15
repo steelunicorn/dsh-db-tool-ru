@@ -73,11 +73,14 @@ describe('parseCellText', () => {
 
 describe('isTruncatedCell / isBlobCell', () => {
 	it('识别 SQL 与 redis/mongo 两种截断标记', () => {
-		expect(T.isTruncatedCell('x…[已截断]')).toBe(true);
-		expect(T.isTruncatedCell('x…[截断,共1200字符]')).toBe(true);
+		expect(T.isTruncatedCell('x…[truncated]')).toBe(true);
+		expect(T.isTruncatedCell('x…[truncated, 1200 chars total]')).toBe(true);
 		expect(T.isTruncatedCell('普通值')).toBe(false);
 		// 标记出现在值中部（非结尾）不视为截断；右标记用 endsWith 判定
-		expect(T.isTruncatedCell('x…[已截断]y')).toBe(false);
+		expect(T.isTruncatedCell('x…[truncated]y')).toBe(false);
+		// 兼容中文旧标记（历史数据 / 旧版本后端）
+		expect(T.isTruncatedCell('x…[已截断]')).toBe(true);
+		expect(T.isTruncatedCell('x…[截断,共1200字符]')).toBe(true);
 	});
 	it('识别 BLOB 占位', () => {
 		expect(T.isBlobCell('[BLOB 4096 bytes]')).toBe(true);

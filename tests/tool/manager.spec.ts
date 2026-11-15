@@ -21,13 +21,13 @@ describe('DbToolService: 构造与错误契约', () => {
     try {
       await expect(fx.service.query(fx.projectA, CONN_ID, '   ')).rejects.toMatchObject({
         code: 'INVALID_ARGUMENT',
-        message: '缺少必填参数: sql',
+        message: 'Missing required parameter: sql',
       });
       await expect(
         fx.service.query(fx.projectA, CONN_ID, undefined as unknown as string),
       ).rejects.toMatchObject({
         code: 'INVALID_ARGUMENT',
-        message: '缺少必填参数: sql',
+        message: 'Missing required parameter: sql',
       });
     } finally {
       await fx.dispose();
@@ -165,7 +165,7 @@ describe('DbToolService: 连接导出/导入', () => {
       expect(() => fx.service.importConnections(json, '错误口令-abc')).toThrowError(
         expect.objectContaining({
           code: 'INVALID_ARGUMENT',
-          message: '口令错误或文件已损坏',
+          message: 'Incorrect passphrase or corrupted file',
         }) as Error,
       );
     } finally {
@@ -272,6 +272,33 @@ describe('DbToolService: searchTables 跨库表搜索', () => {
     try {
       // 若误走回退，fake adapter 的 app/test 两库会各返回 users 两条；断言空即白名单生效
       expect(await fx.service.searchTables(fx.projectA, CONN_ID, 'users')).toEqual([]);
+    } finally {
+      await fx.dispose();
+    }
+  });
+});
+
+describe('DbToolService: 数据库级授权白名单', () => {
+  it('databases 白名单限定可用库；未列入 → DATABASE_NOT_GRANTED；空数组解除限制', async () => {
+    const fx = await makeFixture('rw');
+    try {
+      // 入口归一化项目键；undefined 表示保持既有清单，数组表示覆盖
+      fx.store.grants.grant(fx.projectA, CONN_ID, 'rw', ['app']);
+      expect(fx.service.grantsFor(fx.projectA)).toEqual([{ connId: CONN_ID, mode: 'rw', databases: ['app'] }]);
+
+      const allowed = await fx.service.query(fx.projectA, CONN_ID, 'SELECT 1', undefined, undefined, 'app');
+      expect(allowed).toMatchObject({ rowCount: 1 });
+
+      await expect(
+        fx.service.query(fx.projectA, CONN_ID, 'SELECT 1', undefined, undefined, 'test'),
+      ).rejects.toMatchObject({ code: 'DATABASE_NOT_GRANTED' });
+
+      // 空数组 = 解除库限制（省略参数才是保持既有清单）
+      fx.store.grants.grant(fx.projectA, CONN_ID, 'rw', []);
+      expect(fx.service.grantsFor(fx.projectA)).toEqual([{ connId: CONN_ID, mode: 'rw' }]);
+      await expect(
+        fx.service.query(fx.projectA, CONN_ID, 'SELECT 1', undefined, undefined, 'test'),
+      ).resolves.toMatchObject({ rowCount: 1 });
     } finally {
       await fx.dispose();
     }

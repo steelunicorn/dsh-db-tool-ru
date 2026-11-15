@@ -74,26 +74,26 @@ interface DshContext {
  */
 export const inject = ['webServer', 'sessions', 'tools', 'connection'];
 
-const TOOL_DESCRIPTION = `数据库管理工具（dsh-db-tool）：在已配置的数据库连接上执行查询/写操作/脚本。
+const TOOL_DESCRIPTION = `Database management tool (dsh-db-tool-ru): runs queries, writes and scripts against the configured database connections.
 
-权限模型（务必遵守）：
-- 每个连接对当前项目有 ro（只读）或 rw（读写）授权；未授权连接的一切业务操作被拒绝。
-- ro 连接上 execute / run_script 直接被拒（READ_ONLY）；适配器层另有会话级只读双保险。
-- 危险操作（DDL、删库、FLUSHALL 等）不会直接执行：返回 NEEDS_CONFIRMATION 与 challengeId。
-  此时你必须先向用户说明语句与风险并征得明确同意，然后带着同一 challengeId 与原语句重试；
-  challenge 一次性、绑定语句、5 分钟内有效。绝不要在未获用户同意时重试。
+Permission model (must be respected):
+- For the current project every connection is granted either ro (read-only) or rw (read/write); all business operations on a connection without a grant are rejected.
+- On an ro connection execute / run_script are rejected outright (READ_ONLY); the adapter layer additionally enforces session-level read-only.
+- Dangerous operations (DDL, dropping databases, FLUSHALL, …) are not executed directly: the tool returns NEEDS_CONFIRMATION with a challengeId.
+  You must then explain the statement and its risk to the user, obtain explicit consent, and retry with the same challengeId and the same statement;
+  a challenge is single-use, bound to the statement, and valid for 5 minutes. Never retry without the user's consent.
 
-action 说明：
-- list_connections：列出连接（脱敏，含各连接的 kind 与授权信息需另经 HTTP 面板查看）。
-- query：只读 SQL/命令（conn_id, sql, params?）。
-- execute：写操作/DDL（conn_id, statement, params?, database? 跨库目标）。
-- schema：结构浏览（conn_id；给 table 查列、给 database 查表、都不给列库）。
-- preview：预览行，limit≤50（conn_id, table, database?, limit?）。
-- run_script：子进程沙箱脚本（conn_id, code），60s 超时强杀，permission model 禁文件
-  访问 + 新 vm realm 双层隔离，仅注入受限 db.query/db.execute 句柄（经完整
-  guard/审计链路），rw 连接才有写能力。句柄签名 db.query(sql, params?, database?)：
-  第三参为跨库路由目标（pg/gaussdb 等按库路由，同 Navicat 式），多库统计在脚本内
-  循环逐库调用即可一次完成。`;
+Actions:
+- list_connections: list connections (secrets masked; kinds and per-project grant status are visible in the HTTP panel).
+- query: read-only SQL/command (conn_id, sql, params?).
+- execute: write/DDL (conn_id, statement, params?, database? — cross-database target).
+- schema: browse structure (conn_id; with table returns columns, with database returns tables, with neither returns databases).
+- preview: preview rows, limit≤50 (conn_id, table, database?, limit?).
+- run_script: sandboxed child-process script (conn_id, code), hard-killed after 60s, permission model blocks file
+  access plus a fresh vm realm as second isolation; only restricted db.query/db.execute handles are injected (they go through the full
+  guard/audit chain) and only rw connections can write. Handle signature db.query(sql, params?, database?):
+  the third argument routes to another database (pg/gaussdb route per database, Navicat style), so multi-database statistics
+  can be collected in one call by looping over databases inside the script.`;
 
 export function apply(ctx: DshContext): void {
   const log = ctx.logger ?? { info: () => {}, error: () => {} };
@@ -137,7 +137,7 @@ export function apply(ctx: DshContext): void {
     () =>
       ctx.webServer?.register({
         kind: 'prefix',
-        path: '/dsh-db-tool/api',
+        path: '/dsh-db-tool-ru/api',
         handler: async (req, res) => {
           // 宿主 Connection 栅栏优先：0.2.0-rc.1 起插件前缀路由不经宿主鉴权，
           // 必须显式应用 requestRejection（Host/Origin + 浏览器 token）；
@@ -177,11 +177,11 @@ export function apply(ctx: DshContext): void {
           );
         },
       }) ?? (() => {}),
-    'db-tool-api',
+    'db-tool-ru-api',
   );
 
   // 收尾：适配器连接与 challenge 清理定时器
-  ctx.effect?.(() => () => service.dispose(), 'db-tool-dispose');
+  ctx.effect?.(() => () => service.dispose(), 'db-tool-ru-dispose');
 
   // 模型工具
   ctx.tools?.register({
@@ -194,20 +194,20 @@ export function apply(ctx: DshContext): void {
         action: {
           type: 'string',
           enum: ['list_connections', 'query', 'execute', 'schema', 'preview', 'run_script'],
-          description: '要执行的操作',
+          description: 'Operation to perform',
         },
-        conn_id: { type: 'string', description: '连接 id（query/execute/schema/preview/run_script 必填）' },
-        sql: { type: 'string', description: 'query 的只读 SQL/命令' },
-        statement: { type: 'string', description: 'execute 的语句' },
-        params: { type: 'array', items: {}, description: '占位符参数' },
-        database: { type: 'string', description: '库/schema（可选）。query/execute：指定目标库即跨库执行（Navicat 式，pg/gaussdb 支持按库路由）；schema/preview：浏览目标（pg/gaussdb 传 "库名.schema"）' },
-        table: { type: 'string', description: '表/集合/键（schema/preview 用）' },
-        limit: { type: 'number', description: 'preview 行数上限（≤50）' },
-        offset: { type: 'number', description: 'preview 行偏移（翻页用，默认 0）' },
-        code: { type: 'string', description: 'run_script 的脚本源码' },
+        conn_id: { type: 'string', description: 'Connection id (required for query/execute/schema/preview/run_script)' },
+        sql: { type: 'string', description: 'Read-only SQL/command for query' },
+        statement: { type: 'string', description: 'Statement for execute' },
+        params: { type: 'array', items: {}, description: 'Placeholder parameters' },
+        database: { type: 'string', description: 'Database/schema (optional). query/execute: target another database (Navicat style; pg/gaussdb route per database); schema/preview: browse target (pg/gaussdb accept "database.schema")' },
+        table: { type: 'string', description: 'Table/collection/key (schema/preview)' },
+        limit: { type: 'number', description: 'preview row cap (≤50)' },
+        offset: { type: 'number', description: 'preview row offset (paging, default 0)' },
+        code: { type: 'string', description: 'Script source for run_script' },
         challenge_id: {
           type: 'string',
-          description: '危险操作确认凭据：向用户确认后原样带回重试',
+          description: 'Dangerous-operation consent token: ask the user, then resend it unchanged with the retry',
         },
       },
       required: ['action'],
@@ -216,8 +216,8 @@ export function apply(ctx: DshContext): void {
       schema: {
         type: 'object',
         properties: {
-          text: { type: 'string', description: 'JSON 结果文本' },
-          isError: { type: 'boolean', description: 'true 表示操作被拒或失败' },
+          text: { type: 'string', description: 'JSON result text' },
+          isError: { type: 'boolean', description: 'true when the operation was refused or failed' },
         },
         required: ['text'],
       },
@@ -237,7 +237,7 @@ export function apply(ctx: DshContext): void {
     },
   });
 
-  log.info?.('[db-tool] 插件已加载（DatabaseManager 工具 + /dsh-db-tool/api 挂载）');
+  log.info?.('[db-tool-ru] plugin loaded (DatabaseManager tool + /dsh-db-tool-ru/api mounted)');
 }
 
 // 注意：不要提供 default export。

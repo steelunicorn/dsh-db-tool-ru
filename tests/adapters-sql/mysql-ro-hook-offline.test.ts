@@ -182,7 +182,7 @@ describe('mysql ro 钩子注册形态（离线契约）', () => {
     const a = await createMysqlAdapter(conn(), { mode: 'ro', driver });
     const before = driver.pools.length;
     await a.close();
-    await expect(a.query('SELECT 1', [], 'another')).rejects.toThrow(/已关闭/);
+    await expect(a.query('SELECT 1', [], 'another')).rejects.toThrow(/is closed: reconnect and retry/);
     expect(driver.pools.length).toBe(before);
   });
 });

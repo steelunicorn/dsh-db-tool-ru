@@ -215,7 +215,7 @@ for (const mode of ['node', 'better'] as const) {
           [777n, 'ok', null, null, null],
           [888n, '宽度不足', null, null], // 少一列 → 行宽校验在事务前抛出
         ];
-        await expect(writer.writeBatch(t, rows)).rejects.toThrow(/行宽不匹配/);
+        await expect(writer.writeBatch(t, rows)).rejects.toThrow(/Row width mismatch/);
         // 事务路径：行宽合法但违反约束（重复主键 → insert 模式报错 → 回滚，首行不残留）
         const dup: import('../../lib/adapters/transfer/model.js').TransferRow[] = [
           [999n, 'will-rollback', null, null, null],

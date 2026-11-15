@@ -309,13 +309,13 @@ describe('createPgLikeAdapter 多主机接线', () => {
 describe('normalizeUrl 多主机端口段校验（fail-closed，sqlserver validPort 同口径）', () => {
   it('非法端口段抛中文错误：不再 parseInt 静默截断 / NaN 时吞段当主机名', () => {
     expect(() => normalizeUrl('postgres://u:p@h1:1433.5,h2:5432/db', 'postgresql')).toThrow(
-      'postgresql 连接的端口取值非法："1433.5"',
+      'postgresql connection has an invalid port: "1433.5"',
     );
     expect(() => normalizeUrl('postgres://u:p@h1:abc,h2:5432/db', 'postgresql')).toThrow(
-      'postgresql 连接的端口取值非法："abc"',
+      'postgresql connection has an invalid port: "abc"',
     );
     expect(() => normalizeUrl('postgres://u:p@h1:99999,h2:5432/db', 'postgresql')).toThrow(
-      'postgresql 连接的端口取值非法："99999"',
+      'postgresql connection has an invalid port: "99999"',
     );
   });
 

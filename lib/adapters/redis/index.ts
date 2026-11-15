@@ -65,7 +65,7 @@ const PREVIEW_MAX = 50;
 const READ_CLAMP = 500;
 
 function trunc(s: string, max = CELL_TRUNC): string {
-  return s.length > max ? `${s.slice(0, max)}…[截断,共${s.length}字符]` : s;
+  return s.length > max ? `${s.slice(0, max)}…[truncated, ${s.length} chars total]` : s;
 }
 
 /** 规范化 Redis 回复为 NormalizedCell：数字原样、字符串截断、Buffer 转 utf8、其余 JSON 序列化 */
@@ -88,16 +88,16 @@ function cell(v: unknown): NormalizedCell {
  */
 export function parseRedisCommand(input: string): string[] {
   const s = input.trim();
-  if (s === '') throw new Error('Redis 命令不能为空。示例：\'["GET","key"]\' 或 "GET key"');
+  if (s === '') throw new Error('Redis command must not be empty. Example: \'["GET","key"]\' or "GET key"');
   if (s.startsWith('[')) {
     let arr: unknown;
     try {
       arr = JSON.parse(s);
     } catch (e) {
-      throw new Error(`Redis 命令 JSON 解析失败：${e instanceof Error ? e.message : String(e)}`);
+      throw new Error(`Failed to parse the Redis command JSON: ${e instanceof Error ? e.message : String(e)}`);
     }
     if (!Array.isArray(arr) || arr.length === 0 || !arr.every((x) => typeof x === 'string')) {
-      throw new Error('Redis 命令必须为非空字符串数组，如 \'["GET","key"]\'');
+      throw new Error('Redis command must be a non-empty array of strings, e.g. \'["GET","key"]\'');
     }
     return arr as string[];
   }
@@ -106,7 +106,7 @@ export function parseRedisCommand(input: string): string[] {
 
 /** 列出支持的命令（错误提示用） */
 function supportedList(): string {
-  return `读命令: ${[...READ_COMMANDS].sort().join('/')}（OBJECT 仅 ENCODING、MEMORY 仅 USAGE）；写命令(execute): ${[...WRITE_COMMANDS].sort().join('/')}`;
+  return `Read commands: ${[...READ_COMMANDS].sort().join('/')} (OBJECT only ENCODING, MEMORY only USAGE); write commands (execute): ${[...WRITE_COMMANDS].sort().join('/')}`;
 }
 
 /** 解析 INFO 输出为 [key, value] 行（跳过 # 注释与空行） */
@@ -167,17 +167,17 @@ export async function createRedisAdapter(
     try {
       await client.connect();
     } catch (e) {
-      throw new Error(`Redis 连接失败（${sanitizeUrl(url)}）：${e instanceof Error ? e.message : String(e)}`);
+      throw new Error(`Redis connection failed (${sanitizeUrl(url)}): ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
   function wrap(e: unknown): Error {
-    return new Error(`Redis 错误：${e instanceof Error ? e.message : String(e)}`);
+    return new Error(`Redis error: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   function requireRw(action: string): void {
     if (mode === 'ro') {
-      throw new Error(`连接为只读(ro)模式，拒绝执行${action}；请使用 rw 连接或只发查询(query)`);
+      throw new Error(`Connection is in read-only (ro) mode; refusing to run ${action}; use an rw connection or send queries (query) only`);
     }
   }
 
@@ -186,20 +186,20 @@ export async function createRedisAdapter(
     const args = parseRedisCommand(input);
     const cmd = (args[0] ?? '').toUpperCase();
     if (DANGEROUS_COMMANDS.has(cmd)) {
-      throw new Error(`Redis 命令 ${cmd} 属于危险命令（KEYS/FLUSHALL/CONFIG 等），已被本工具禁用或需服务层确认`);
+      throw new Error(`Redis command ${cmd} is a dangerous command (KEYS/FLUSHALL/CONFIG etc.); it is disabled by this tool or requires server-layer confirmation`);
     }
     if (!whitelist.has(cmd)) {
-      throw new Error(`Redis ${action} 不支持命令 ${cmd}。${supportedList()}`);
+      throw new Error(`Redis ${action} does not support command ${cmd}. ${supportedList()}`);
     }
     if ((cmd === 'OBJECT' && (args[1] ?? '').toUpperCase() !== 'ENCODING') ||
         (cmd === 'MEMORY' && (args[1] ?? '').toUpperCase() !== 'USAGE')) {
-      throw new Error(`Redis ${action} 仅支持 OBJECT ENCODING 与 MEMORY USAGE`);
+      throw new Error(`Redis ${action} supports only OBJECT ENCODING and MEMORY USAGE`);
     }
     if ((cmd === 'OBJECT' || cmd === 'MEMORY') && args.length < 3) {
-      throw new Error(`Redis ${cmd} ${cmd === 'OBJECT' ? 'ENCODING' : 'USAGE'} 缺少 key 参数`);
+      throw new Error(`Redis ${cmd} ${cmd === 'OBJECT' ? 'ENCODING' : 'USAGE'} is missing the key argument`);
     }
     if (args.length < 2 && !['DBSIZE', 'INFO', 'SCAN', 'SELECT'].includes(cmd)) {
-      throw new Error(`Redis ${cmd} 缺少参数`);
+      throw new Error(`Redis ${cmd} is missing arguments`);
     }
     return args;
   }
@@ -264,7 +264,7 @@ export async function createRedisAdapter(
         // SELECT：切换逻辑库
         if (cmd === 'SELECT') {
           const db = Number(rest[0]);
-          if (!Number.isInteger(db) || db < 0) throw new Error('SELECT 需要非负整数库号，如 "SELECT 1"');
+          if (!Number.isInteger(db) || db < 0) throw new Error('SELECT requires a non-negative integer database index, e.g. "SELECT 1"');
           await client.select(db);
           return { columns: ['name', 'value'], rows: [['db', db]], rowCount: 1 };
         }
@@ -385,7 +385,7 @@ export async function createRedisAdapter(
             return { columns: ['id', 'field', 'value'], rows, rowCount: rows.length };
           }
           default:
-            throw new Error(`Redis query 暂未实现命令 ${cmd}`);
+            throw new Error(`Redis query does not yet implement command ${cmd}`);
         }
       } catch (e) {
         throw wrap(e);
@@ -393,7 +393,7 @@ export async function createRedisAdapter(
     },
 
     async execute(statement: string): Promise<ExecResult> {
-      requireRw('写命令(execute)');
+      requireRw('write commands (execute)');
       try {
         const args = parseAndCheck(statement, WRITE_COMMANDS, 'execute');
         const cmd = args[0]!.toUpperCase();
@@ -401,7 +401,7 @@ export async function createRedisAdapter(
         const affected = typeof reply === 'number' ? reply : undefined;
         return {
           affectedRows: affected,
-          message: `${cmd} 成功${affected !== undefined ? `（影响 ${affected}）` : String(reply) !== 'OK' ? `（${String(reply)}）` : ''}`,
+          message: `${cmd} succeeded${affected !== undefined ? ` (affected ${affected})` : String(reply) !== 'OK' ? ` (${String(reply)})` : ''}`,
         };
       } catch (e) {
         throw wrap(e);
@@ -445,7 +445,7 @@ export async function createRedisAdapter(
         const cols: ColumnInfo[] = [
           { name: 'type', dataType: type, nullable: false },
           { name: 'encoding', dataType: 'OBJECT ENCODING', nullable: true, default: encoding === null ? null : String(encoding) },
-          { name: 'ttl', dataType: 'seconds', nullable: true, default: String(ttl), comment: '-1 表示未设置过期' },
+          { name: 'ttl', dataType: 'seconds', nullable: true, default: String(ttl), comment: '-1 means no expiration set' },
         ];
         if (lenCmd) {
           cols.push({ name: 'length', dataType: lenCmd.cmd, nullable: true, default: length === null ? null : String(length) });

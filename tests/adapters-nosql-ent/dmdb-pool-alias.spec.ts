@@ -106,7 +106,7 @@ describe('达梦连接池别名（[20006] 回归）', () => {
 
   it('建池失败不占用后续别名：失败后再建仍成功且每次调用都带唯一别名', async () => {
     createPoolMock.mockRejectedValueOnce(new Error('[-2501] 用户名或密码错误'));
-    await expect(createDmAdapter(mkConn('c1'))).rejects.toThrow('达梦 DM 错误：[-2501] 用户名或密码错误');
+    await expect(createDmAdapter(mkConn('c1'))).rejects.toThrow('DM error: [-2501] 用户名或密码错误');
     const a = await createDmAdapter(mkConn('c1'));
     // 含失败那次调用（实参在调用前求值）：两次都必须带非空且互异的别名
     const aliases = passedAliases();

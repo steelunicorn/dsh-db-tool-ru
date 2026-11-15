@@ -47,11 +47,11 @@ describe('export-crypto', () => {
   });
 
   it('空口令/非字符串口令拒绝', () => {
-    expect(() => encryptPayload({}, '')).toThrow('口令必须为非空字符串');
-    expect(() => decryptPayload('{}', '')).toThrow('口令必须为非空字符串');
+    expect(() => encryptPayload({}, '')).toThrow('The passphrase must be a non-empty string');
+    expect(() => decryptPayload('{}', '')).toThrow('The passphrase must be a non-empty string');
     // @ts-expect-error 故意传非字符串
-    expect(() => encryptPayload({}, undefined)).toThrow('口令必须为非空字符串');
+    expect(() => encryptPayload({}, undefined)).toThrow('The passphrase must be a non-empty string');
     // @ts-expect-error 故意传非字符串
-    expect(() => decryptPayload('{}', null)).toThrow('口令必须为非空字符串');
+    expect(() => decryptPayload('{}', null)).toThrow('The passphrase must be a non-empty string');
   });
 });

@@ -12,7 +12,7 @@ describe('classifyStatement: SQL 系', () => {
     for (const stmt of ['DROP TABLE users', 'truncate table t', 'ALTER TABLE users ADD c int', 'drop database app']) {
       const v = classifyStatement('mysql', stmt, 'execute');
       expect(v.level).toBe('danger');
-      expect(v.reason).toContain('不可回滚');
+      expect(v.reason).toContain('cannot be rolled back');
     }
   });
 
@@ -97,7 +97,7 @@ describe('classifyStatement: SQL 注释剥离', () => {
   it('无法提取首词时 fail-closed 为 danger', () => {
     const v = classifyStatement('mysql', '123 numbers', 'query');
     expect(v.level).toBe('danger');
-    expect(v.reason).toContain('无法解析语句关键字');
+    expect(v.reason).toContain('Cannot parse the statement keyword');
   });
 });
 
@@ -195,7 +195,7 @@ describe('classifyStatement: SQL Server（T-SQL 专属危险语句）', () => {
     const v = classifyStatement('sqlserver', 'WITH c AS (SELECT 1 AS n) INSERT INTO t SELECT * FROM c', 'execute');
     expect(v.level).toBe('danger');
     expect(v.reason ?? '').not.toMatch(/SELECT \.\.\. INTO/);
-    expect(v.reason ?? '').toMatch(/写操作/);
+    expect(v.reason ?? '').toMatch(/write keyword/);
   });
 
   it('远端字符串内的写关键字不误报，但其中动态 EXEC/xp_ 判危；多语句仍拦', () => {
@@ -265,7 +265,7 @@ describe('classifyStatement: MongoDB', () => {
   it('未识别操作 fail-closed：execute 通道 warning（不得为 none）、query 通道 danger', () => {
     const v = classifyStatement('mongodb', '{"unknownOp":1}', 'execute');
     expect(v.level).toBe('warning');
-    expect(v.reason).toContain('未识别的 MongoDB 操作');
+    expect(v.reason).toContain('Unrecognized MongoDB operation');
     expect(classifyStatement('mongodb', '{"unknownOp":1}', 'query').level).toBe('danger');
   });
 });

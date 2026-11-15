@@ -17,14 +17,14 @@ describe('mysql 适配器（离线负向用例）', () => {
   it('ro 模式：query 首词白名单外的语句被拒绝（DRIVER_ERROR，不触达服务器）', async () => {
     const a = await createMysqlAdapter(connByUrl('mysql://u:p@127.0.0.1:3326/dbx'), { mode: 'ro' });
     try {
-      await expect(a.query('UPDATE t SET x = 1')).rejects.toThrow(/DRIVER_ERROR[\s\S]*只读/);
-      await expect(a.query('INSERT INTO t VALUES (1)')).rejects.toThrow(/只读/);
-      await expect(a.query('DELETE FROM t')).rejects.toThrow(/只读/);
-      await expect(a.query('DROP TABLE t')).rejects.toThrow(/只读/);
-      await expect(a.query('CREATE TABLE t9 (id INT)')).rejects.toThrow(/只读/);
-      await expect(a.query('ALTER TABLE t ADD c INT')).rejects.toThrow(/只读/);
-      await expect(a.query('GRANT ALL ON *.* TO u')).rejects.toThrow(/只读/);
-      await expect(a.query('/* 注释 */ UPDATE t SET x = 1')).rejects.toThrow(/只读/);
+      await expect(a.query('UPDATE t SET x = 1')).rejects.toThrow(/DRIVER_ERROR[\s\S]*read-only/);
+      await expect(a.query('INSERT INTO t VALUES (1)')).rejects.toThrow(/read-only/);
+      await expect(a.query('DELETE FROM t')).rejects.toThrow(/read-only/);
+      await expect(a.query('DROP TABLE t')).rejects.toThrow(/read-only/);
+      await expect(a.query('CREATE TABLE t9 (id INT)')).rejects.toThrow(/read-only/);
+      await expect(a.query('ALTER TABLE t ADD c INT')).rejects.toThrow(/read-only/);
+      await expect(a.query('GRANT ALL ON *.* TO u')).rejects.toThrow(/read-only/);
+      await expect(a.query('/* 注释 */ UPDATE t SET x = 1')).rejects.toThrow(/read-only/);
     } finally {
       await a.close();
     }
@@ -40,8 +40,8 @@ describe('mysql 适配器（离线负向用例）', () => {
         (e: unknown) => e,
       );
       const msg = err instanceof Error ? err.message : String(err);
-      expect(msg).toMatch(/mysql 查询失败/);
-      expect(msg).not.toMatch(/只读/);
+      expect(msg).toMatch(/mysql query failed/);
+      expect(msg).not.toMatch(/read-only/);
     } finally {
       await a.close();
     }
@@ -58,8 +58,8 @@ describe('mysql 适配器（离线负向用例）', () => {
         (e: unknown) => e,
       );
       const msg = err instanceof Error ? err.message : String(err);
-      expect(msg).toMatch(/mysql 列出表/);
-      expect(msg).not.toMatch(/非法/);
+      expect(msg).toMatch(/mysql list tables/);
+      expect(msg).not.toMatch(/Invalid/);
     } finally {
       await a.close();
     }
@@ -68,7 +68,7 @@ describe('mysql 适配器（离线负向用例）', () => {
   it('defaultDb：URL 无 pathname → 报「未指定数据库」', async () => {
     const a = await createMysqlAdapter(connByUrl('mysql://u:p@127.0.0.1:3326'));
     try {
-      await expect(a.listTables()).rejects.toThrow(/未指定数据库/);
+      await expect(a.listTables()).rejects.toThrow(/No database specified/);
     } finally {
       await a.close();
     }
@@ -82,7 +82,7 @@ describe('mysql 适配器（离线负向用例）', () => {
     });
     try {
       // fields 提供的库名合法，通过校验后才会去连服务器（离线报连接错误，不是校验错误）
-      await expect(a.listTables()).rejects.toThrow(/mysql 列出表/);
+      await expect(a.listTables()).rejects.toThrow(/mysql list tables/);
     } finally {
       await a.close();
     }
@@ -128,7 +128,7 @@ describe('mysql 端口校验（fail-closed，sqlserver validPort 同口径）', 
   it('fields 端口非法值抛中文错误（含原值与 1-65535）', async () => {
     for (const port of ['abc', 0, -1, 99999, 1433.5]) {
       await expect(createMysqlAdapter(fieldsConn(port))).rejects.toThrow(
-        `mysql 连接的端口取值非法：${JSON.stringify(port)}`,
+        `mysql connection has an invalid port: ${JSON.stringify(port)}`,
       );
     }
   });
@@ -153,7 +153,7 @@ describe('mysql 端口校验（fail-closed，sqlserver validPort 同口径）', 
 
   it("URL 端口段 ':0' 抛中文错误（不再被 Number()|| 静默改写 3306）", async () => {
     await expect(createMysqlAdapter(connByUrl('mysql://u:p@127.0.0.1:0/dbx'))).rejects.toThrow(
-      'mysql 连接的端口取值非法："0"',
+      'mysql connection has an invalid port: "0"',
     );
   });
 });

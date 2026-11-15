@@ -81,9 +81,9 @@ function statementFor(db: SqliteDatabase, sql: string) {
 
 export function createSqliteTransferReader(db: SqliteDatabase): TransferReader {
   const describe = async (table: string): Promise<TransferTable> => {
-    const tbl = assertIdent(table, '表名');
+    const tbl = assertIdent(table, 'table name');
     const raw = db.prepare(`PRAGMA table_info(${quoteIdent(tbl)})`).all() as Record<string, unknown>[];
-    if (raw.length === 0) throw new Error(`表不存在: ${tbl}`);
+    if (raw.length === 0) throw new Error(`Table does not exist: ${tbl}`);
     const pkCount = raw.filter((r) => Number(r.pk) > 0).length;
     const columns: TransferColumn[] = raw.map((r): TransferColumn => {
       const declared = String(r.type ?? '');
@@ -121,7 +121,7 @@ export function createSqliteTransferReader(db: SqliteDatabase): TransferReader {
     describe,
 
     count: async (table) => {
-      const r = db.prepare(`SELECT COUNT(*) AS n FROM ${quoteIdent(assertIdent(table, '表名'))}`).get() as
+      const r = db.prepare(`SELECT COUNT(*) AS n FROM ${quoteIdent(assertIdent(table, 'table name'))}`).get() as
         | Record<string, unknown>
         | undefined;
       return Number(r?.n ?? 0);
@@ -178,8 +178,8 @@ export function createSqliteTransferReader(db: SqliteDatabase): TransferReader {
     },
 
     keyAt: async (table, column, offset) => {
-      const tbl = quoteIdent(assertIdent(table, '表名'));
-      const key = quoteIdent(assertIdent(column, '分片键'));
+      const tbl = quoteIdent(assertIdent(table, 'table name'));
+      const key = quoteIdent(assertIdent(column, 'shard key'));
       const rows = db
         .prepare(`SELECT ${key} AS k FROM ${tbl} ORDER BY ${key} LIMIT 1 OFFSET ?`)
         .all(offset) as Record<string, unknown>[];
@@ -207,7 +207,7 @@ export function createSqliteTransferWriter(
       return Number(r?.n ?? 0) > 0;
     },
     dropTable: async (name) => {
-      db.exec(`DROP TABLE ${quoteIdent(assertIdent(name, '表名'))}`);
+      db.exec(`DROP TABLE ${quoteIdent(assertIdent(name, 'table name'))}`);
     },
     // truncate 模式前置清空：SQLite 官方无 TRUNCATE 语句，DELETE FROM 即全表清空
     beforeLoad: async (table) => {
@@ -236,12 +236,12 @@ export function createSqliteTransferWriter(
       const width = cols.length;
       for (const r of rows) {
         if (r.length !== width) {
-          throw new Error(`行宽不匹配：期望 ${width} 列，实际 ${r.length} 列（表 ${table.name}）`);
+          throw new Error(`Row width mismatch: expected ${width} columns, got ${r.length} (table ${table.name})`);
         }
       }
       // INSERT OR REPLACE 无唯一键时等同纯 INSERT（官方语义）——静默重复必须拦截
       if (writeMode === 'replace' && !table.columns.some((c) => c.primaryKey)) {
-        throw new Error(`replace 模式需要主键：表 ${table.name} 无主键`);
+        throw new Error(`replace mode requires a primary key: table ${table.name} has none`);
       }
       const sql = `${prefix}${quoteIdent(table.name)} (${cols.map((c) => quoteIdent(c.name)).join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`;
       const stmt = db.prepare(sql);

@@ -53,24 +53,24 @@ const DDL_KEYWORDS = new Set([
 
 /** 常见 ORA 错误 → 人类可读提示 */
 export const ORA_HINTS: ReadonlyArray<[RegExp, string]> = [
-  [/ORA-01017/, '用户名或密码错误'],
-  [/ORA-12154/, '无法解析连接串中的服务名，请检查 connectString / service_name'],
-  [/ORA-12505/, '监听器不认识该 SID：请使用服务名(service_name)而非 SID'],
-  [/ORA-12514/, '监听器当前未注册该服务名，请检查服务名拼写与数据库注册状态'],
-  [/ORA-12541/, '无法连接监听器，请检查主机与端口'],
-  [/ORA-12543/, '网络无法到达目标主机，请检查主机/端口/防火墙'],
-  [/ORA-12560/, 'TNS 协议适配器错误，请检查连接串格式（应为 host:port/service_name）'],
-  [/ORA-28040/, '客户端与服务器密码验证器版本不兼容（服务器 SQLNET.ALLOWED_LOGON_VERSION_SERVER 需放宽）'],
-  [/ORA-28000/, '账号已被锁定，请联系 DBA 解锁'],
-  [/ORA-28001/, '密码已过期，请联系 DBA 重置'],
-  [/ORA-00942/, '表或视图不存在（Oracle 标识符默认大写存储，注意大小写与 owner）'],
-  [/ORA-00904/, '列名无效（Oracle 标识符默认大写存储，注意大小写）'],
+  [/ORA-01017/, 'invalid username or password'],
+  [/ORA-12154/, 'cannot resolve the service name in the connect string; check connectString / service_name'],
+  [/ORA-12505/, 'the listener does not recognize this SID; use a service name (service_name) instead of a SID'],
+  [/ORA-12514/, 'the listener has not registered this service name; check the service name spelling and the database registration state'],
+  [/ORA-12541/, 'cannot reach the listener; check the host and port'],
+  [/ORA-12543/, 'the target host is unreachable; check the host/port/firewall'],
+  [/ORA-12560/, 'TNS protocol adapter error; check the connect string format (expected host:port/service_name)'],
+  [/ORA-28040/, 'client and server password verifier versions are incompatible (the server SQLNET.ALLOWED_LOGON_VERSION_SERVER setting must be relaxed)'],
+  [/ORA-28000/, 'the account is locked; contact a DBA to unlock it'],
+  [/ORA-28001/, 'the password has expired; contact a DBA to reset it'],
+  [/ORA-00942/, 'table or view does not exist (Oracle stores identifiers in uppercase by default; mind the case and the owner)'],
+  [/ORA-00904/, 'invalid column name (Oracle stores identifiers in uppercase by default; mind the case)'],
 ];
 
 export function humanizeOraError(e: unknown): Error {
   const msg = e instanceof Error ? e.message : String(e);
   const hint = ORA_HINTS.find(([re]) => re.test(msg))?.[1];
-  return new Error(hint ? `Oracle 错误：${msg}（提示：${hint}）` : `Oracle 错误：${msg}`);
+  return new Error(hint ? `Oracle error: ${msg} (hint: ${hint})` : `Oracle error: ${msg}`);
 }
 
 /** 标识符基本校验（引用创建的 Oracle 名字可含任意字符，白名单会误杀）：
@@ -81,7 +81,7 @@ export function sanitizeIdentifier(name: string, label: string): string {
     typeof name !== 'string' || name.length === 0 || name.length > 128 ||
     /[\0\r\n]/.test(name)
   ) {
-    throw new Error(`非法 Oracle ${label}「${name}」：不允许为空、超 128 字符或含 NUL/换行`);
+    throw new Error(`Invalid Oracle ${label} "${name}": must not be empty, exceed 128 characters, or contain NUL/newline`);
   }
   return name;
 }
@@ -92,7 +92,7 @@ function escIdent(name: string): string {
 }
 
 function trunc(s: string, max = CELL_TRUNC): string {
-  return s.length > max ? `${s.slice(0, max)}…[截断,共${s.length}字符]` : s;
+  return s.length > max ? `${s.slice(0, max)}…[truncated, ${s.length} chars total]` : s;
 }
 
 /** 行值规范化为 NormalizedCell（Lob 兜底转字符串并截断） */
@@ -121,11 +121,11 @@ export function resolveOracleConn(conn: ResolvedConnection): { user: string; pas
     const u = new URL(conn.url);
     const service = u.pathname.replace(/^\//, '');
     if (!u.hostname || service === '') {
-      throw new Error('Oracle URL 格式应为 oracle://user:pass@host:1521/SERVICE_NAME');
+      throw new Error('Oracle URL must be in the form oracle://user:pass@host:1521/SERVICE_NAME');
     }
     const user = decodeURIComponent(u.username);
     if (user === '') {
-      throw new Error('Oracle URL 缺少用户名：应为 oracle://user:pass@host:1521/SERVICE_NAME');
+      throw new Error('Oracle URL is missing the username: expected oracle://user:pass@host:1521/SERVICE_NAME');
     }
     return {
       user,
@@ -141,11 +141,11 @@ export function resolveOracleConn(conn: ResolvedConnection): { user: string; pas
   const port = validPort(f.port, 1521, 'oracle');
   const service = typeof f.service === 'string' ? f.service : typeof f.database === 'string' ? f.database : '';
   if (host === '' || service === '') {
-    throw new Error('Oracle 连接需要 url（oracle://user:pass@host:1521/SERVICE）或 fields（host/port/service）');
+    throw new Error('Oracle connection requires a url (oracle://user:pass@host:1521/SERVICE) or fields (host/port/service)');
   }
   const user = typeof f.user === 'string' ? f.user : '';
   if (user === '') {
-    throw new Error('Oracle 连接缺少用户名（fields.user）');
+    throw new Error('Oracle connection is missing the username (fields.user)');
   }
   return {
     user,
@@ -206,7 +206,7 @@ export async function createOracleAdapter(
 
   function requireRw(action: string): void {
     if (mode === 'ro') {
-      throw new Error(`连接为只读(ro)模式，拒绝执行${action}；请使用 rw 连接或只发查询(query)`);
+      throw new Error(`Connection is in read-only (ro) mode; refusing to execute ${action}; use an rw connection or send queries (query) only`);
     }
   }
 
@@ -216,10 +216,10 @@ export async function createOracleAdapter(
   }
 
   async function toExecResult(sql: string, r: oracledb.ExecuteResult): Promise<ExecResult> {
-    const ddlNote = isDdl(sql) ? '（DDL 已隐式提交，不可回滚）' : '';
+    const ddlNote = isDdl(sql) ? ' (DDL is committed implicitly and cannot be rolled back)' : '';
     return {
       affectedRows: typeof r.rowsAffected === 'number' && r.rowsAffected > 0 ? r.rowsAffected : undefined,
-      message: `${sql.trim().split(/\s+/)[0]?.toUpperCase() ?? 'SQL'} 完成${r.rowsAffected ? `，影响 ${r.rowsAffected} 行` : ''}${ddlNote}`,
+      message: `${sql.trim().split(/\s+/)[0]?.toUpperCase() ?? 'SQL'} completed${r.rowsAffected ? `, ${r.rowsAffected} rows affected` : ''}${ddlNote}`,
     };
   }
 
@@ -266,7 +266,7 @@ export async function createOracleAdapter(
 
   /** owner 解析：database 参数或默认当前用户（保留原样——引用创建的 schema 大小写敏感） */
   function ownerOf(database?: string): string {
-    return sanitizeIdentifier(database ?? currentUser, 'schema/owner 名');
+    return sanitizeIdentifier(database ?? currentUser, 'schema/owner name');
   }
 
   /**
@@ -294,7 +294,7 @@ export async function createOracleAdapter(
         // 版本信息尽力而为，连通性本身用 dual 兜底判定，避免误报连接失败
         try {
           await withConn((c) => c.execute('SELECT 1 FROM dual', [], execOpts));
-          return { ok: true, serverInfo: 'Oracle（版本信息不可读：v$version 无权限）' };
+          return { ok: true, serverInfo: 'Oracle (version information unreadable: no permission on v$version)' };
         } catch (e) {
           return { ok: false, error: humanizeOraError(e).message };
         }
@@ -304,7 +304,7 @@ export async function createOracleAdapter(
     async query(sql: string, params?: unknown[]): Promise<QueryResult> {
       const head = sql.trim().split(/\s+/)[0]?.toUpperCase() ?? '';
       if (head !== 'SELECT' && head !== 'WITH') {
-        throw new Error('Oracle query 仅允许 SELECT/WITH 语句；写操作或 DDL 请走 execute');
+        throw new Error('Oracle query only allows SELECT/WITH statements; use execute for writes or DDL');
       }
       try {
         const r = await withConn((c) => c.execute(sql, params ?? [], execOpts));
@@ -334,7 +334,7 @@ export async function createOracleAdapter(
     async tx<T>(
       fn: (exec: (sql: string, binds?: unknown[]) => Promise<ExecResult | QueryResult>) => Promise<T>,
     ): Promise<T> {
-      requireRw('事务(tx)');
+      requireRw('transaction (tx)');
       const c = await pool.getConnection();
       try {
         await c.execute('SET TRANSACTION READ WRITE');
@@ -407,7 +407,7 @@ export async function createOracleAdapter(
     async describeTable(table: string, database?: string): Promise<ColumnInfo[]> {
       const owner = ownerOf(database);
       // 原名精确匹配优先；未引用创建的表名在字典中为大写存储，UPPER 兜底
-      const tab = sanitizeIdentifier(table, '表名');
+      const tab = sanitizeIdentifier(table, 'table name');
       try {
         // 同连接内两查保证一致性
         const { colsR, pkR } = await withConn(async (c) => ({
@@ -459,7 +459,7 @@ export async function createOracleAdapter(
 
     async previewRows(table: string, limit: number, database?: string, offset?: number): Promise<QueryResult> {
       const owner = ownerOf(database);
-      const tab = sanitizeIdentifier(table, '表名'); // 拼接前经 escIdent 转义
+      const tab = sanitizeIdentifier(table, 'table name'); // 拼接前经 escIdent 转义
       const n = Math.max(1, Math.min(Math.floor(limit) || 20, ROWS_MAX));
       const off = Math.max(0, Math.floor(offset ?? 0) || 0);
       try {

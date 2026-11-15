@@ -82,7 +82,7 @@ describe('端到端全链路（mock 适配器）', () => {
     expect(secretsRaw).toContain('mysql://u:p@127.0.0.1:3306/db');
 
     // state（走 HTTP，prefix 形态）
-    const state = await call('GET', '/dsh-db-tool/api/state?project=' + encodeURIComponent(f.projectA));
+    const state = await call('GET', '/dsh-db-tool-ru/api/state?project=' + encodeURIComponent(f.projectA));
     expect(state.json.ok).toBe(true);
     expect(state.json.data.connections.map((c: any) => c.id)).toContain('c-e2e');
 

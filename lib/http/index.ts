@@ -107,7 +107,7 @@ export async function handleDbToolRequest(
   try {
     // 1) trust 校验（DNS rebinding / 跨站防护）
     if (!isTrustedRequest(req, opts?.trustedHosts)) {
-      send(res, 403, { ok: false, error: '非本机来源，已拒绝', code: 'FORBIDDEN' });
+      send(res, 403, { ok: false, error: 'Request is not from this machine; refused', code: 'FORBIDDEN' });
       return;
     }
 
@@ -122,7 +122,7 @@ export async function handleDbToolRequest(
     const url = new URL(req.url ?? '/', `http://${hostHeader || '127.0.0.1'}`);
     let rawPath = url.pathname;
     if (!rawPath.endsWith('/api') && !rawPath.includes('/api/')) {
-      send(res, 404, { ok: false, error: `未知路由: ${req.method} ${rawPath}`, code: 'NOT_FOUND' });
+      send(res, 404, { ok: false, error: `Unknown route: ${req.method} ${rawPath}`, code: 'NOT_FOUND' });
       return;
     }
     const apiIdx = rawPath.indexOf('/api/');
@@ -168,9 +168,9 @@ async function route(
       // id 留空自动生成（前端提示「留空则自动生成」）
       const id = str(b['id']) || `c-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
       const kind = str(b['kind']);
-      if (!kind) return send(res, 400, { ok: false, error: '缺少 kind', code: 'INVALID_ARGUMENT' });
+      if (!kind) return send(res, 400, { ok: false, error: 'Missing kind', code: 'INVALID_ARGUMENT' });
       const ssl = parseSsl(b['ssl']);
-      if (ssl === 'invalid') return send(res, 400, { ok: false, error: 'ssl 必须是布尔值', code: 'INVALID_ARGUMENT' });
+      if (ssl === 'invalid') return send(res, 400, { ok: false, error: 'ssl must be a boolean', code: 'INVALID_ARGUMENT' });
       return sendOk(res, service.createConnection({
         id, kind: kind as never,
         ...(b['name'] !== undefined ? { name: str(b['name']) } : {}),
@@ -189,7 +189,7 @@ async function route(
   if (path === '/api/connections/export' && req.method === 'POST') {
     const b = await readBody(req);
     const passphrase = str(b['passphrase']);
-    if (!passphrase) return send(res, 400, { ok: false, error: '缺少 passphrase', code: 'INVALID_ARGUMENT' });
+    if (!passphrase) return send(res, 400, { ok: false, error: 'Missing passphrase', code: 'INVALID_ARGUMENT' });
     const count = service.listConnections().length; // 权威条数，前端不再用可能过期的本地列表
     return sendOk(res, { json: service.exportConnections(passphrase), count });
   }
@@ -197,8 +197,8 @@ async function route(
     const b = await readBody(req);
     const json = str(b['json']);
     const passphrase = str(b['passphrase']);
-    if (!json) return send(res, 400, { ok: false, error: '缺少 json', code: 'INVALID_ARGUMENT' });
-    if (!passphrase) return send(res, 400, { ok: false, error: '缺少 passphrase', code: 'INVALID_ARGUMENT' });
+    if (!json) return send(res, 400, { ok: false, error: 'Missing json', code: 'INVALID_ARGUMENT' });
+    if (!passphrase) return send(res, 400, { ok: false, error: 'Missing passphrase', code: 'INVALID_ARGUMENT' });
     return sendOk(res, service.importConnections(json, passphrase));
   }
 
@@ -206,9 +206,9 @@ async function route(
   if (path === '/api/test-draft' && req.method === 'POST') {
     const b = await readBody(req);
     const kind = str(b['kind']);
-    if (!kind) return send(res, 400, { ok: false, error: '缺少 kind', code: 'INVALID_ARGUMENT' });
+    if (!kind) return send(res, 400, { ok: false, error: 'Missing kind', code: 'INVALID_ARGUMENT' });
     const ssl = parseSsl(b['ssl']);
-    if (ssl === 'invalid') return send(res, 400, { ok: false, error: 'ssl 必须是布尔值', code: 'INVALID_ARGUMENT' });
+    if (ssl === 'invalid') return send(res, 400, { ok: false, error: 'ssl must be a boolean', code: 'INVALID_ARGUMENT' });
     return sendMaybeConfirm(res, service.testDraft({
       kind: kind as never,
       ...(b['url'] !== undefined ? { url: str(b['url']) } : {}),
@@ -230,7 +230,7 @@ async function route(
     if (req.method === 'PUT') {
       const b = await readBody(req);
       const ssl = parseSsl(b['ssl']);
-      if (ssl === 'invalid') return send(res, 400, { ok: false, error: 'ssl 必须是布尔值', code: 'INVALID_ARGUMENT' });
+      if (ssl === 'invalid') return send(res, 400, { ok: false, error: 'ssl must be a boolean', code: 'INVALID_ARGUMENT' });
       return sendOk(res, service.updateConnection(id, {
         ...(b['name'] !== undefined ? { name: str(b['name']) } : {}),
         ...(b['url'] !== undefined ? { url: str(b['url']) } : {}),
@@ -255,8 +255,16 @@ async function route(
     if (req.method === 'PUT') {
       const b = await readBody(req);
       const mode = str(b['mode']);
-      if (mode !== 'ro' && mode !== 'rw') return send(res, 400, { ok: false, error: 'mode 必须是 ro 或 rw', code: 'INVALID_ARGUMENT' });
-      service.grant(str(b['projectPath'] ?? b['project'] ?? ''), str(b['connId']), mode);
+      if (mode !== 'ro' && mode !== 'rw') return send(res, 400, { ok: false, error: 'mode must be ro or rw', code: 'INVALID_ARGUMENT' });
+      // databases 缺省 = 保持既有库白名单不变；数组（可空）= 覆盖，空数组即解除库限制
+      const rawDbs = b['databases'];
+      let databases: string[] | undefined;
+      if (Array.isArray(rawDbs)) {
+        databases = rawDbs.map((v) => str(v).trim()).filter((v) => v !== '');
+      } else if (typeof rawDbs === 'string') {
+        databases = rawDbs.split(',').map((v) => v.trim()).filter((v) => v !== '');
+      }
+      service.grant(str(b['projectPath'] ?? b['project'] ?? ''), str(b['connId']), mode, databases);
       return sendOk(res, { granted: true });
     }
     if (req.method === 'DELETE') {
@@ -410,7 +418,7 @@ async function route(
     return sendOk(res, { version: pluginVersion() });
   }
 
-  send(res, 404, { ok: false, error: `未知路由: ${req.method} ${path}`, code: 'NOT_FOUND' });
+  send(res, 404, { ok: false, error: `Unknown route: ${req.method} ${path}`, code: 'NOT_FOUND' });
 }
 
 /* ---------------- 可选：独立 loopback server（薄包装 handleDbToolRequest） ---------------- */
@@ -476,7 +484,7 @@ function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
     req.on('data', (c: Buffer) => {
       size += c.length;
       if (size > MAX_JSON_BODY_BYTES) {
-        reject(new DbToolError('INVALID_ARGUMENT', '请求体超过 2MB 上限'));
+        reject(new DbToolError('INVALID_ARGUMENT', 'Request body exceeds the 2 MB limit'));
         req.destroy();
         return;
       }
@@ -490,10 +498,10 @@ function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
           resolve(parsed as Record<string, unknown>);
         } else {
-          reject(new DbToolError('INVALID_ARGUMENT', '请求体必须是 JSON 对象'));
+          reject(new DbToolError('INVALID_ARGUMENT', 'Request body must be a JSON object'));
         }
       } catch {
-        reject(new DbToolError('INVALID_ARGUMENT', '请求体不是合法 JSON'));
+        reject(new DbToolError('INVALID_ARGUMENT', 'Request body is not valid JSON'));
       }
     });
     req.on('error', reject);
@@ -581,6 +589,6 @@ function projectOfBody(b: Record<string, unknown>): string | undefined {
 
 function required(q: URLSearchParams, name: string): string {
   const v = q.get(name);
-  if (!v) throw new DbToolError('INVALID_ARGUMENT', `缺少查询参数: ${name}`);
+  if (!v) throw new DbToolError('INVALID_ARGUMENT', `Missing query parameter: ${name}`);
   return v;
 }

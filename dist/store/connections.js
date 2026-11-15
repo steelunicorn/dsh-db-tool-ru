@@ -1,0 +1,412 @@
+/**
+ * connections.json：连接元数据（绝不含密码）。
+ *
+ * create/update 时自动做机密拆分：
+ *  - url → 完整 URL 进 secrets.json，脱敏副本（密码段 ***）留在本文件 urlSafe；
+ *  - fields.password → 进 secrets.json，本文件的 fields 不再含有。
+ * remove 级联清理 secrets 与该连接的全部项目授权。
+ */
+import * as path from 'node:path';
+import { readJson, writeJsonAtomic } from './io.js';
+/** fields 中被视为机密的键，落盘前拆出到 secrets.json */
+const PASSWORD_KEY = 'password';
+/** id 冲突哨兵错误：importBundle 以此 instanceof 识别跳过项，
+ *  替代对 create() 中文错误文案的字符串匹配（文案改动不破坏幂等契约） */
+export class DuplicateConnectionError extends Error {
+    connId;
+    constructor(connId) {
+        super(`Connection already exists: ${connId}`);
+        this.connId = connId;
+        this.name = 'DuplicateConnectionError';
+    }
+}
+/** authority 段定位：scheme:// 到首个 /?#（兼容可选 jdbc: 前缀，如 jdbc:gaussdb://），
+ *  捕获组 1 为 scheme:// 部分、组 2 为 authority（多主机逗号串整体落在该段内）。
+ *  redactUrl 与 mergeUrlCredentials 的字符串回退注入共用。 */
+const AUTHORITY_RE = /^((?:jdbc:)?[a-z][a-z0-9+.-]*:\/\/)([^/?#]*)/i;
+/** 将 URL 中的密码段替换为 ***：scheme://user:pass@host → scheme://user:***@host。
+ *  密码可能包含 / ? # @ 等字符：先取 scheme:// 到首个 /?#  的 authority 段，
+ *  在 authority 内以最后一个 @ 分界取 userinfo，再以最后一个 : 分界取密码。
+ *  scheme 兼容可选 jdbc: 前缀（jdbc:gaussdb://…），无前缀行为不变。 */
+export function redactUrl(url) {
+    const m = url.match(AUTHORITY_RE);
+    if (!m)
+        return url;
+    const authority = m[2] ?? '';
+    const at = authority.lastIndexOf('@');
+    if (at < 0)
+        return url; // 无 userinfo
+    const userinfo = authority.slice(0, at);
+    const colon = userinfo.lastIndexOf(':');
+    if (colon < 0)
+        return url; // 只有用户名，无密码段
+    const redacted = m[1] + userinfo.slice(0, colon + 1) + '***@' + authority.slice(at + 1);
+    return redacted + url.slice(m[0].length);
+}
+/** URL 模式独立凭据注入：把 urlUser/urlPassword 合并进 URL userinfo（8 库 scheme 均为标准 URL 形态）。
+ *  - 两者均空 → 原样返回（url 可为 undefined，现状语义不变）；
+ *  - url 为 undefined → 有 secretsUrl（编辑场景已存真实 URL）以其为基底注入，否则凭据忽略返回 undefined；
+ *  - url 含脱敏标记 ':***@'（编辑回填值）→ 有 secretsUrl 以其为基底整体替换，否则报错；
+ *  - 注入用 WHATWG URL 的 username/password setter（自动 percent-encode '@:/?# ' 等特殊字符），
+ *    与适配器侧 decodeURIComponent / 驱动 RFC 3986 解码严格互逆；只填一项只覆盖一项
+ *    （redis 'redis://:pass@host' 无用户名形态、oracle 必填用户名校验均兼容）。
+ *  - WHATWG 解析失败（如多主机逗号端口 gaussdb://h1:8000,h2:8000/…）或 setter 静默无效
+ *    （jdbc:gaussdb://… 为 opaque path、host 为空）时回退字符串注入：正则定位 authority 段
+ *    （兼容可选 jdbc: 前缀），段内以最后一个 @ 为界替换/插入 userinfo，其余部分逐字保留；
+ *    凭据按 encodeURIComponent 编码，只填一项只覆盖一项的语义与 setter 对齐；
+ *    无 scheme://authority 形态的残缺串仍报「URL 无效」。 */
+export function mergeUrlCredentials(opts) {
+    const { urlUser, urlPassword, secretsUrl } = opts;
+    let url = opts.url;
+    // 前端编辑 URL 模式连接时回填的是脱敏值（safeUrl，含 :***@）。占位符不是凭据，必须先用
+    // 已存真实凭据替换它再走正常注入——host/port/path/query 保留用户的改动；否则会把字面量
+    // *** 当真密码落盘、连接静默失效（且 safeUrl 显示不变，用户看不出差别）。
+    // 非标准 URL 形态（jdbc: 前缀、多主机逗号端口等）无法可靠合并 → 明确报错要求重输。
+    if (url !== undefined && url.includes(':***@')) {
+        if (secretsUrl === undefined) {
+            throw new Error('The URL contains the redacted placeholder (***) and there is no stored real URL to fall back to; re-enter the full URL or clear the username/password fields');
+        }
+        try {
+            const sec = new URL(secretsUrl);
+            const edit = new URL(url);
+            if (sec.host === '' || edit.host === '')
+                throw new Error('non-authority');
+            edit.username = sec.username;
+            edit.password = sec.password;
+            url = edit.toString();
+        }
+        catch {
+            throw new Error('The connection URL contains the redacted placeholder (***) and cannot be merged with the stored credentials (non-standard URL shape, e.g. jdbc: prefix or multi-host string): re-enter the full URL');
+        }
+    }
+    if (urlUser === undefined && urlPassword === undefined)
+        return url;
+    let base;
+    if (url === undefined) {
+        if (secretsUrl === undefined)
+            return undefined; // 无 URL 可注入，凭据忽略
+        base = secretsUrl;
+    }
+    else {
+        base = url;
+    }
+    let u;
+    try {
+        u = new URL(base);
+    }
+    catch {
+        u = undefined; // WHATWG 解析失败：多主机逗号端口、残缺串等
+    }
+    const m = base.match(AUTHORITY_RE);
+    // 回退条件：解析失败；或 opaque path（host 为空、setter no-op）且 authority 非空。
+    // authority 为空（sqlite:// 等无主机形态）不回退，维持 setter no-op 的现状语义。
+    if (u === undefined || (u.host === '' && (m?.[2] ?? '') !== '')) {
+        if (m === null)
+            throw new Error('Invalid connection URL: cannot inject the username/password');
+        return injectUserInfo(base, m, urlUser, urlPassword);
+    }
+    if (urlUser !== undefined && urlUser !== '')
+        u.username = urlUser;
+    if (urlPassword !== undefined && urlPassword !== '')
+        u.password = urlPassword;
+    return u.toString();
+}
+/** 字符串回退注入：在 authority（m[2]）内以最后一个 @ 为界替换/插入 userinfo。
+ *  与 WHATWG setter 语义对齐：只填一项只覆盖一项（另一项保留基底值）；
+ *  两者均无效时不改动原样返回。凭据按 encodeURIComponent 编码（与适配器侧
+ *  decodeURIComponent 互逆），authority 之外（path/query/fragment）逐字保留。 */
+function injectUserInfo(base, m, urlUser, urlPassword) {
+    const whole = m[0] ?? '';
+    const authority = m[2] ?? '';
+    const user = urlUser !== undefined && urlUser !== '' ? encodeURIComponent(urlUser) : undefined;
+    const pass = urlPassword !== undefined && urlPassword !== '' ? encodeURIComponent(urlPassword) : undefined;
+    if (user === undefined && pass === undefined)
+        return base;
+    const at = authority.lastIndexOf('@');
+    const oldUserinfo = at >= 0 ? authority.slice(0, at) : '';
+    const colon = oldUserinfo.lastIndexOf(':');
+    const oldUser = colon >= 0 ? oldUserinfo.slice(0, colon) : oldUserinfo;
+    const oldPass = colon >= 0 ? oldUserinfo.slice(colon + 1) : undefined;
+    let userinfo;
+    if (user !== undefined && pass !== undefined) {
+        userinfo = `${user}:${pass}`;
+    }
+    else if (user !== undefined) {
+        userinfo = oldPass !== undefined ? `${user}:${oldPass}` : user;
+    }
+    else {
+        userinfo = `${oldUser}:${pass}`;
+    }
+    const hostPart = at >= 0 ? authority.slice(at + 1) : authority;
+    return whole.slice(0, whole.length - authority.length) + userinfo + '@' + hostPart + base.slice(whole.length);
+}
+function splitPassword(fields) {
+    if (!fields || typeof fields[PASSWORD_KEY] !== 'string') {
+        return { clean: fields, password: undefined };
+    }
+    const { [PASSWORD_KEY]: password, ...clean } = fields;
+    return { clean, password: password };
+}
+/** ConnRecord → 用户可见的 ConnectionMeta（契约见 lib/adapters/types.ts）。
+ *  hasPassword 只回布尔指示，明文绝不出库。 */
+function toMeta(rec, hasPassword = false) {
+    const meta = { id: rec.id, kind: rec.kind };
+    if (rec.name !== undefined)
+        meta.name = rec.name;
+    if (rec.urlSafe !== undefined) {
+        meta.safeUrl = rec.urlSafe;
+        meta.mode = 'url';
+    }
+    else {
+        meta.mode = 'fields';
+    }
+    if (hasPassword)
+        meta.hasPassword = true;
+    if (rec.fields) {
+        const { host, port, user, database, tlsMinVersion, encrypt, trustServerCertificate, serverName, caCert } = rec.fields;
+        if (typeof host === 'string')
+            meta.host = host;
+        if (typeof port === 'number')
+            meta.port = port;
+        if (typeof user === 'string')
+            meta.user = user;
+        if (typeof database === 'string')
+            meta.database = database;
+        if (typeof tlsMinVersion === 'string')
+            meta.tlsMinVersion = tlsMinVersion;
+        // encrypt 三态：布尔按 boolean 透传，'strict' 按字面量透传（两者语义不同，不能互相折叠）
+        if (typeof encrypt === 'boolean' || encrypt === 'strict')
+            meta.encrypt = encrypt;
+        if (typeof trustServerCertificate === 'boolean')
+            meta.trustServerCertificate = trustServerCertificate;
+        if (typeof serverName === 'string')
+            meta.serverName = serverName;
+        if (typeof caCert === 'string')
+            meta.caCert = caCert;
+    }
+    return meta;
+}
+export class ConnectionStore {
+    secrets;
+    grants;
+    file;
+    constructor(dir, secrets, grants) {
+        this.secrets = secrets;
+        this.grants = grants;
+        this.file = path.join(dir, 'connections.json');
+    }
+    load() {
+        return readJson(this.file, { connections: [] });
+    }
+    save(data) {
+        writeJsonAtomic(this.file, data);
+    }
+    findRec(data, id) {
+        return data.connections.find((c) => c.id === id);
+    }
+    /** 该连接是否已存密码（布尔指示，不读明文） */
+    hasPassword(id) {
+        return this.secrets.get(id)?.password !== undefined;
+    }
+    list() {
+        return this.load().connections.map((r) => toMeta(r, this.hasPassword(r.id)));
+    }
+    get(id) {
+        const rec = this.findRec(this.load(), id);
+        return rec ? toMeta(rec, this.hasPassword(id)) : undefined;
+    }
+    /** 新建连接；id 已存在时抛 DuplicateConnectionError */
+    create(input) {
+        const data = this.load();
+        if (this.findRec(data, input.id)) {
+            throw new DuplicateConnectionError(input.id);
+        }
+        const rec = { id: input.id, kind: input.kind };
+        if (input.name !== undefined)
+            rec.name = input.name;
+        if (input.ssl !== undefined)
+            rec.ssl = input.ssl;
+        const { clean, password } = splitPassword(input.fields);
+        if (clean !== undefined)
+            rec.fields = clean;
+        const secretPatch = {};
+        // URL 模式独立凭据注入（无凭据字段时 mergeUrlCredentials 原样返回，现状语义不变）
+        const finalUrl = mergeUrlCredentials({
+            url: input.url,
+            urlUser: input.urlUser,
+            urlPassword: input.urlPassword,
+        });
+        if (finalUrl !== undefined) {
+            rec.urlSafe = redactUrl(finalUrl);
+            secretPatch.url = finalUrl;
+        }
+        if (password !== undefined)
+            secretPatch.password = password;
+        if (Object.keys(secretPatch).length > 0)
+            this.secrets.set(input.id, secretPatch);
+        data.connections.push(rec);
+        this.save(data);
+        return toMeta(rec, this.hasPassword(input.id));
+    }
+    /** 部分更新；不存在返回 undefined。url/fields 变更时同步拆分 secrets */
+    update(id, patch) {
+        const data = this.load();
+        const rec = this.findRec(data, id);
+        if (!rec)
+            return undefined;
+        if (patch.name !== undefined)
+            rec.name = patch.name;
+        if (patch.ssl !== undefined)
+            rec.ssl = patch.ssl;
+        if (patch.fields !== undefined) {
+            const { clean, password } = splitPassword(patch.fields);
+            rec.fields = clean;
+            if (password !== undefined)
+                this.secrets.set(id, { password });
+        }
+        // URL 模式独立凭据注入：url 未发/发脱敏回填值时以已存 secrets.url 为基底（update 场景）；
+        // 无 url 且无凭据字段时 mergeUrlCredentials 返回 undefined，自然跳过（无需外层守卫）
+        const finalUrl = mergeUrlCredentials({
+            url: patch.url,
+            urlUser: patch.urlUser,
+            urlPassword: patch.urlPassword,
+            secretsUrl: this.secrets.get(id)?.url,
+        });
+        if (finalUrl !== undefined) {
+            rec.urlSafe = redactUrl(finalUrl);
+            this.secrets.set(id, { url: finalUrl });
+            // 对称清理（clearUrl 的反方向）：切到 URL 方式保存即放弃分字段配置；残留 fields 会被
+            // sqlserver 等适配器的 fields.database 幽灵覆盖 URL 库名（safeUrl 显示新库、实际连旧库的静默错库）
+            delete rec.fields;
+        }
+        if (patch.clearUrl && rec.urlSafe !== undefined) {
+            delete rec.urlSafe;
+            // 密码迁移：原 url 内嵌密码 → fields 密码（切方式后保持可连，编辑留空即保留）
+            const secUrl = this.secrets.get(id)?.url;
+            if (secUrl !== undefined) {
+                try {
+                    const u = new URL(secUrl);
+                    if (u.password && this.secrets.get(id)?.password === undefined) {
+                        this.secrets.set(id, { password: decodeURIComponent(u.password) });
+                    }
+                }
+                catch {
+                    /* 非 URL 形态，忽略迁移 */
+                }
+            }
+            // set 为合并写；显式置 undefined 经 JSON 序列化后等效删除该键
+            this.secrets.set(id, { url: undefined });
+        }
+        this.save(data);
+        return toMeta(rec, this.hasPassword(id));
+    }
+    /** 删除连接，级联删除 secrets 与该连接的所有项目授权。
+     *  顺序按"失败开放"原则：先删权限（grants），再删机密（secrets），最后改
+     *  连接表——中途崩溃最多残留垃圾机密，绝不残留可用授权。 */
+    remove(id) {
+        const data = this.load();
+        const idx = data.connections.findIndex((c) => c.id === id);
+        if (idx < 0)
+            return false;
+        this.grants.removeConn(id);
+        this.secrets.delete(id);
+        data.connections.splice(idx, 1);
+        this.save(data);
+        return true;
+    }
+    /**
+     * 组装适配器工厂所需的 ResolvedConnection（含真实密码，绝不返回给模型/HTTP）。
+     * 不存在抛错——调用方（工具服务层）应先 get() 展示层校验。
+     */
+    testTarget(id) {
+        const rec = this.findRec(this.load(), id);
+        if (!rec)
+            throw new Error(`Connection not found: ${id}`);
+        const meta = toMeta(rec, this.secrets.get(id)?.password !== undefined);
+        const rc = { meta };
+        const sec = this.secrets.get(id);
+        if (sec?.url !== undefined)
+            rc.url = sec.url;
+        let fields = rec.fields ? { ...rec.fields } : undefined;
+        if (sec?.password !== undefined)
+            (fields ??= {}).password = sec.password;
+        if (fields !== undefined)
+            rc.fields = fields;
+        if (rec.ssl !== undefined)
+            rc.ssl = rec.ssl;
+        return rc;
+    }
+    /** 导出连接迁移包：全部连接记录 + 对应机密（含明文密码）。
+     *  调用方必须将整个返回值经 export-crypto 加密后方可落盘/传输，
+     *  本方法本身不加密（加密口令属于 HTTP 层入参，不应侵入存储层）。 */
+    exportBundle() {
+        const connections = this.load().connections;
+        const secrets = {};
+        for (const rec of connections) {
+            const sec = this.secrets.get(rec.id);
+            if (sec !== undefined)
+                secrets[rec.id] = sec;
+        }
+        return { connections, secrets };
+    }
+    /** 导入连接迁移包：逐条走既有 create()（机密拆分/脱敏逻辑全复用）。
+     *  - id 冲突（「连接已存在」）→ 记入 skipped，不覆盖已有数据；
+     *  - 其他异常 → 记入 errors 并继续处理后续条目；
+     *  - 幂等可重入：重复导入同一 bundle，已存在的全部落入 skipped。 */
+    importBundle(bundle) {
+        const result = { imported: 0, skipped: [], errors: [] };
+        for (const rec of bundle.connections) {
+            // per-record 校验：解密成功的包也可能内容畸形（schema 漂移/手工构造），
+            // 缺 id/kind 的记录不落库，计入 errors
+            if (rec === null ||
+                typeof rec !== 'object' ||
+                typeof rec.id !== 'string' ||
+                rec.id === '' ||
+                typeof rec.kind !== 'string' ||
+                rec.kind === '') {
+                result.errors.push({ id: String(rec?.id ?? ''), message: 'Invalid record structure (missing id/kind)' });
+                continue;
+            }
+            const sec = bundle.secrets?.[rec.id];
+            try {
+                // 重建 create 入参：脱敏 URL 回换完整 URL（机密在 sec.url 中）；
+                // fields 模式密码经 fields.password 传入由 create 自动拆分到 secrets
+                this.create({
+                    id: rec.id,
+                    kind: rec.kind,
+                    name: rec.name,
+                    url: sec?.url,
+                    fields: sec?.password !== undefined ? { ...(rec.fields ?? {}), password: sec.password } : rec.fields,
+                    ssl: rec.ssl,
+                });
+                // 覆盖式写回：create 成功后该 id 必无冲突，先清掉既有/孤儿机密
+                // （create 崩溃窗口可能残留旧条目），再整体重写，确保导入后机密与包一致。
+                // 合并写会残留旧键（如旧 url），适配器优先用 rc.url，会被静默错连旧主机。
+                this.secrets.delete(rec.id);
+                try {
+                    if (sec !== undefined)
+                        this.secrets.set(rec.id, sec);
+                }
+                catch (secErr) {
+                    // 写回机密失败：连接行已落盘，回滚避免「errors 里却已存在」的半导入门状态
+                    try {
+                        this.remove(rec.id);
+                    }
+                    catch { /* 尽力而为 */ }
+                    throw secErr;
+                }
+                result.imported += 1;
+            }
+            catch (err) {
+                const message = err instanceof Error ? err.message : String(err);
+                if (err instanceof DuplicateConnectionError) {
+                    result.skipped.push(rec.id);
+                }
+                else {
+                    result.errors.push({ id: rec.id, message });
+                }
+            }
+        }
+        return result;
+    }
+}

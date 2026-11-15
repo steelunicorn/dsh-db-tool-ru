@@ -1,0 +1,410 @@
+import { openMongoRaw } from '../../mongodb/index.js';
+const SAMPLE_LIMIT = 50;
+/** BSON 值 → 中间类型（抽样推断用；null 不参与类型判定） */
+function bsonToMid(v, M) {
+    if (v === null || v === undefined)
+        return null;
+    if (typeof v === 'string')
+        return 'string';
+    if (typeof v === 'boolean')
+        return 'boolean';
+    if (typeof v === 'number')
+        return Number.isInteger(v) ? 'int' : 'double';
+    if (typeof v === 'bigint')
+        return 'bigint';
+    if (v instanceof Date)
+        return 'datetime';
+    if (v instanceof M.ObjectId)
+        return 'string';
+    if (v instanceof M.Long)
+        return 'bigint';
+    if (v instanceof M.Decimal128)
+        return 'decimal';
+    if (v instanceof M.Binary)
+        return 'bytes';
+    if (Array.isArray(v) || typeof v === 'object')
+        return 'json';
+    return 'string';
+}
+/** 行值保真转换（读端）：按列 midType 目标形态输出 */
+function bsonToCell(v, midType, M) {
+    if (v === null || v === undefined)
+        return null;
+    if (v instanceof M.ObjectId)
+        return v.toHexString();
+    if (v instanceof Date)
+        return v.toISOString();
+    if (v instanceof M.Long)
+        return v.toBigInt();
+    if (v instanceof M.Decimal128)
+        return v.toString();
+    if (v instanceof M.Binary)
+        return new Uint8Array(v.buffer.buffer, v.buffer.byteOffset, v.buffer.byteLength);
+    if (Array.isArray(v) || (typeof v === 'object' && v !== null))
+        return JSON.stringify(v);
+    if (typeof v === 'bigint')
+        return v;
+    if (typeof v === 'number') {
+        // 混类型列推断为 int 但实际 double：值原样（number 涵盖 int）
+        return midType === 'bigint' ? BigInt(Math.trunc(v)) : v;
+    }
+    return String(v);
+}
+/** 中间类型 → $jsonSchema bsonType（json 列接受 object/array 两形态，写端 parse 复原） */
+function midToBsonType(t) {
+    switch (t) {
+        case 'int': return 'int';
+        case 'bigint': return 'long';
+        case 'decimal': return 'decimal';
+        case 'float':
+        case 'double': return 'double';
+        case 'boolean': return 'bool';
+        case 'bytes': return 'binData';
+        case 'json': return ['object', 'array'];
+        case 'date':
+        case 'datetime':
+        case 'timestamptz': return 'date';
+        default: return 'string'; // string/text/time
+    }
+}
+/** 写端值转换：SQL 形态 → BSON 形态。null 返回 SKIP（省略字段，评审 #2） */
+const SKIP = Symbol('skip');
+/** 无时区日期串补 UTC 语义：空格墙钟（'2024-01-01 10:00:00'）与 ISO 无时区
+ *  （'2024-01-01T10:00:00'）在 V8 均按插件进程本地时区解析——跨库传输的墙钟统一
+ *  UTC 语义（mysql 读端 time_zone=+00:00、sqlite TEXT 约定），已带时区的原样解析 */
+export function toUtcParse(s) {
+    const t = s.trim();
+    if (/[Zz]$/.test(t) || /[+-]\d{2}:?\d{2}$/.test(t))
+        return t;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(t))
+        return `${t}T00:00:00Z`;
+    return `${t.replace(' ', 'T')}Z`;
+}
+export function cellToBson(c, midType, M) {
+    if (c === null)
+        return SKIP;
+    if (c instanceof Uint8Array)
+        return new M.Binary(c);
+    if (typeof c === 'bigint')
+        return M.Long.fromString(c.toString());
+    if (typeof c === 'boolean' || typeof c === 'number')
+        return c;
+    if (midType === 'json') {
+        if (typeof c !== 'string')
+            return c;
+        try {
+            return JSON.parse(c);
+        }
+        catch {
+            return c; // 非法 JSON 原样字符串（bsonType 校验会拒绝并进失败清单，不静默）
+        }
+    }
+    if (midType === 'date' || midType === 'datetime' || midType === 'timestamptz') {
+        const d = new Date(typeof c === 'string' ? toUtcParse(c) : c);
+        if (Number.isNaN(d.getTime())) {
+            throw new Error(`Invalid date value "${c}" (${midType} column): cannot be parsed as a time`);
+        }
+        return d;
+    }
+    if (midType === 'decimal' && typeof c === 'string')
+        return M.Decimal128.fromString(c);
+    return c;
+}
+/** 读 own 属性值：BSON 反序列化允许 __proto__ 等保留名为 own property，
+ *  普通 doc[k] 访问会命中原型 getter 读出错误值 */
+function ownValue(doc, k) {
+    return Object.hasOwn(doc, k) ? Object.getOwnPropertyDescriptor(doc, k)?.value : undefined;
+}
+export function createMongoTransferReader(raw) {
+    const { db, M } = raw;
+    /** Decimal128 字符串 → precision/scale；超目标端默认上限（38,10）时显式失败，
+     *  避免 pg/sqlserver/oralike 写端按 scale 10 静默吞掉小数位。 */
+    function decimalParts(v) {
+        if (v === null || v === undefined)
+            return null;
+        const s = typeof v === 'string' ? v : String(v);
+        const m = /^-?(\d+)(?:\.(\d+))?(?:[Ee]([+-]?\d+))?$/.exec(s.trim());
+        if (!m)
+            return null;
+        const exp = m[3] ? Number(m[3]) : 0;
+        const intDigits = m[1].replace(/^0+(?=\d)/, '').length;
+        const frac = m[2] ?? '';
+        const scale = Math.max(0, frac.length - exp);
+        const precision = Math.max(intDigits + scale, 1);
+        if (precision > 38 || scale > 10) {
+            throw new Error(`Decimal128 "${s}" exceeds the target limit precision=38 scale=10 (precision=${precision} scale=${scale}); reduce the precision before transferring`);
+        }
+        return { precision, scale };
+    }
+    const describe = async (name) => {
+        const coll = db.collection(name);
+        const sample = (await coll.find({}).limit(SAMPLE_LIMIT).toArray());
+        // 字段并集（首次出现顺序）+ 类型推断（首个非 null 类型）
+        const cols = new Map();
+        const present = new Map();
+        const decimalCols = new Map();
+        for (const doc of sample) {
+            for (const [k, v] of Object.entries(doc)) {
+                if (!cols.has(k)) {
+                    cols.set(k, bsonToMid(v, M) ?? 'string');
+                    present.set(k, 0);
+                }
+                if (v !== null && v !== undefined)
+                    present.set(k, (present.get(k) ?? 0) + 1);
+                if (v instanceof M.Decimal128)
+                    decimalCols.set(k, decimalParts(v.toString()) ?? { precision: 38, scale: 10 });
+            }
+        }
+        if (!cols.has('_id')) {
+            cols.set('_id', 'string');
+            present.set('_id', 0);
+        }
+        const columns = [...cols.entries()].map(([fieldName, midType]) => ({
+            name: fieldName,
+            midType,
+            sourceType: midType === 'json' ? 'object|array (inferred)' : `${midType} (inferred)`,
+            // 抽样缺失 = 可空；样本为空时按可空（required 从无样本推断不安全）；_id 恒非空
+            nullable: fieldName === '_id' ? false : sample.length === 0 || (present.get(fieldName) ?? 0) < sample.length,
+            primaryKey: fieldName === '_id',
+            ...(decimalCols.has(fieldName) ? decimalCols.get(fieldName) : {}),
+        }));
+        return { name, columns };
+    };
+    // _id 的原始 BSON 形态（keyset 游标 after 还原用）；混类型 = null（不分片）
+    const idKindCache = new Map();
+    return {
+        kind: 'mongodb',
+        listTables: async () => {
+            const infos = (await db.listCollections().toArray());
+            return infos.filter((c) => c.type !== 'view').map((c) => c.name);
+        },
+        describe,
+        count: async (name) => {
+            return db.collection(name).countDocuments({});
+        },
+        shardKey: async (name) => {
+            // _id 是 mongo 唯一可靠的分片键；全集合巡检类型唯一才可用——只看前 50 条时
+            // 样本外出现混 BSON 类型会让 range 区间过滤静默漏行（评审 #4 的残留洞）。
+            const coll = db.collection(name);
+            const kinds = new Set();
+            const classify = (v) => {
+                if (v instanceof M.ObjectId)
+                    return 'ObjectId';
+                if (typeof v === 'string')
+                    return 'string';
+                if (typeof v === 'number')
+                    return 'number';
+                if (v instanceof M.Long)
+                    return 'Long';
+                if (v !== null && v !== undefined)
+                    return 'other';
+                return null;
+            };
+            // 仅投影 _id，逐游标扫全集合；发现两类即提前收口（不必继续拉数据）
+            const cursor = coll.find({}, { projection: { _id: 1 } });
+            for await (const doc of cursor) {
+                const k = classify(doc._id);
+                if (k)
+                    kinds.add(k);
+                if (kinds.size > 1)
+                    break;
+            }
+            const kindsArr = [...kinds];
+            const kind = kindsArr.length === 1 ? kindsArr[0] : null;
+            idKindCache.set(name, kind);
+            switch (kind) {
+                case 'ObjectId':
+                case 'string':
+                    return 'string';
+                case 'number':
+                    return 'int';
+                case 'Long':
+                    return 'bigint';
+                default:
+                    return null; // 混类型/空集合：单 worker offset 全序
+            }
+        },
+        readBatch: async (name, cursor, limit) => {
+            const t = await describe(name);
+            const coll = db.collection(name);
+            if (cursor.mode === 'keyset' || cursor.mode === 'range') {
+                const idKind = idKindCache.get(name) ?? 'ObjectId';
+                const restore = (cell) => {
+                    let v = cell;
+                    if (idKind === 'ObjectId' && typeof v === 'string')
+                        v = new M.ObjectId(v);
+                    if (idKind === 'Long' && typeof v === 'bigint')
+                        v = M.Long.fromString(v.toString());
+                    return v;
+                };
+                if (cursor.mode === 'keyset') {
+                    const filter = cursor.after === null ? {} : { _id: { $gt: restore(cursor.after) } };
+                    const docs = (await coll.find(filter).sort({ _id: 1 }).limit(limit).toArray());
+                    return docs.map((doc) => t.columns.map((c) => bsonToCell(ownValue(doc, c.name), c.midType, M)));
+                }
+                // range：hi 端恒开区间；lo 按 loInclusive 取 $gte/$gt（分片首批含下界）
+                const cond = {};
+                if (cursor.lo !== null)
+                    cond[cursor.loInclusive ? '$gte' : '$gt'] = restore(cursor.lo);
+                if (cursor.hi !== null)
+                    cond.$lt = restore(cursor.hi);
+                const docs = (await coll
+                    .find(Object.keys(cond).length > 0 ? { _id: cond } : {})
+                    .sort({ _id: 1 })
+                    .limit(limit)
+                    .toArray());
+                return docs.map((doc) => t.columns.map((c) => bsonToCell(ownValue(doc, c.name), c.midType, M)));
+            }
+            const docs = (await coll
+                .find({})
+                .sort({ _id: 1 })
+                .skip(cursor.offset)
+                .limit(limit)
+                .toArray());
+            return docs.map((doc) => t.columns.map((c) => bsonToCell(ownValue(doc, c.name), c.midType, M)));
+        },
+        keyAt: async (name, column, offset) => {
+            const coll = db.collection(name);
+            const docs = (await coll.find({}).sort({ _id: 1 }).skip(offset).limit(1).toArray());
+            if (docs.length === 0)
+                return null;
+            return bsonToCell(ownValue(docs[0], column), 'string', M);
+        },
+        close: async () => {
+            await raw.client.close();
+        },
+    };
+}
+export function createMongoTransferWriter(raw, writeMode = 'insert') {
+    const { db, M } = raw;
+    /** 单列主键列（写为 _id）；复合/无主键返回 undefined（mongo 自动 _id，原主键列按普通字段存） */
+    function idColumn(t) {
+        const pks = t.columns.filter((c) => c.primaryKey);
+        const pk = pks.length === 1 ? pks[0] : undefined;
+        return pk && !pk.name.includes('.') ? pk : undefined;
+    }
+    /** 行 → 文档：先全量转换（非法值在写入前抛出，避免 unordered 部分成功） */
+    function rowToDoc(t, r) {
+        const idCol = idColumn(t);
+        const doc = {};
+        t.columns.forEach((c, i) => {
+            const v = cellToBson(r[i] ?? null, c.midType, M);
+            if (v === SKIP)
+                return;
+            if (idCol && c.name === idCol.name) {
+                doc._id = v;
+            }
+            else {
+                // defineProperty 而非赋值：源字段名可能为 __proto__ 等保留名，按名赋值走
+                // setter 改原型——该列数据静默丢失且无告警
+                Object.defineProperty(doc, c.name, { value: v, enumerable: true, writable: true, configurable: true });
+            }
+        });
+        return doc;
+    }
+    return {
+        kind: 'mongodb',
+        tableExists: async (name) => {
+            const infos = (await db.listCollections({ name }).toArray());
+            return infos.length > 0;
+        },
+        dropTable: async (name) => {
+            await db.dropCollection(name).catch(() => false);
+        },
+        // truncate 模式前置清空：deleteMany({}) 全集合删除（mongo 无 TRUNCATE 等价物）
+        beforeLoad: async (t) => {
+            await db.collection(t.name).deleteMany({});
+        },
+        createTable: async (t) => {
+            // $jsonSchema 承载结构与字段属性：required = 非 nullable 列；NULL 语义 = 字段缺失
+            //（bsonType 精确匹配不含 null，写 {col:null} 会被 strict 拒绝——评审 #2）
+            const properties = {};
+            const required = [];
+            for (const c of t.columns) {
+                if (c.primaryKey)
+                    continue; // _id 不进 properties（主键值类型不约束）
+                // defineProperty 防 __proto__ 保留名改原型致 validator properties 失真
+                Object.defineProperty(properties, c.name, {
+                    value: { bsonType: midToBsonType(c.midType) },
+                    enumerable: true,
+                    writable: true,
+                    configurable: true,
+                });
+                if (!c.nullable)
+                    required.push(c.name);
+            }
+            // MongoDB 官方限制：admin/config/local 等内部库的集合不允许文档校验器
+            // （实测报「Document validators are not allowed ... in the admin internal database」）——
+            // 内部库直接建集合，结构与唯一性约束由写入端 bulkWrite 语义承担
+            const internal = ['admin', 'config', 'local'].includes(raw.db.databaseName);
+            await db.createCollection(t.name, internal
+                ? {}
+                : {
+                    validator: {
+                        $jsonSchema: {
+                            bsonType: 'object',
+                            ...(Object.keys(properties).length > 0 ? { properties } : {}),
+                            ...(required.length > 0 ? { required } : {}),
+                        },
+                    },
+                    validationLevel: 'strict',
+                });
+        },
+        writeBatch: async (t, rows) => {
+            if (rows.length === 0)
+                return 0;
+            const width = t.columns.length;
+            for (const r of rows) {
+                if (r.length !== width) {
+                    throw new Error(`Row width mismatch: expected ${width} columns, got ${r.length} (table ${t.name})`);
+                }
+            }
+            const idCol = idColumn(t);
+            if (writeMode === 'replace' && !idCol) {
+                throw new Error(`replace mode requires a single-column primary key (mapped to _id): table ${t.name} has no primary key`);
+            }
+            // 先全量转换再写（转换抛错 → 一条都没写，规避 unordered 部分成功不可回滚）
+            const docs = rows.map((r) => rowToDoc(t, r));
+            const coll = db.collection(t.name);
+            if (writeMode === 'replace') {
+                const ops = docs.map((doc) => {
+                    const { _id, ...rest } = doc;
+                    return { replaceOne: { filter: { _id }, replacement: { _id, ...rest }, upsert: true } };
+                });
+                const res = await coll.bulkWrite(ops, { ordered: false });
+                return res.insertedCount + res.upsertedCount + res.modifiedCount;
+            }
+            const ops = docs.map((doc) => ({ insertOne: { document: doc } }));
+            try {
+                const res = await coll.bulkWrite(ops, { ordered: false });
+                return res.insertedCount;
+            }
+            catch (e) {
+                // ignore 模式：唯一键冲突（E11000，实际即 _id 重复）跳过；其余错误上抛
+                if (writeMode === 'ignore' && e != null && typeof e === 'object' && 'writeErrors' in e) {
+                    const errors = e.writeErrors ?? [];
+                    if (errors.every((w) => w.code === 11000)) {
+                        return docs.length - errors.length;
+                    }
+                }
+                throw e;
+            }
+        },
+        close: async () => {
+            await raw.client.close();
+        },
+    };
+}
+/** 定位：database 覆盖 meta.database（openMongoRaw 按 meta.database → URL path →
+ *  fields 顺序取库，覆盖入口即全链生效）；schema 忽略 */
+function mongoLocate(rc, loc) {
+    if (!loc?.database)
+        return rc;
+    return { ...rc, meta: { ...rc.meta, database: loc.database } };
+}
+export async function createMongoTransferReaderFromConn(rc, loc) {
+    return createMongoTransferReader(await openMongoRaw(mongoLocate(rc, loc)));
+}
+export async function createMongoTransferWriterFromConn(rc, writeMode, loc) {
+    return createMongoTransferWriter(await openMongoRaw(mongoLocate(rc, loc)), writeMode);
+}

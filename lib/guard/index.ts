@@ -154,7 +154,7 @@ export function classifyStatement(kind: DbKind, statement: string, op: 'query' |
 
 function classifySql(kind: DbKind, statement: string, op: 'query' | 'execute'): GuardVerdict {
   const head = sqlHead(statement);
-  if (head === '') return { level: 'danger', reason: '无法解析语句关键字，按危险语句处理' };
+  if (head === '') return { level: 'danger', reason: 'Cannot parse the statement keyword; treating it as a dangerous statement' };
 
   // 语句体分析一律基于剥注释后的文本：写词藏在注释里不应触发分级（误报），
   // 前导注释也不能使 DDL/DML 锚定失效（漏报——否则 /* x */ DROP 绕过确认）
@@ -169,23 +169,23 @@ function classifySql(kind: DbKind, statement: string, op: 'query' | 'execute'): 
     if (SQLSERVER_DANGER_HEADS.has(head)
       || SQLSERVER_DANGER_BODY_RE.test(body)
       || SQLSERVER_DYNAMIC_EXEC_RE.test(body)) {
-      return { level: 'danger', reason: 'T-SQL 高危语句（备份/还原/DBCC/实例配置/扩展存储过程/动态 SQL），需要确认' };
+      return { level: 'danger', reason: 'High-risk T-SQL statement (backup/restore/DBCC/instance configuration/extended stored procedure/dynamic SQL); confirmation required' };
     }
     // 2) 读头（select/with/show/set/…）就地判定并返回，把「写体扫描」换成剥字面量后的结构文本：
     //    `OPENQUERY(ls,'DELETE FROM t')` 的 delete 在远端字符串里，不是本语句的写操作（不升级）；
     //    而「多语句/未闭合字面量」仍用原文判——`SELECT 'a''; DROP TABLE t` 的第二条语句正是要拦的。
     if (SQL_READ_HEADS.has(head)) {
       if (SQL_HIDDEN_DANGER_RE.test(body)) {
-        return { level: 'danger', reason: '读语句包含危险片段（多语句 / 文件读写 / 全局设置 / 锁读），需要确认' };
+        return { level: 'danger', reason: 'Read statement contains a dangerous fragment (multiple statements / file read-write / global settings / locking read); confirmation required' };
       }
       const struct = stripSqlLiterals(body);
       if (SQL_WRITE_BODY_RE.test(struct)) {
-        return { level: 'danger', reason: '读语句体内包含写操作关键字（如 WITH...DELETE / EXPLAIN 写语句），需要确认' };
+        return { level: 'danger', reason: 'Read statement body contains a write keyword (e.g. WITH...DELETE / EXPLAIN write statement); confirmation required' };
       }
       // 3) SELECT ... INTO <表/临时表>：T-SQL 建表副作用（DDL 级），通用正则不覆盖（详见常量注释）。
       //    已由上面写体扫描排除 WITH … INSERT INTO … SELECT（那是写操作，理由应指向写操作，不误挂这里）。
       if ((head === 'select' || head === 'with') && SQLSERVER_SELECT_INTO_RE.test(struct)) {
-        return { level: 'danger', reason: 'T-SQL SELECT ... INTO 会创建目标表（DDL 副作用），需要确认' };
+        return { level: 'danger', reason: 'T-SQL SELECT ... INTO creates a target table (DDL side effect); confirmation required' };
       }
       return { level: 'none' };
     }
@@ -194,25 +194,25 @@ function classifySql(kind: DbKind, statement: string, op: 'query' | 'execute'): 
   const isRead = SQL_READ_HEADS.has(head);
   if (isRead) {
     if (SQL_HIDDEN_DANGER_RE.test(body)) {
-      return { level: 'danger', reason: '读语句包含危险片段（多语句 / 文件读写 / 全局设置 / 锁读），需要确认' };
+      return { level: 'danger', reason: 'Read statement contains a dangerous fragment (multiple statements / file read-write / global settings / locking read); confirmation required' };
     }
     // 读头不等于只读：WITH...DELETE / EXPLAIN ANALYZE DELETE 语句体内含写关键字
     if (SQL_WRITE_BODY_RE.test(body)) {
-      return { level: 'danger', reason: '读语句体内包含写操作关键字（如 WITH...DELETE / EXPLAIN 写语句），需要确认' };
+      return { level: 'danger', reason: 'Read statement body contains a write keyword (e.g. WITH...DELETE / EXPLAIN write statement); confirmation required' };
     }
     return { level: 'none' };
   }
 
-  if (SQL_DDL_RE.test(body)) return { level: 'danger', reason: 'DDL 不可回滚（隐式提交），可能破坏表结构或数据' };
+  if (SQL_DDL_RE.test(body)) return { level: 'danger', reason: 'DDL cannot be rolled back (implicit commit) and may damage the schema or data' };
   if (SQL_DML_RE.test(body)) {
-    if (op === 'query') return { level: 'danger', reason: '只读通道（query）出现写语句，需要确认' };
-    return { level: 'warning', reason: '写操作将修改数据' };
+    if (op === 'query') return { level: 'danger', reason: 'Write statement on the read-only (query) channel; confirmation required' };
+    return { level: 'warning', reason: 'Write operation will modify data' };
   }
-  if (SQL_MAINT_RE.test(body)) return { level: 'danger', reason: '维护/管理命令影响服务器状态，需要确认' };
+  if (SQL_MAINT_RE.test(body)) return { level: 'danger', reason: 'Maintenance/administration command affects server state; confirmation required' };
 
   // 未知关键字：execute 通道 warning（适配器只读兜底），query 通道 danger
-  if (op === 'query') return { level: 'danger', reason: `只读通道（query）出现非读取语句（${head}），需要确认` };
-  return { level: 'warning', reason: `未识别的语句类型（${head}），请确认后执行` };
+  if (op === 'query') return { level: 'danger', reason: `Non-read statement on the read-only (query) channel (${head}); confirmation required` };
+  return { level: 'warning', reason: `Unrecognized statement type (${head}); confirm before executing` };
 }
 
 /* ---------------- Redis ---------------- */
@@ -220,18 +220,18 @@ function classifySql(kind: DbKind, statement: string, op: 'query' | 'execute'): 
 function classifyRedis(statement: string, op: 'query' | 'execute'): GuardVerdict {
   const parts = parseRedisCommand(statement);
   const head = (parts[0] ?? '').toUpperCase();
-  if (head === '') return { level: 'danger', reason: '无法解析 Redis 命令，按危险命令处理' };
+  if (head === '') return { level: 'danger', reason: 'Cannot parse the Redis command; treating it as a dangerous command' };
 
   if (DANGEROUS_COMMANDS.has(head)) {
-    return { level: 'danger', reason: `Redis 危险命令 ${head}，可能清空/重配置实例，需要确认` };
+    return { level: 'danger', reason: `Dangerous Redis command ${head}; it may flush or reconfigure the instance; confirmation required` };
   }
   if (WRITE_COMMANDS.has(head)) {
-    if (op === 'query') return { level: 'danger', reason: `只读通道（query）出现 Redis 写命令 ${head}，需要确认` };
-    return { level: 'warning', reason: `Redis 写命令 ${head} 将修改数据` };
+    if (op === 'query') return { level: 'danger', reason: `Redis write command ${head} on the read-only (query) channel; confirmation required` };
+    return { level: 'warning', reason: `Redis write command ${head} will modify data` };
   }
   if (READ_COMMANDS.has(head)) return { level: 'none' };
-  if (op === 'query') return { level: 'danger', reason: `只读通道（query）出现未识别的 Redis 命令（${head}），需要确认` };
-  return { level: 'warning', reason: `未识别的 Redis 命令（${head}），请确认后执行` };
+  if (op === 'query') return { level: 'danger', reason: `Unrecognized Redis command on the read-only (query) channel (${head}); confirmation required` };
+  return { level: 'warning', reason: `Unrecognized Redis command (${head}); confirm before executing` };
 }
 
 /* ---------------- MongoDB ---------------- */
@@ -245,24 +245,24 @@ function classifyMongo(statement: string, op: 'query' | 'execute'): GuardVerdict
       head = Object.keys(parsed as Record<string, unknown>)[0] ?? '';
     }
   } catch {
-    return { level: 'danger', reason: 'MongoDB 命令不是合法 JSON 对象，按危险命令处理' };
+    return { level: 'danger', reason: 'MongoDB command is not a valid JSON object; treating it as a dangerous command' };
   }
-  if (head === '') return { level: 'danger', reason: '无法解析 MongoDB 命令，按危险命令处理' };
+  if (head === '') return { level: 'danger', reason: 'Cannot parse the MongoDB command; treating it as a dangerous command' };
 
   if (DANGEROUS_OPS.has(head)) {
-    return { level: 'danger', reason: `MongoDB 危险操作 ${head}，可能删库/删集合，需要确认` };
+    return { level: 'danger', reason: `Dangerous MongoDB operation ${head}; it may drop a database or collection; confirmation required` };
   }
   if (MONGO_DANGEROUS_EXTRA.has(head)) {
-    return { level: 'danger', reason: `MongoDB 危险操作 ${head}（删除整个集合，等同 dropCollection），需要确认` };
+    return { level: 'danger', reason: `Dangerous MongoDB operation ${head} (drops the whole collection, equivalent to dropCollection); confirmation required` };
   }
   if (MONGO_WRITE_OPS.has(head)) {
-    if (op === 'query') return { level: 'danger', reason: `只读通道（query）出现 MongoDB 写操作 ${head}，需要确认` };
-    return { level: 'warning', reason: `MongoDB 写操作 ${head} 将修改数据` };
+    if (op === 'query') return { level: 'danger', reason: `MongoDB write operation ${head} on the read-only (query) channel; confirmation required` };
+    return { level: 'warning', reason: `MongoDB write operation ${head} will modify data` };
   }
   if (MONGO_READ_OPS.has(head)) return { level: 'none' };
-  if (op === 'query') return { level: 'danger', reason: `只读通道（query）出现未识别的 MongoDB 操作（${head}），需要确认` };
+  if (op === 'query') return { level: 'danger', reason: `Unrecognized MongoDB operation on the read-only (query) channel (${head}); confirmation required` };
   // fail-closed：未识别的操作在 execute 通道也不静默放行（与 SQL/Redis 未识别语义对齐）
-  return { level: 'warning', reason: `未识别的 MongoDB 操作（${head}），请确认后执行` };
+  return { level: 'warning', reason: `Unrecognized MongoDB operation (${head}); confirm before executing` };
 }
 
 /* ---------------- ChallengeStore ---------------- */
@@ -315,7 +315,7 @@ export class ChallengeStore {
 
   /** 生成绑定语句+作用域的一次性 challenge */
   create(statement: string, scope?: ChallengeScope): Challenge {
-    if (this.disposed) throw new Error('ChallengeStore 已关闭');
+    if (this.disposed) throw new Error('ChallengeStore is closed');
     const now = this.nowFn();
     const ch: Challenge = {
       id: 'c_' + randomBytes(12).toString('hex'),

@@ -366,7 +366,7 @@ describe('5) 真实驱动接口契约（Fake 驱动掩盖的部分）', () => {
     const kit = captureDriver();
     await expect(
       createSqlserverAdapter(connByFields({ host: 'h', port: 70000 }), { driver: kit.driver }),
-    ).rejects.toThrow(/端口取值非法/);
+    ).rejects.toThrow(/port has an invalid value/);
     expect(kit.cfgs).toHaveLength(0); // 校验先于建池，不产生驱动配置
   });
 
@@ -375,7 +375,7 @@ describe('5) 真实驱动接口契约（Fake 驱动掩盖的部分）', () => {
     expect(Object.keys(tdsVersionTable).sort()).toEqual(['7_1', '7_2', '7_3_A', '7_3_B', '7_4', '8_0']);
     await expect(
       createSqlserverAdapter(connByUrl(`${BASE}?tdsVersion=8_0`), { driver: captureDriver().driver }),
-    ).rejects.toThrow(/tdsVersion 取值非法/);
+    ).rejects.toThrow(/tdsVersion has an invalid value/);
   });
 });
 
@@ -418,7 +418,7 @@ describe('1) 配置可接受性：适配器产出的 config 由真实 mssql/tedi
   it('非法 tdsVersion：适配器提前抛中文错误；真实驱动构造期并不拒绝（说明提前校验确有必要）', async () => {
     await expect(
       createSqlserverAdapter(connByUrl(`${BASE}?tdsVersion=x`), { driver: captureDriver().driver }),
-    ).rejects.toThrow(/tdsVersion 取值非法/);
+    ).rejects.toThrow(/tdsVersion has an invalid value/);
 
     // 真实驱动：构造期只校验类型，'x' 原样落地 ⇒ 要到 prelogin 才炸（错误形态极晚且难懂）
     const { options } = realDriverParse({ server: 'h', options: { tdsVersion: 'x' } });
@@ -443,7 +443,7 @@ describe('1) 配置可接受性：适配器产出的 config 由真实 mssql/tedi
 
     await expect(
       createSqlserverAdapter(connByUrl(`${BASE}?useUTC=maybe`), { driver: captureDriver().driver }),
-    ).rejects.toThrow(/useUTC 取值非法/);
+    ).rejects.toThrow(/useUTC has an invalid value/);
   });
 
   it('instanceName 与 port 共存：mssql 删掉 port 走实例名，适配器不会触发 tedious 的互斥异常', async () => {
@@ -544,7 +544,7 @@ describe('2) TLS 真实错误路径：本机自签证书假服务器', () => {
       expect(err['code']).toBe('EENCRYPT');
       expect(String(err['message'])).toMatch(/Server requires encryption/i);
       const msg = await mapRealError(err);
-      expect(msg).toMatch(/服务器要求加密/);
+      expect(msg).toMatch(/the server requires an encrypted connection/);
       expect(msg).toMatch(/\?encrypt=true/);
     } finally {
       await fake.close();
@@ -585,7 +585,7 @@ describe('3) 网络错误真实路径：ECONNREFUSED / ETIMEOUT / 主机名解�
     const err = await realConnectError('127.0.0.1', port, 3000);
     expect(err['code']).toBe('ESOCKET');
     const msg = await mapRealError(err);
-    expect(msg).toMatch(/网络不可达/);
+    expect(msg).toMatch(/network unreachable/);
     expect(msg).not.toMatch(/trustServerCertificate/); // 非 TLS 场景不加噪音指引
   }, 15000);
 
@@ -600,8 +600,8 @@ describe('3) 网络错误真实路径：ECONNREFUSED / ETIMEOUT / 主机名解�
       expect(err['code']).toBe('ETIMEOUT');
       expect(err['name']).toBe('ConnectionError');
       const msg = await mapRealError(err);
-      expect(msg).toMatch(/连接超时/);
-      expect(msg).toMatch(/主机|端口|防火墙/);
+      expect(msg).toMatch(/connection timed out/);
+      expect(msg).toMatch(/host|port|firewall/);
     } finally {
       for (const s of silentSockets) s.destroy();
       await new Promise<void>((r) => silent.close(() => r()));
@@ -613,7 +613,7 @@ describe('3) 网络错误真实路径：ECONNREFUSED / ETIMEOUT / 主机名解�
     expect(err['code']).toBe('ESOCKET');
     expect(String(err['message'])).toMatch(/ENOTFOUND|getaddrinfo/);
     const msg = await mapRealError(err);
-    expect(msg).toMatch(/网络不可达|主机名/);
+    expect(msg).toMatch(/network unreachable|host name/);
   }, 15000);
 });
 

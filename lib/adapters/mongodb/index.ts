@@ -62,7 +62,7 @@ function vendorOrNull(): MongoModule | undefined {
 function vendor(): MongoModule {
   const m = vendorOrNull();
   if (m === undefined) {
-    throw new Error('mongodb 驱动不可用：缺少 vendor/mongodb-driver.cjs。请在插件目录运行 npm run build:mongodb 构建后重试');
+    throw new Error('mongodb driver unavailable: vendor/mongodb-driver.cjs is missing. Run npm run build:mongodb in the plugin directory to build it, then retry');
   }
   return m;
 }
@@ -90,7 +90,7 @@ const ROWS_MAX = 500;
 const CELL_TRUNC = 1000;
 
 function trunc(s: string, max = CELL_TRUNC): string {
-  return s.length > max ? `${s.slice(0, max)}…[截断,共${s.length}字符]` : s;
+  return s.length > max ? `${s.slice(0, max)}…[truncated, ${s.length} chars total]` : s;
 }
 
 /** NormalizedCell 规范化：ObjectId/Decimal128/Long/Timestamp → toString()；Binary → hex 截断；Date → ISO；嵌套对象/数组 → JSON 截断 1000。
@@ -135,10 +135,10 @@ function assertNoWhere(node: unknown, path = '$'): void {
   if (isPlainObject(node)) {
     for (const [k, v] of Object.entries(node)) {
       if (JS_INJECTION_KEYS.has(k)) {
-        throw new Error(`MongoDB 查询拒绝使用 ${k}（${path}.${k}）：可执行服务端 JS 代码，存在注入风险；请改用查询运算符`);
+        throw new Error(`MongoDB query refuses to use ${k} (${path}.${k}): it can execute server-side JS code, which is an injection risk; use query operators instead`);
       }
       if (WRITE_STAGE_KEYS.has(k)) {
-        throw new Error(`MongoDB 查询拒绝聚合阶段 ${k}（${path}.${k}）：该阶段有写副作用（写入/创建目标集合），只读通道不允许；如需落盘请走 execute 通道并评估权限`);
+        throw new Error(`MongoDB query refuses aggregation stage ${k} (${path}.${k}): the stage has write side effects (writes or creates the target collection) and the read-only channel does not allow it; use the execute channel and assess permissions if you really need to persist data`);
       }
       assertNoWhere(v, `${path}.${k}`);
     }
@@ -151,10 +151,10 @@ function parseCommandDoc(input: string): Record<string, unknown> {
   try {
     doc = JSON.parse(input);
   } catch (e) {
-    throw new Error(`MongoDB 命令不是合法 JSON：${e instanceof Error ? e.message : String(e)}。示例：{"find":"users","filter":{},"limit":10}`);
+    throw new Error(`MongoDB command is not valid JSON: ${e instanceof Error ? e.message : String(e)}. Example: {"find":"users","filter":{},"limit":10}`);
   }
   if (!isPlainObject(doc) || Object.keys(doc).length === 0) {
-    throw new Error('MongoDB 命令必须为非空 JSON 文档对象，操作名为第一个键，如 {"find":"users"}');
+    throw new Error('MongoDB command must be a non-empty JSON document object with the operation name as its first key, e.g. {"find":"users"}');
   }
   return doc;
 }
@@ -165,13 +165,13 @@ export function assertExplicitFilter(op: string, filter: unknown): void {
     (isPlainObject(filter) && Object.keys(filter).length === 0);
   if (empty) {
     throw new Error(
-      `MongoDB ${op} 缺少显式 filter：空条件会作用于全集合。如确需全集合操作，请使用显式条件（如 {"_id":{"$exists":true}}）并经危险操作确认`,
+      `MongoDB ${op} requires an explicit filter: an empty condition applies to the whole collection. If a whole-collection operation is really intended, use an explicit condition (such as {"_id":{"$exists":true}}) and pass the dangerous-operation confirmation`,
     );
   }
 }
 
 function requireObject(v: unknown, label: string): Record<string, unknown> {
-  if (!isPlainObject(v)) throw new Error(`MongoDB ${label} 必须为 JSON 对象`);
+  if (!isPlainObject(v)) throw new Error(`MongoDB ${label} must be a JSON object`);
   return v;
 }
 
@@ -201,7 +201,7 @@ export async function createMongoAdapter(
       await client.connect();
     } catch (e) {
       throw new Error(
-        `MongoDB 连接失败（${sanitizeUri(uri)}）：${e instanceof Error ? e.message : String(e)}`,
+        `MongoDB connection failed (${sanitizeUri(uri)}): ${e instanceof Error ? e.message : String(e)}`,
       );
     }
   }
@@ -222,21 +222,21 @@ export async function createMongoAdapter(
   function wrap(e: unknown): Error {
     const M = vendorOrNull();
     if (M && e instanceof M.MongoServerError) {
-      return new Error(`MongoDB 服务端错误：${e.message}${e.codeName ? `（${e.codeName}）` : ''}`);
+      return new Error(`MongoDB server error: ${e.message}${e.codeName ? ` (${e.codeName})` : ''}`);
     }
-    return new Error(`MongoDB 错误：${e instanceof Error ? e.message : String(e)}`);
+    return new Error(`MongoDB error: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   function requireRw(action: string): void {
     if (mode === 'ro') {
-      throw new Error(`连接为只读(ro)模式，拒绝执行${action}；请使用 rw 连接或只发查询(query)`);
+      throw new Error(`Connection is in read-only (ro) mode; refusing to run ${action}; use an rw connection or send queries (query) only`);
     }
   }
 
   function collOf(cmd: Record<string, unknown>, op: string): string {
     const name = cmd[op];
     if (typeof name !== 'string' || name === '') {
-      throw new Error(`MongoDB ${op} 需要集合名字符串，如 {"${op}":"users"}`);
+      throw new Error(`MongoDB ${op} requires a collection name string, e.g. {"${op}":"users"}`);
     }
     return name;
   }
@@ -255,7 +255,7 @@ export async function createMongoAdapter(
           return { ok: true, serverInfo: `MongoDB ${String(info.version ?? '')}` };
         } catch {
           await client.db('admin').command({ hello: 1 });
-          return { ok: true, serverInfo: 'MongoDB（版本信息不可读）' };
+          return { ok: true, serverInfo: 'MongoDB (version information unavailable)' };
         }
       } catch (e) {
         return { ok: false, error: wrap(e).message };
@@ -268,7 +268,7 @@ export async function createMongoAdapter(
         assertNoWhere(cmd);
         const op = Object.keys(cmd)[0]!;
         if (!READ_OPS.has(op)) {
-          throw new Error(`MongoDB query 不支持操作 ${op}。读操作: ${[...READ_OPS].sort().join('/')}；写操作请走 execute`);
+          throw new Error(`MongoDB query does not support operation ${op}. Read operations: ${[...READ_OPS].sort().join('/')}; use execute for write operations`);
         }
 
         switch (op) {
@@ -296,10 +296,10 @@ export async function createMongoAdapter(
             } else if (Array.isArray(cmd.pipeline)) {
               stages = cmd.pipeline;
             } else {
-              throw new Error('MongoDB aggregate 需要阶段数组：{"aggregate":"coll","pipeline":[{"$match":{}}]}');
+              throw new Error('MongoDB aggregate requires a stages array: {"aggregate":"coll","pipeline":[{"$match":{}}]}');
             }
             const name = typeof cmd.aggregate === 'string' ? cmd.aggregate : undefined;
-            if (name === undefined) throw new Error('MongoDB aggregate 需要集合名：{"aggregate":"coll","pipeline":[...]}');
+            if (name === undefined) throw new Error('MongoDB aggregate requires a collection name: {"aggregate":"coll","pipeline":[...]}');
             const docs = await db.collection(name).aggregate(stages as object[]).limit(ROWS_MAX).toArray();
             return docsToResult(docs, docs.length >= ROWS_MAX);
           }
@@ -321,7 +321,7 @@ export async function createMongoAdapter(
           case 'distinct': {
             const name = collOf(cmd, 'distinct');
             if (typeof cmd.key !== 'string' || cmd.key === '') {
-              throw new Error('MongoDB distinct 需要 key 字段名：{"distinct":"coll","key":"field","query":{}}');
+              throw new Error('MongoDB distinct requires a key field name: {"distinct":"coll","key":"field","query":{}}');
             }
             const vals = await db.collection(name).distinct(cmd.key, isPlainObject(cmd.query) ? cmd.query : {});
             const rows = (vals as unknown[]).map((v) => [normalizeMongoCell(v)] as NormalizedCell[]);
@@ -352,7 +352,7 @@ export async function createMongoAdapter(
             return { columns: ['name', 'key', 'unique'], rows, rowCount: rows.length };
           }
           default:
-            throw new Error(`MongoDB query 暂未实现操作 ${op}`);
+            throw new Error(`MongoDB query does not yet implement operation ${op}`);
         }
       } catch (e) {
         throw wrap(e);
@@ -360,33 +360,33 @@ export async function createMongoAdapter(
     },
 
     async execute(statement: string): Promise<ExecResult> {
-      requireRw('写操作(execute)');
+      requireRw('write operations (execute)');
       try {
         const cmd = parseCommandDoc(statement);
         assertNoWhere(cmd);
         const op = Object.keys(cmd)[0]!;
         if (!WRITE_OPS.has(op)) {
-          throw new Error(`MongoDB execute 不支持操作 ${op}。写操作: ${[...WRITE_OPS].sort().join('/')}`);
+          throw new Error(`MongoDB execute does not support operation ${op}. Write operations: ${[...WRITE_OPS].sort().join('/')}`);
         }
         if (op === 'createCollection') {
           const name = collOf(cmd, 'createCollection');
           await db.createCollection(name);
-          return { message: `已创建集合 ${name}` };
+          return { message: `Created collection ${name}` };
         }
         if (op === 'dropCollection') {
           const name = collOf(cmd, 'dropCollection');
           const dropped = await db.dropCollection(name);
           return dropped
-            ? { message: `已删除集合 ${name}` }
-            : { message: `集合 ${name} 不存在，未删除` };
+            ? { message: `Dropped collection ${name}` }
+            : { message: `Collection ${name} does not exist; nothing was dropped` };
         }
         if (op === 'renameCollection') {
           const from = collOf(cmd, 'renameCollection');
           if (typeof cmd.to !== 'string' || cmd.to === '') {
-            throw new Error('MongoDB renameCollection 需要 to 目标名：{"renameCollection":"a","to":"b"}');
+            throw new Error('MongoDB renameCollection requires a "to" target name: {"renameCollection":"a","to":"b"}');
           }
           await db.collection(from).rename(cmd.to);
-          return { message: `已将集合 ${from} 重命名为 ${cmd.to}` };
+          return { message: `Renamed collection ${from} to ${cmd.to}` };
         }
         if (op === 'createIndex' || op === 'createIndexes') {
           const name = collOf(cmd, op);
@@ -395,19 +395,19 @@ export async function createMongoAdapter(
             : Array.isArray(cmd.index)
               ? cmd.index
               : isPlainObject(cmd.indexes) ? [cmd.indexes] : Array.isArray(cmd.indexes) ? cmd.indexes : null;
-          if (!specs) throw new Error('MongoDB createIndex 需要 index 规格对象或数组：{"createIndex":"coll","index":{"key":{"a":1},"name":"a_1"}}');
+          if (!specs) throw new Error('MongoDB createIndex requires an index spec object or array: {"createIndex":"coll","index":{"key":{"a":1},"name":"a_1"}}');
           // 官方返回索引名数组（mongodb.d.ts: createIndexes(...): Promise<string[]>），
           // 无 createdNewIndexes 字段（曾按记忆臆造，恒 undefined）；驱动不区分
           // 新建/已存在，affectedRows = 规格数
           const created = await db.collection(name).createIndexes(specs as IndexDescription[]);
-          return { affectedRows: created.length, message: `已在集合 ${name} 创建索引（${created.length} 个）` };
+          return { affectedRows: created.length, message: `Created indexes on collection ${name} (${created.length} in total)` };
         }
         if (op === 'dropIndex' || op === 'dropIndexes') {
           const name = collOf(cmd, op);
           const index = typeof cmd.index === 'string' ? cmd.index : undefined;
-          if (index === undefined) throw new Error('MongoDB dropIndex 需要 index 名：{"dropIndex":"coll","index":"a_1"}');
+          if (index === undefined) throw new Error('MongoDB dropIndex requires an index name: {"dropIndex":"coll","index":"a_1"}');
           await db.collection(name).dropIndex(index);
-          return { message: `已删除集合 ${name} 的索引 ${index}` };
+          return { message: `Dropped index ${index} on collection ${name}` };
         }
 
         // ---- 文档级 DML ----
@@ -418,15 +418,15 @@ export async function createMongoAdapter(
             // 不设 cmd.insert 别名：该键语义是集合名（insertMany 命令形态），混用会误导报错方向
             const doc = reviveEjson(requireObject(cmd.document, 'insertOne.document'));
             const r = await c.insertOne(doc as object);
-            return { affectedRows: 1, message: `已插入 1 条文档到 ${name}（_id=${String(r.insertedId)}）` };
+            return { affectedRows: 1, message: `Inserted 1 document into ${name} (_id=${String(r.insertedId)})` };
           }
           case 'insertMany': {
             if (!Array.isArray(cmd.documents ?? cmd.docs) || ((cmd.documents ?? cmd.docs) as unknown[]).length === 0) {
-              throw new Error('MongoDB insertMany 需要非空 documents 数组：{"insertMany":"coll","documents":[{...}]}');
+              throw new Error('MongoDB insertMany requires a non-empty documents array: {"insertMany":"coll","documents":[{...}]}');
             }
             const docs = ((cmd.documents ?? cmd.docs) as unknown[]).map((d) => reviveEjson(requireObject(d, 'insertMany.documents[]')) as object);
             const r = await c.insertMany(docs);
-            return { affectedRows: r.insertedCount, message: `已插入 ${r.insertedCount} 条文档到 ${name}` };
+            return { affectedRows: r.insertedCount, message: `Inserted ${r.insertedCount} documents into ${name}` };
           }
           case 'updateOne':
           case 'updateMany': {
@@ -438,7 +438,7 @@ export async function createMongoAdapter(
               : await c.updateMany(filter as object, update as object);
             return {
               affectedRows: r.modifiedCount,
-              message: `${op} 完成：匹配 ${r.matchedCount} 条，修改 ${r.modifiedCount} 条（${name}）`,
+              message: `${op} complete: ${r.matchedCount} matched, ${r.modifiedCount} modified (${name})`,
             };
           }
           case 'replaceOne': {
@@ -447,7 +447,7 @@ export async function createMongoAdapter(
             const r = await c.replaceOne(filter as object, replacement as object);
             return {
               affectedRows: r.modifiedCount,
-              message: `replaceOne 完成：匹配 ${r.matchedCount} 条，替换 ${r.modifiedCount} 条（${name}）`,
+              message: `replaceOne complete: ${r.matchedCount} matched, ${r.modifiedCount} replaced (${name})`,
             };
           }
           case 'deleteOne':
@@ -457,10 +457,10 @@ export async function createMongoAdapter(
             const r = op === 'deleteOne'
               ? await c.deleteOne(filter as object)
               : await c.deleteMany(filter as object);
-            return { affectedRows: r.deletedCount, message: `${op} 完成：删除 ${r.deletedCount} 条（${name}）` };
+            return { affectedRows: r.deletedCount, message: `${op} complete: ${r.deletedCount} deleted (${name})` };
           }
           default:
-            throw new Error(`MongoDB execute 暂未实现操作 ${op}`);
+            throw new Error(`MongoDB execute does not yet implement operation ${op}`);
         }
       } catch (e) {
         throw wrap(e);
@@ -519,7 +519,7 @@ export async function createMongoAdapter(
         }
         // _id 未出现在样本中（空集合）也要给出主键提示
         if (!out.some((c) => c.name === '_id')) {
-          out.unshift({ name: '_id', dataType: 'ObjectId (inferred)', nullable: false, key: 'PRI', comment: '空集合样本推断' });
+          out.unshift({ name: '_id', dataType: 'ObjectId (inferred)', nullable: false, key: 'PRI', comment: 'inferred from empty collection sample' });
         }
         return out;
       } catch (e) {
@@ -591,7 +591,7 @@ export function reviveEjson(v: unknown): unknown {
   if (keys.length === 1 && keys[0] === '$oid') {
     const s = v.$oid;
     if (typeof s !== 'string' || !OID_HEX_RE.test(s)) {
-      throw new Error(`MongoDB $oid 值非法（${String(s)}）：需 24 位十六进制字符串，如 {"$oid":"507f1f77bcf86cd799439011"}`);
+      throw new Error(`Invalid MongoDB $oid value (${String(s)}): expected a 24-character hexadecimal string, e.g. {"$oid":"507f1f77bcf86cd799439011"}`);
     }
     const M = vendorOrNull();
     return M ? new M.ObjectId(s) : v;
@@ -663,7 +663,7 @@ export async function openMongoRaw(conn: ResolvedConnection): Promise<MongoRaw> 
     await client.connect();
   } catch (e) {
     throw new Error(
-      `MongoDB 连接失败（${sanitizeUri(uri)}）：${e instanceof Error ? e.message : String(e)}`,
+      `MongoDB connection failed (${sanitizeUri(uri)}): ${e instanceof Error ? e.message : String(e)}`,
     );
   }
   const dbName =

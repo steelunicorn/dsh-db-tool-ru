@@ -154,4 +154,53 @@ describe('GrantStore', () => {
     const after = JSON.parse(fs.readFileSync(file, 'utf8')) as { grants: Record<string, unknown> };
     expect(Object.keys(after.grants)).toEqual([key]);
   });
+
+  describe('database allowlist (per-grant narrowing)', () => {
+    it('grantsFor returns a trimmed, case-insensitively deduplicated list', () => {
+      store.grants.grant(p1, 'conn-a', 'ro', [' sales ', 'SALES', 'hr', '']);
+      expect(store.grants.grantsFor(p1)).toEqual([{ connId: 'conn-a', mode: 'ro', databases: ['sales', 'hr'] }]);
+    });
+
+    it('omitting databases keeps the stored list; an empty array clears it', () => {
+      store.grants.grant(p1, 'conn-a', 'rw', ['sales']);
+      store.grants.grant(p1, 'conn-a', 'rw'); // undefined = keep
+      expect(store.grants.resolve(p1, 'conn-a')).toEqual({ mode: 'rw', databases: ['sales'] });
+      store.grants.grant(p1, 'conn-a', 'rw', []);
+      expect(store.grants.resolve(p1, 'conn-a')).toEqual({ mode: 'rw' });
+      expect(store.grants.grantsFor(p1)).toEqual([{ connId: 'conn-a', mode: 'rw' }]);
+    });
+
+    it('resolve ignores blank-only lists and merges duplicate entries: rw wins, first non-empty list wins', () => {
+      const file = path.join(home, 'db-tool', 'grants.json');
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(
+        file,
+        JSON.stringify({
+          grants: {
+            [p1]: [
+              { connId: 'conn-a', mode: 'ro', grantedAt: '2026-01-01T00:00:00.000Z', databases: ['  ', ''] },
+              { connId: 'conn-a', mode: 'rw', grantedAt: '2026-01-02T00:00:00.000Z', databases: ['HR'] },
+            ],
+          },
+        }),
+        'utf8',
+      );
+      store = new DbToolStore(home);
+      expect(store.grants.resolve(p1, 'conn-a')).toEqual({ mode: 'rw', databases: ['HR'] });
+      expect(store.grants.check(p1, 'conn-a')).toBe('rw');
+    });
+
+    it('persists the allowlist and reloads it; removing the connection clears it', () => {
+      store.grants.grant(p1, 'conn-a', 'ro', ['sales', 'hr']);
+      const file = path.join(home, 'db-tool', 'grants.json');
+      const onDisk = JSON.parse(fs.readFileSync(file, 'utf8')) as {
+        grants: Record<string, { connId: string; databases?: string[] }[]>;
+      };
+      expect(onDisk.grants[p1]?.[0]?.databases).toEqual(['sales', 'hr']);
+      store = new DbToolStore(home);
+      expect(store.grants.resolve(p1, 'conn-a')).toEqual({ mode: 'ro', databases: ['sales', 'hr'] });
+      store.grants.removeConn('conn-a');
+      expect(store.grants.resolve(p1, 'conn-a')).toBeUndefined();
+    });
+  });
 });

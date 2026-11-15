@@ -192,14 +192,14 @@ export function createOraLikeTransferReader(
 
   const describe = async (table: string): Promise<TransferTable> => {
     const own = sanitize(owner, 'owner');
-    const tab = sanitize(table, '表名');
+    const tab = sanitize(table, 'table name');
     const rows = await exec(
       `SELECT COLUMN_NAME, DATA_TYPE, DATA_PRECISION, DATA_SCALE, CHAR_LENGTH, NULLABLE, DATA_DEFAULT
        FROM ALL_TAB_COLUMNS WHERE OWNER = :o AND (TABLE_NAME = :t OR TABLE_NAME = UPPER(:t))
        ORDER BY COLUMN_ID`,
       [own, tab],
     );
-    if (rows.length === 0) throw new Error(`表不存在: ${own}.${tab}`);
+    if (rows.length === 0) throw new Error(`Table does not exist: ${own}.${tab}`);
     const pks = await exec(
       `SELECT COLS.COLUMN_NAME FROM ALL_CONSTRAINTS CONS
        JOIN ALL_CONS_COLUMNS COLS ON CONS.OWNER = COLS.OWNER AND CONS.CONSTRAINT_NAME = COLS.CONSTRAINT_NAME
@@ -245,7 +245,7 @@ export function createOraLikeTransferReader(
 
     count: async (table) => {
       const own = escIdent(sanitize(owner, 'owner'));
-      const tab = escIdent(sanitize(table, '表名'));
+      const tab = escIdent(sanitize(table, 'table name'));
       const rows = await exec(`SELECT COUNT(*) AS N FROM "${own}"."${tab}"`);
       return Number(Object.values(rows[0] ?? {})[0] ?? 0);
     },
@@ -261,7 +261,7 @@ export function createOraLikeTransferReader(
     readBatch: async (table, cursor: TransferCursor, limit: number) => {
       const t = await describe(table);
       // 表/分片键与同文件 count/keyAt 同走 sanitize（防 NUL/换行/超长的统一防线）
-      const tbl = `"${escIdent(sanitize(t.name, '表名'))}"`;
+      const tbl = `"${escIdent(sanitize(t.name, 'table name'))}"`;
       const cols = t.columns.map((c) => `"${escIdent(c.name)}"`).join(', ');
       // 分片键（date 系列时为 materialize 产出的 ISO 串）先归一 UTC 墙钟再绑定
       const keyCol = cursor.mode === 'offset' ? undefined : t.columns.find((c) => c.name === cursor.column);
@@ -274,7 +274,7 @@ export function createOraLikeTransferReader(
       // 整数（值源自编排层内部 offset/limit，非用户拼串，无注入面）
       const n = Math.max(1, Math.floor(limit) || 1);
       if (cursor.mode === 'keyset') {
-        const key = `"${escIdent(sanitize(cursor.column, '分片键'))}"`;
+        const key = `"${escIdent(sanitize(cursor.column, 'shard key'))}"`;
         if (cursor.after === null) {
           sql = `SELECT ${cols} FROM ${tbl} ORDER BY ${key} OFFSET 0 ROWS FETCH FIRST ${n} ROWS ONLY`;
           binds = [];
@@ -283,7 +283,7 @@ export function createOraLikeTransferReader(
           binds = [bindKey(cursor.after)];
         }
       } else if (cursor.mode === 'range') {
-        const key = `"${escIdent(sanitize(cursor.column, '分片键'))}"`;
+        const key = `"${escIdent(sanitize(cursor.column, 'shard key'))}"`;
         const conds: string[] = [];
         const bindsArr: unknown[] = [];
         if (cursor.lo !== null) {
@@ -315,9 +315,9 @@ export function createOraLikeTransferReader(
 
     keyAt: async (table, column, offset) => {
       const own = escIdent(sanitize(owner, 'owner'));
-      const key = `"${escIdent(sanitize(column, '分片键'))}"`;
+      const key = `"${escIdent(sanitize(column, 'shard key'))}"`;
       const rows = await exec(
-        `SELECT ${key} AS K FROM "${own}"."${escIdent(sanitize(table, '表名'))}" ORDER BY ${key} OFFSET ${Math.max(0, Math.floor(offset) || 0)} ROWS FETCH FIRST 1 ROWS ONLY`,
+        `SELECT ${key} AS K FROM "${own}"."${escIdent(sanitize(table, 'table name'))}" ORDER BY ${key} OFFSET ${Math.max(0, Math.floor(offset) || 0)} ROWS FETCH FIRST 1 ROWS ONLY`,
       );
       return rows.length === 0 ? null : await materialize(Object.values(rows[0] ?? {})[0]);
     },
@@ -351,7 +351,7 @@ export function createOraLikeTransferWriter(
       try {
         const r = await conn.execute(
           `SELECT COUNT(*) AS N FROM ALL_TABLES WHERE OWNER = :o AND (TABLE_NAME = :t OR TABLE_NAME = UPPER(:t))`,
-          [sanitize(owner, 'owner'), sanitize(name, '表名'), sanitize(name, '表名')],
+          [sanitize(owner, 'owner'), sanitize(name, 'table name'), sanitize(name, 'table name')],
           { maxRows: 1 },
         );
         const rows = r.rows ?? [];
@@ -414,7 +414,7 @@ export function createOraLikeTransferWriter(
       const width = cols.length;
       for (const r of rows) {
         if (r.length !== width) {
-          throw new Error(`行宽不匹配：期望 ${width} 列，实际 ${r.length} 列（表 ${table.name}）`);
+          throw new Error(`Row width mismatch: expected ${width} columns, got ${r.length} (table ${table.name})`);
         }
       }
       const colList = cols.map((c) => `"${escIdent(c.name)}"`).join(', ');
@@ -439,7 +439,7 @@ export function createOraLikeTransferWriter(
           }
         } else if (writeMode === 'replace') {
           const pkCols = cols.filter((c) => c.primaryKey);
-          if (pkCols.length === 0) throw new Error(`replace 模式需要主键：表 ${table.name} 无主键`);
+          if (pkCols.length === 0) throw new Error(`replace mode requires a primary key: table ${table.name} has none`);
           const delSql = `DELETE FROM ${qual(table.name)} WHERE ${pkCols
             .map((c, i) => `"${escIdent(c.name)}" = :d${i + 1}`)
             .join(' AND ')}`;
@@ -489,5 +489,5 @@ export function ownerOfFromConn(rc: ResolvedConnection): string {
       // 解析失败交给上层错误
     }
   }
-  throw new Error(`${rc.meta.kind} 连接缺少用户名（owner）`);
+  throw new Error(`${rc.meta.kind} connection is missing the username (owner)`);
 }

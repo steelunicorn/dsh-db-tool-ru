@@ -99,7 +99,7 @@ function poolConfig(conn: ResolvedConnection, overrideUrl?: string, max = 10): R
     if (f.password != null) base.password = String(f.password);
     if (f.database != null) base.database = String(f.database);
   } else {
-    throw new Error(`${conn.meta.kind} 连接缺少 url 或 fields 配置`);
+    throw new Error(`${conn.meta.kind} connection is missing url or fields configuration`);
   }
   if (conn.ssl) base.ssl = { rejectUnauthorized: false };
   return base;
@@ -375,7 +375,7 @@ export async function createPgLikeAdapter(
     if (!ref) return { db: null, schema: defaultSchema() };
     const i = ref.indexOf('.');
     if (i < 0) return { db: null, schema: assertIdent(ref, what) };
-    return { db: assertIdent(ref.slice(0, i), '数据库'), schema: assertIdent(ref.slice(i + 1), what) };
+    return { db: assertIdent(ref.slice(0, i), 'database'), schema: assertIdent(ref.slice(i + 1), what) };
   };
 
   function toQueryResult(res: PgLikeResult): QueryResult {
@@ -389,8 +389,8 @@ export async function createPgLikeAdapter(
 
   const tx: TxHandle = {
     begin: () =>
-      humanize(`${kind} 事务开启`, async () => {
-        if (txClient) throw new Error('事务已开启，请勿重复 begin');
+      humanize(`${kind} transaction begin`, async () => {
+        if (txClient) throw new Error('Transaction already open; do not call begin again');
         txClient = await pool.connect();
         try {
           await txClient.query('BEGIN');
@@ -401,9 +401,9 @@ export async function createPgLikeAdapter(
         }
       }),
     commit: () =>
-      humanize(`${kind} 事务提交`, async () => {
+      humanize(`${kind} transaction commit`, async () => {
         const c = txClient;
-        if (!c) throw new Error('没有进行中的事务');
+        if (!c) throw new Error('No transaction in progress');
         txClient = null;
         try {
           await c.query('COMMIT');
@@ -412,9 +412,9 @@ export async function createPgLikeAdapter(
         }
       }),
     rollback: () =>
-      humanize(`${kind} 事务回滚`, async () => {
+      humanize(`${kind} transaction rollback`, async () => {
         const c = txClient;
-        if (!c) throw new Error('没有进行中的事务');
+        if (!c) throw new Error('No transaction in progress');
         txClient = null;
         try {
           await c.query('ROLLBACK');
@@ -430,41 +430,41 @@ export async function createPgLikeAdapter(
     tx,
 
     testConnect: () =>
-      humanize(`${kind} 连接测试`, async () => {
+      humanize(`${kind} connection test`, async () => {
         const res = await pool.query('SELECT version() AS v');
         const v = res.rows[0]?.v;
         return { ok: true, serverInfo: v == null ? kind : String(v) };
       }),
 
     query: (sql, params, database) =>
-      humanize(`${kind} 查询失败`, async () => {
+      humanize(`${kind} query failed`, async () => {
         // 跨库操控（Navicat 式）：指定目标库 → 路由到该库的池（主池事务不跨库，忽略事务路由）
         const res = database
-          ? await poolFor(assertIdent(database, '数据库')).query(sql, params ?? [])
+          ? await poolFor(assertIdent(database, 'database')).query(sql, params ?? [])
           : await run(sql, params ?? []);
         return toQueryResult(res);
       }),
 
     execute: (statement, params, database) =>
-      humanize(`${kind} 执行失败`, async (): Promise<ExecResult> => {
+      humanize(`${kind} execute failed`, async (): Promise<ExecResult> => {
         const res = database
-          ? await poolFor(assertIdent(database, '数据库')).query(statement, params ?? [])
+          ? await poolFor(assertIdent(database, 'database')).query(statement, params ?? [])
           : await run(statement, params ?? []);
         const n = res.rowCount;
         return {
           affectedRows: typeof n === 'number' ? n : undefined,
-          message: typeof n === 'number' ? `执行成功，受影响 ${n} 行` : '执行成功',
+          message: typeof n === 'number' ? `Executed successfully, ${n} rows affected` : 'Executed successfully',
         };
       }),
 
     listDatabases: () =>
-      humanize(`${kind} 列出数据库`, async () => listDbNames()),
+      humanize(`${kind} list databases`, async () => listDbNames()),
 
     // 库内 schema 清单（Navicat 官方层级：数据库 → 模式 → 表）。
     // database 参数 = 库名（UI 树第一层）；pg_* 前缀覆盖 pg_catalog/pg_toast/pg_temp 系。
     listSchemas: (database) =>
-      humanize(`${kind} 列出模式`, async () => {
-        const p = poolFor(database ? assertIdent(database, '数据库') : null);
+      humanize(`${kind} list schemas`, async () => {
+        const p = poolFor(database ? assertIdent(database, 'database') : null);
         const res = await p.query(
           `SELECT nspname FROM pg_catalog.pg_namespace
            WHERE nspname NOT LIKE 'pg\\_%' AND nspname <> 'information_schema'
@@ -475,7 +475,7 @@ export async function createPgLikeAdapter(
 
     // database 参数 = "库名.schema"（跨库浏览）或 "schema"（当前库）
     listTables: (database) =>
-      humanize(`${kind} 列出表`, async () => {
+      humanize(`${kind} list tables`, async () => {
         const { db, schema } = parseBrowseTarget(database, 'schema');
         // 表注释经 pg_description 取回（COMMENT ON TABLE 的存储位置）；(relnamespace, relname) 唯一，
         // LEFT JOIN 不会放大行数，无注释的表拿 NULL → undefined
@@ -504,12 +504,12 @@ export async function createPgLikeAdapter(
     // 'db.schema'（精确单 schema）| 'schema'（当前库）| 空（集群全部库逐池并发）。
     // ILIKE 大小写不敏感；转义符 '~' 避开反斜杠歧义，% _ \ ~ 全转义，参数绑定无注入面。
     searchTables: (keyword, database, limit) =>
-      humanize(`${kind} 搜索表`, async () => {
+      humanize(`${kind} search tables`, async () => {
         const cap = Math.max(1, Math.min(200, Math.floor(Number(limit) || 100)));
         const pattern = '%' + keyword.replace(/[~%_\\]/g, (m) => `~${m}`) + '%';
         if (database) {
           const dot = database.indexOf('.');
-          const dbName = assertIdent(dot >= 0 ? database.slice(0, dot) : database, '数据库');
+          const dbName = assertIdent(dot >= 0 ? database.slice(0, dot) : database, 'database');
           const schema = dot >= 0 ? assertIdent(database.slice(dot + 1), 'schema') : null;
           return searchOneDb(poolFor(dbName), dbName, pattern, cap, schema);
         }
@@ -531,9 +531,9 @@ export async function createPgLikeAdapter(
       }),
 
     describeTable: (table, database) =>
-      humanize(`${kind} 查看表结构`, async () => {
+      humanize(`${kind} describe table`, async () => {
         const { db, schema } = parseBrowseTarget(database, 'schema');
-        const tbl = assertIdent(table, '表名');
+        const tbl = assertIdent(table, 'table name');
         const p = poolFor(db);
         const res = await p.query(
           `SELECT c.column_name, c.data_type, c.is_nullable, c.column_default, c.character_maximum_length,
@@ -543,7 +543,7 @@ export async function createPgLikeAdapter(
            ORDER BY c.ordinal_position`,
           [schema, tbl],
         );
-        if (res.rows.length === 0) throw new Error(`表不存在: ${db ? db + '.' : ''}${schema}.${tbl}`);
+        if (res.rows.length === 0) throw new Error(`Table not found: ${db ? db + '.' : ''}${schema}.${tbl}`);
         const pks = await p.query(
           `SELECT kcu.column_name FROM information_schema.table_constraints tc
            JOIN information_schema.key_column_usage kcu
@@ -567,9 +567,9 @@ export async function createPgLikeAdapter(
       }),
 
     previewRows: (table, limit, database, offset) =>
-      humanize(`${kind} 预览行`, async () => {
+      humanize(`${kind} preview rows`, async () => {
         const { db, schema } = parseBrowseTarget(database, 'schema');
-        const tbl = assertIdent(table, '表名');
+        const tbl = assertIdent(table, 'table name');
         const lim = clampLimit(limit);
         const off = clampOffset(offset);
         const sql = `SELECT * FROM ${quoteIdent(schema)}.${quoteIdent(tbl)} LIMIT $1 OFFSET $2`;
@@ -579,7 +579,7 @@ export async function createPgLikeAdapter(
       }),
 
     close: () =>
-      humanize(`${kind} 关闭连接`, async () => {
+      humanize(`${kind} close connection`, async () => {
         if (closed) return; // 幂等：重复 close 为 no-op（见 closed 声明处注释）
         closed = true;
         await Promise.all([pool.end(), ...[...dbPools.values()].map((p) => p.end())]);

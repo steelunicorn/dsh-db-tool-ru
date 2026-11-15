@@ -72,7 +72,7 @@ export async function runScriptInChild(opts: ScriptRunOptions): Promise<unknown>
       settled = true;
       child.kill('SIGKILL');
       opts.onTimeout?.();
-      reject(new DbToolError('SCRIPT_TIMEOUT', `脚本执行超时（${Math.round(timeoutMs / 1000)}s），已强制终止并关闭本次会话连接`));
+      reject(new DbToolError('SCRIPT_TIMEOUT', `Script execution timed out (${Math.round(timeoutMs / 1000)}s); the process was killed and this session's connection was closed`));
     }, timeoutMs);
     timer.unref?.();
 
@@ -117,11 +117,11 @@ export async function runScriptInChild(opts: ScriptRunOptions): Promise<unknown>
           if (err.code === 'NEEDS_CONFIRMATION' && err.payload) {
             reject(needConfirmFromPayload(err.payload));
           } else if (err.code === 'SCRIPT_TIMEOUT') {
-            reject(new DbToolError('SCRIPT_TIMEOUT', err.message ?? '脚本执行超时'));
+            reject(new DbToolError('SCRIPT_TIMEOUT', err.message ?? 'Script execution timed out'));
           } else if (err.code === 'READ_ONLY') {
-            reject(new DbToolError('READ_ONLY', err.message ?? '该连接为只读授权，拒绝写操作'));
+            reject(new DbToolError('READ_ONLY', err.message ?? 'This connection is read-only; write operations are refused'));
           } else {
-            const e = new Error(err.message ?? '脚本执行失败');
+            const e = new Error(err.message ?? 'Script execution failed');
             reject(e);
           }
         }
@@ -132,13 +132,13 @@ export async function runScriptInChild(opts: ScriptRunOptions): Promise<unknown>
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      reject(new Error(`脚本进程异常退出（code=${code ?? 'null'}${signal ? `, signal=${signal}` : ''}）`));
+      reject(new Error(`Script process exited abnormally (code=${code ?? 'null'}${signal ? `, signal=${signal}` : ''})`));
     });
     child.on('error', (e) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      reject(new DbToolError('DRIVER_ERROR', `脚本进程启动失败: ${e.message}`));
+      reject(new DbToolError('DRIVER_ERROR', `Failed to start the script process: ${e.message}`));
     });
 
     child.send({ type: 'run', code: opts.code }, () => {
@@ -152,7 +152,7 @@ export async function runScriptInChild(opts: ScriptRunOptions): Promise<unknown>
     const database = rawDatabase ?? undefined;
     if (method === 'query') return opts.dbQuery(statement, params, database);
     if (method === 'execute') return opts.dbExecute(statement, params, database);
-    throw new DbToolError('INVALID_ARGUMENT', `未知 db 方法: ${method}`);
+    throw new DbToolError('INVALID_ARGUMENT', `Unknown db method: ${method}`);
   }
 
   function errorOf(e: unknown): { code?: string; message: string; payload?: unknown } {

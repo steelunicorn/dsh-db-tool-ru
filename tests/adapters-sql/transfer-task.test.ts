@@ -111,7 +111,7 @@ for (const mode of ['node', 'better'] as const) {
       const snap = await task.finished;
       expect(snap.status).toBe('failed');
       expect(snap.failures[0]?.table).toBe('small');
-      expect(snap.failures[0]?.error).toContain('目标表已存在');
+      expect(snap.failures[0]?.error).toContain('Target table already exists');
     }, 30000);
 
     it('truncate 模式：目标表已存在 → 清空旧数据后写入', async () => {
@@ -146,7 +146,7 @@ for (const mode of ['node', 'better'] as const) {
       const t1 = startTransferTask(connOf('s1', src), connOf('t1', dst2), { tables: ['small'], writeMode: 'insert', batchSize: 10 });
       const s1 = await t1.finished;
       expect(s1.status).toBe('failed');
-      expect(s1.failures[0]?.error).toContain('目标表已存在');
+      expect(s1.failures[0]?.error).toContain('Target table already exists');
       // 开覆盖表结构：删除重建，写入成功且旧数据被替换
       const t2 = startTransferTask(connOf('s2', src), connOf('t2', dst2), { tables: ['small'], writeMode: 'insert', batchSize: 10, overwriteStructure: true });
       const s2 = await t2.finished;
@@ -197,7 +197,7 @@ for (const mode of ['node', 'better'] as const) {
       expect(snap.status).toBe('failed');
       // 失败按真实表名记录（旧实现会以 table:'*' 兜底且表级停留在 pending）
       expect(snap.failures.map((f) => f.table).sort()).toEqual(['big', 'small']);
-      expect(snap.failures[0]?.error).toMatch(/打开失败|unable to open|CANTOPEN/i);
+      expect(snap.failures[0]?.error).toMatch(/sqlite open failed|unable to open|CANTOPEN/i);
       expect(snap.tables.find((t) => t.name === 'big')?.status).toBe('failed');
     }, 30000);
   });

@@ -1,5 +1,5 @@
 window.__ModuleLoader__.load({
-	id: "dsh-db-tool",
+	id: "dsh-db-tool-ru",
 	factory: (require) => {
 		var module = { exports: {} };
 		var exports = module.exports;
@@ -7,7 +7,7 @@ window.__ModuleLoader__.load({
 		const React = require("react");
 
 		/* ============================================================
-		 * dsh-db-tool 右侧栏客户端
+		 * dsh-db-tool-ru 右侧栏客户端
 		 * 形态与 dsh-ssh-tunnel 一致：单文件 __ModuleLoader__ 模块，
 		 * exports.inject / exports.apply(ctx) 由 DSH web 宿主加载，
 		 * 经 DSH 官方右侧栏（@deepseek-ai/dsh-client-ui-sidebar-right）
@@ -266,6 +266,11 @@ window.__ModuleLoader__.load({
 			// 通用
 			error: "错误",
 			ok: "操作完成",
+			// 授权库范围与行数单位
+			grantDbLabel: "库范围",
+			grantDbPlaceholder: "留空 = 全部库；逗号分隔库名以限制",
+			grantDbSaved: "已保存",
+			rowsSuffix: "行",
 		};
 		const en = {
 			tabTitle: "Databases",
@@ -508,6 +513,255 @@ window.__ModuleLoader__.load({
 			cancelled: "Cancelled",
 			error: "Error",
 			ok: "Done",
+			// Database scope per grant + row-count unit
+			grantDbLabel: "Databases",
+			grantDbPlaceholder: "empty = all databases; comma-separated names to restrict",
+			grantDbSaved: "Saved",
+			rowsSuffix: "rows",
+		};
+
+		const ru = {
+			tabTitle: "Базы данных",
+			tabDesc: "Управление подключениями, доступом проектов, просмотр данных и SQL-консоль",
+			tabUnavailable: "Вкладка ещё не готова. Переключите вкладки и повторите попытку",
+			projectLabel: "Проект: {path}",
+			pluginVersion: "Версия плагина",
+			projectUnbound: "Не удалось определить путь текущего проекта. Укажите абсолютный путь к рабочей области ниже",
+			projectPathPlaceholder: "абсолютный путь к рабочей области (например, /home/me/my-app)",
+			viewManage: "Подключения",
+			viewGrants: "Доступы проектов",
+			viewBrowse: "Просмотр данных",
+			viewConsole: "SQL-консоль",
+			viewTransfer: "Перенос данных",
+			viewTransferLog: "Журнал переноса",
+			tlogEmpty: "Журнал переноса пуст",
+			tlogAuto: "Автообновление",
+			tlogClear: "Очистить журнал",
+			tlogClearConfirm: "Очистить весь журнал переноса?",
+			tlogTypeStart: "Начало",
+			tlogTypeTable: "Таблица",
+			tlogTypeProgress: "Прогресс",
+			tlogTypeFinish: "Завершение",
+			trSource: "Исходное подключение",
+			trTarget: "Целевое подключение",
+			trTables: "Объекты БД",
+			trGroupTable: "Таблицы",
+			trGroupCollection: "Коллекции",
+			trGroupView: "Представления",
+			trGroupOther: "Прочее",
+			trSelectAll: "Выбрать все",
+			trClear: "Очистить",
+			trWriteMode: "Режим записи",
+			trModeInsert: "Вставка (ошибка при конфликте)",
+			trModeIgnore: "Пропуск дубликатов",
+			trModeReplace: "Замена (по первичному ключу)",
+			trModeTruncate: "Очистка и запись (опасно)",
+			trBatchSize: "Размер пакета",
+			trTableConcurrency: "Параллелизм по таблицам",
+			trShardConcurrency: "Параллелизм по шардам",
+			trStart: "Начать перенос",
+			trCancel: "Отменить задачу",
+			trProgress: "Ход переноса",
+			trStatus: "Статус",
+			trRows: "Записано строк",
+			trShards: "Шарды",
+			trFailures: "Ошибки",
+			trStatusRunning: "Выполняется",
+			trStatusDone: "Готово",
+			trStatusFailed: "С ошибками",
+			trStatusCancelled: "Отменено",
+			trStatusPending: "В очереди",
+			trxOverwrite: "Перезаписать структуру существующих таблиц (удаление и создание заново, опасно)",
+			trxOverwriteHint: "Существующие целевые таблицы будут удалены и созданы заново, все их данные будут потеряны",
+			trHistory: "История переносов",
+			trHistoryClear: "Очистить историю",
+			trHistoryClearConfirm: "Очистить всю историю переносов текущего проекта?",
+			trHistoryEmpty: "История пуста",
+			trSameConn: "Источник и цель в одном контексте. Выберите другую базу или схему",
+			trLoadingTables: "Загрузка таблиц…",
+			trxSource: "Источник",
+			trxTarget: "Цель",
+			trxConn: "Подключение:",
+			trxDatabase: "База данных:",
+			trxSchema: "Схема:",
+			trxInfo: "Информация",
+			trxConnType: "Тип",
+			trxConnName: "Имя",
+			trxHost: "Хост",
+			trxPort: "Порт",
+			trxServerVer: "Версия сервера",
+			trxNoDbLevel: "Контекст по умолчанию",
+			trxPickSource: "Выберите исходное подключение, чтобы загрузить таблицы",
+			trxSelectedCount: "Выбрано: {n}",
+			trxOptions: "Параметры переноса",
+			trxArrowLabel: "Направление переноса: из источника в цель",
+			trxPickTable: "Выберите хотя бы одну таблицу",
+			trxLoadDbsFail: "Не удалось загрузить список баз",
+			footerHint: "Управление — в этой боковой панели; операции с данными требуют доступа проекта к подключению.",
+			newConn: "Новое подключение",
+			editConn: "Изменить подключение",
+			noConns: "Подключений пока нет. Нажмите «Новое подключение», чтобы добавить.",
+			needProjectPath: "Путь проекта не указан, просмотр данных недоступен: введите в поле выше абсолютный путь к текущему проекту (например, /home/me/my-app) и повторите попытку.",
+			connName: "Имя / псевдоним",
+			connId: "ID подключения",
+			urlMode: "URL",
+			fieldsMode: "По полям",
+			url: "URL подключения (пароль автоматически переносится в хранилище секретов)",
+			urlUser: "Пользователь (необязательно, подставляется в URL)",
+			urlPassword: "Пароль (необязательно, подставляется в URL; пусто — оставить сохранённый)",
+			fieldsHost: "Хост",
+			fieldsHostInstance: "Хост (именованный экземпляр: host\\instance, порт не нужен)",
+			fieldsPort: "Порт",
+			fieldsUser: "Пользователь",
+			fieldsPassword: "Пароль",
+			passwordSaved: "Сохранён (оставьте пустым, чтобы не менять)",
+			fieldsDatabase: "База данных",
+			fieldsTlsMinVersion: "Минимальная версия TLS (снижайте, только если старый экземпляр выдаёт ошибку протокола)",
+			tlsMinDefault: "По умолчанию (TLSv1.2)",
+			fieldsEncrypt: "Шифрование",
+			encryptAuto: "Автоматически (рекомендуется)",
+			encryptDefault: "Обязательное шифрование",
+			encryptOff: "Не требовать шифрования (encrypt=false)",
+			encryptStrict: "Строгое шифрование TDS 8.0 (strict)",
+			fieldsTrustCert: "Доверять сертификату сервера (без проверки сертификата)",
+			fieldsServerName: "Имя для проверки (укажите, если подключение по IP, а сертификат выдан на домен)",
+			fieldsCaCert: "Доверенный CA (путь к PEM-файлу или текст сертификата, рекомендуется)",
+			tlsHint: "Ошибки сертификата: установите CA (рекомендуется) или включите доверие сертификату. Ошибки версии протокола: снизьте минимальную версию TLS. Это разные решения, они не заменяют друг друга.",
+			advancedTls: "Дополнительные параметры",
+			ssl: "Включить SSL",
+			test: "Проверить",
+			testing: "Проверка…",
+			testOk: "Подключение успешно",
+			testFail: "Не удалось подключиться",
+			edit: "Изменить",
+			trRefresh: "Обновить (перечитать раскрытые базы, схемы и таблицы)",
+			delete: "Удалить",
+			deleteConnConfirm: "Удалить подключение «{name}»? Его секреты и доступы всех проектов будут удалены.",
+			fieldKind: "Тип базы данных",
+			requiredMark: " (обязательно)",
+			deleteConnTitle: "Удаление подключения",
+			auditShort: "Журнал аудита",
+			noConnsGuide: "Подключений пока нет — сначала добавьте его, затем выдайте доступ проекту.",
+			addConn: "Добавить подключение",
+			confirmParams: "Параметры",
+			grantModeGroup: "Режим доступа для {name}",
+			save: "Сохранить",
+			cancel: "Отмена",
+			saving: "Сохранение…",
+			idAutoHint: "оставьте пустым для автогенерации",
+			auditTitle: "Аудит (последние {n})",
+			auditEmpty: "В этом проекте нет записей аудита",
+			auditTime: "Время",
+			auditAction: "Действие",
+			auditConn: "Подключение",
+			auditDetail: "Подробности",
+			auditDenied: "отклонено",
+			auditConfirmed: "подтверждено",
+			exportConns: "Экспорт",
+			importConns: "Импорт",
+			passphrase: "Парольная фраза",
+			passphraseHint: "8+ символов, только для этого экспорта/импорта",
+			exportDone: "Экспортировано подключений: {n}",
+			importResult: "Импортировано {i}, пропущено {s}",
+			importPartialFail: "Частичный сбой: импортировано {i}, пропущено {s}, ошибок {f}",
+			importDecryptFail: "Неверная парольная фраза или повреждённый файл",
+			pickFile: "Выбрать файл",
+			grantsHint: "Выдайте проекту доступ к подключениям. ro = только чтение (запросы и просмотр), rw = чтение и запись (выполнение и скрипты). Подключения без доступа всегда отклоняются.",
+			grantsEmptyHint: "Проекту пока не выдан доступ ни к одному подключению. Выберите в строке ниже «только чтение» или «чтение и запись».",
+			grantsSummary: "Доступ разрешён: {granted}/{total}",
+			modeBadgeRo: "RO",
+			modeBadgeRw: "RW",
+			modeNone: "нет доступа",
+			modeRo: "только чтение (ro)",
+			modeRw: "чтение и запись (rw)",
+			noDatabases: "Нет доступных баз данных",
+			dbFilterAll: "Все базы",
+			dbFilterLabel: "Фильтр по базе",
+			searchPlaceholder: "Нечёткий поиск по именам таблиц, Enter — выполнить",
+			searchGo: "Найти",
+			searchBack: "К дереву",
+			searchResults: "Результаты поиска",
+			searchEmpty: "Нет подходящих таблиц",
+			noSchemas: "Нет схем",
+			noTables: "Нет таблиц",
+			defaultDb: "База по умолчанию",
+			loadFailed: "Не удалось загрузить",
+			structure: "Структура",
+			preview: "Просмотр",
+			column: "Столбец",
+			dataType: "Тип",
+			nullable: "Допускает NULL",
+			keyCol: "Ключ",
+			defaultVal: "По умолчанию",
+			comment: "Комментарий",
+			nextPage: "Далее",
+			prevPage: "Назад",
+			pageInfo: "Страница {page} (по 50 строк)",
+			previewTruncated: "Результат усечён",
+			browseDialogTitle: "{conn} / {db} / {table}",
+			close: "Закрыть",
+			emptyStructure: "Нет сведений о столбцах",
+			emptyData: "Нет данных",
+			retry: "Повторить",
+			selectTableHint: "Выберите таблицу в дереве объектов выше, чтобы увидеть данные",
+			browseCrumbEmpty: "Таблица не выбрана",
+			browseNoGrant: "Проекту не выдан доступ ни к одному подключению. В просмотре данных видны только подключения с доступом, остальные скрыты.",
+			browseGoGrants: "Перейти к доступам",
+			browseHiddenGrant: "Скрыто подключений без доступа: {n}",
+			objects: "Объекты",
+			cellValue: "Полное значение",
+			copyBtn: "Копировать",
+			copied: "Скопировано",
+			setNull: "Задать NULL",
+			cellSaving: "Сохранение…",
+			readOnlyRo: "Доступ только на чтение, редактирование недоступно",
+			noPkHint: "Нет первичного ключа, редактирование на месте недоступно",
+			truncatedNoEdit: "Значение показано усечённым; редактируйте через SQL-консоль",
+			blobNoEdit: "Двоичные значения нельзя редактировать здесь",
+			redisTypeRo: "Этот тип Redis нельзя редактировать здесь",
+			modeScript: "скрипт",
+			run: "Выполнить",
+			running: "Выполнение…",
+			sqlPlaceholder: "SQL / команда… (Redis: [\"GET\",\"key\"]; Mongo: {\"find\":\"users\",\"filter\":{}})",
+			modeSql: "SQL",
+			newTab: "Новая вкладка",
+			closeTab: "Закрыть вкладку",
+			queryTab: "Запрос {n}",
+			runSelection: "Выполнить выделенное",
+			formatSql: "Форматировать",
+			skippedRo: "Пропущено (доступ только на чтение)",
+			locate: "Перейти",
+			historyTitle: "История",
+			historyEmpty: "История пуста",
+			txBegin: "Начать транзакцию",
+			txCommit: "Зафиксировать",
+			txRollback: "Откатить",
+			txActive: "Транзакция активна",
+			txInline: "В транзакции",
+			txDefaultDbOnly: "Транзакция привязана к базе данных по умолчанию: сначала сбросьте выбор базы",
+			routeQuery: "чтение",
+			routeExec: "запись",
+			routeScript: "скрипт",
+			selectConn: "Выберите подключение…",
+			copyFailed: "Не удалось скопировать",
+			scriptPlaceholder: "JS-скрипт (песочница vm, с объектом db)…",
+			paramsJson: "Параметры (JSON-массив, необязательно; общие для всех операторов пакета)",
+			rowsResult: "Строк: {n}",
+			execResult: "Затронуто строк: {n}",
+			needConfirmTitle: "Опасная операция",
+			dangerLevel: "Уровень риска",
+			reason: "Причина",
+			confirmRun: "Подтвердить и выполнить",
+			confirmCancel: "Отмена",
+			confirmHint: "Сервер счёл этот оператор опасным; он выполнится только после ручного подтверждения (подтверждение действительно 5 минут).",
+			cancelled: "Отменено",
+			error: "Ошибка",
+			ok: "Готово",
+			// 授权库范围与行数单位
+			grantDbLabel: "Базы данных",
+			grantDbPlaceholder: "пусто = все базы; имена через запятую, чтобы ограничить",
+			grantDbSaved: "Сохранено",
+			rowsSuffix: "строк",
 		};
 
 		let activeLocale = "zh";
@@ -533,7 +787,8 @@ window.__ModuleLoader__.load({
 			return activeLocale;
 		}
 		function t(key, params) {
-			let text = (currentLocale() === "en" ? en[key] : undefined) || zh[key] || en[key] || key;
+			const dict = currentLocale() === "zh" ? zh : currentLocale() === "ru" ? ru : en;
+			let text = dict[key] || en[key] || zh[key] || key;
 			if (params !== undefined && params !== null) {
 				for (const [name, value] of Object.entries(params)) {
 					text = String(text).split("{" + name + "}").join(String(value));
@@ -542,8 +797,8 @@ window.__ModuleLoader__.load({
 			return text;
 		}
 
-		const TAB_ID = "dsh-db-tool";
-		const API = "/dsh-db-tool/api";
+		const TAB_ID = "dsh-db-tool-ru";
+		const API = "/dsh-db-tool-ru/api";
 		const DB_KINDS = ["mysql", "postgresql", "gaussdb", "sqlite", "redis", "mongodb", "oracle", "dmdb", "sqlserver"];
 		const PAGE_SIZE = 50; // 契约：preview limit≤50 服务端强制
 
@@ -1028,9 +1283,10 @@ window.__ModuleLoader__.load({
 		// 截断/BLOB 标记（后端 normalize 产物）：命中即禁止就地编辑，防旧值覆盖真实数据
 		function isTruncatedCell(text) {
 			const s = String(text);
-			// sql-shared 嵌套 JSON 以 "…[已截断]" 结尾；redis/mongo/oracle/dmdb 的 "…[截断,共N字符]"
-			// 结尾是"字符]"，endsWith 永不命中，故该形态用 includes 检测
-			return s.endsWith("…[已截断]") || s.includes("…[截断,共");
+			// sql-shared 嵌套 JSON 以 "…[truncated]" 结尾；redis/mongo/oracle/dmdb 的
+			// "…[truncated, N chars total]" 结尾是 "total]"，endsWith 永不命中，故该形态用 includes 检测。
+			// 中文旧形态只为读取历史数据保留（后端已出英文标记）
+			return s.endsWith("…[truncated]") || s.includes("…[truncated, ") || s.endsWith("…[已截断]") || s.includes("…[截断,共");
 		}
 		function isBlobCell(text) {
 			const s = String(text);
@@ -1865,6 +2121,42 @@ window.__ModuleLoader__.load({
 		}
 
 		/* ---------------- 项目授权 ---------------- */
+		// 连接内的库白名单输入：留空（或全清）＝不限库；逗号分隔（, 或 ，）＝允许的库名列表，
+		// 大小写不敏感、不做前缀匹配。保存走 PUT /grants：databases 键缺省=保持原值、数组=覆盖、[]=清空。
+		function GrantDbRow(props) {
+			const g = props.grant || {};
+			const dbs = Array.isArray(g.databases) ? g.databases : [];
+			const [text, setText] = React.useState(dbs.join(", "));
+			const [saved, setSaved] = React.useState(false);
+			async function commit() {
+				const list = String(text).split(/[,，]/).map((s) => s.trim()).filter(Boolean);
+				const same = list.length === dbs.length && list.every((s, i) => s.toLowerCase() === String(dbs[i]).toLowerCase());
+				if (same || !g.mode) return;
+				setSaved(false);
+				await props.run("grantdb", async () => {
+					await api("grants", { method: "PUT", body: { projectPath: props.projectPath, connId: g.connId, mode: g.mode, databases: list } });
+					setSaved(true);
+					await props.reload();
+				});
+			}
+			return React.createElement(
+				"div",
+				{ className: "dbt-row", style: { width: "100%", gap: 6 } },
+				React.createElement("span", { className: "dbt-muted", style: { flex: "none", fontSize: "var(--dbt-caption, 11px)" } }, t("grantDbLabel")),
+				React.createElement("input", {
+					value: text,
+					placeholder: t("grantDbPlaceholder"),
+					"aria-label": t("grantDbLabel") + ": " + t("grantDbPlaceholder"),
+					disabled: props.busy === "grantdb",
+					style: { flex: 1, minWidth: 0 },
+					onChange: (e) => { setText(e.target.value); setSaved(false); },
+					onBlur: () => { commit(); },
+					onKeyDown: (e) => { if (e.key === "Enter") commit(); },
+				}),
+				saved ? React.createElement("span", { className: "dbt-muted", style: { flex: "none" } }, t("grantDbSaved")) : null,
+			);
+		}
+
 		function GrantsView(props) {
 			const { conns, grants, projectPath } = props;
 			const grantedCount = (grants || []).length;
@@ -1917,11 +2209,15 @@ window.__ModuleLoader__.load({
 							const m = modeOf(c.id);
 							return React.createElement(
 								"div",
-								{ className: "dbt-listrow", key: c.id },
-								// 主行对齐连接管理：kind 填充 pill + 名称 13px semibold + 模式徽标（seg 为权威状态源，徽标 aria-hidden 免重复播报）
+								{
+									className: "dbt-listrow",
+									key: c.id,
+									style: { flexDirection: "column", alignItems: "stretch", gap: 4 },
+								},
+								// 主行对齐连接管理：kind 填充 pill + 名称 13px semibold + 模式徽标 + ro/rw seg
 								React.createElement(
 									"div",
-									{ className: "dbt-row", style: { flex: 1, minWidth: 0 } },
+									{ className: "dbt-row", style: { width: "100%", minWidth: 0 } },
 									React.createElement("span", { className: "dbt-kindchip", style: { fontFamily: MONO_FONT } }, c.kind),
 									React.createElement("strong", { style: { fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, c.name || c.id),
 									modeBadge(m),
@@ -1940,6 +2236,14 @@ window.__ModuleLoader__.load({
 										}, mode === "" ? t("modeNone") : mode === "ro" ? t("modeRo") : t("modeRw")),
 									),
 								),
+								m ? React.createElement(GrantDbRow, {
+									key: c.id + "|" + JSON.stringify((grants.find((x) => x.connId === c.id) || {}).databases),
+									grant: grants.find((x) => x.connId === c.id),
+									projectPath: projectPath,
+									run: props.run,
+									reload: props.reload,
+									busy: props.busy,
+								}) : null,
 							);
 						}),
 					),
@@ -3806,7 +4110,7 @@ window.__ModuleLoader__.load({
 									React.createElement("span", { className: "dbt-muted", style: { flex: "none" } }, new Date(h.ts).toLocaleString()),
 									React.createElement("strong", { style: statusColor(h.status) }, historyStatus(h.status)),
 									React.createElement("span", { className: "dbt-tr-comment" },
-										((h.statement.match(/表\[[^\]]*\]/) || [""])[0].slice(0, 80))
+										((h.statement.match(/tables\[[^\]]*\]/) || [""])[0].slice(0, 80))
 											+ " · " + (h.tables || []).filter((t2) => t2.status === "done").length + "✓/"
 											+ (h.tables || []).filter((t2) => t2.status === "failed").length + "✗"
 											+ ((h.failures || []).length > 0 ? " · " + t("trFailures") + " " + h.failures.length : ""))))),
@@ -3873,9 +4177,9 @@ window.__ModuleLoader__.load({
 						: React.createElement("div", { className: "dbt-transfer-tablelist", style: { maxHeight: 320 } },
 							rows.map((r, i) => {
 								const brief = r.type === "start"
-									? (r.statement || "").replace(/表\[[^\]]*\]/, "表[" + ((r.statement.match(/表\[([^\]]*)\]/) || ["", ""])[1].split(",").length) + "张]")
+									? (r.statement || "").replace(/tables\[[^\]]*\]/, "tables[" + ((r.statement.match(/tables\[([^\]]*)\]/) || ["", ""])[1].split(",").length) + "]")
 									: r.type === "table" || r.type === "progress"
-										? (r.table || "") + "  " + (r.rows != null ? r.rows : 0) + (r.totalRows != null ? " / " + r.totalRows : "") + " 行" + (r.status === "failed" ? "  " + (r.statusLabel || "") : "")
+										? (r.table || "") + "  " + (r.rows != null ? r.rows : 0) + (r.totalRows != null ? " / " + r.totalRows : "") + " " + t("rowsSuffix") + (r.status === "failed" ? "  " + (r.statusLabel || "") : "")
 										: (r.statement || "").slice(0, 60) + "  " + (r.status || "");
 								return React.createElement("div", { key: r.ts + i, className: "dbt-tr-item" },
 									React.createElement("span", { className: "dbt-muted", style: { flex: "none", minWidth: 84 } }, new Date(r.ts).toLocaleTimeString()),
@@ -4106,16 +4410,18 @@ window.__ModuleLoader__.load({
 				ctx.effect(function () {
 					const offZh = ctx.locale.register(LOCALE_NS, "zh", zh);
 					const offEn = ctx.locale.register(LOCALE_NS, "en", en);
+					const offRu = ctx.locale.register(LOCALE_NS, "ru", ru);
 					return function () {
 						try { offZh(); } catch (e) {}
 						try { offEn(); } catch (e) {}
+						try { offRu(); } catch (e) {}
 					};
-				}, "dsh-db-tool: dictionaries");
+				}, "dsh-db-tool-ru: dictionaries");
 			}
 			// 官方右侧栏两段式注册：先声明页签类型，再在席位里按类型 id 挂正文与标题。
 			// 类型 id 同时是席位 key（宿主用 definition.id 作 entryKey），故正文/标题与 id 一致。
 			if (!ctx.sidebarRightTabs || !ctx.slots) {
-				console.warn("[dsh-db-tool] 宿主未提供 sidebarRightTabs / slots 服务，右侧栏面板不会挂载");
+				console.warn("[dsh-db-tool-ru] 宿主未提供 sidebarRightTabs / slots 服务，右侧栏面板不会挂载");
 				return;
 			}
 
@@ -4192,23 +4498,23 @@ window.__ModuleLoader__.load({
 				try {
 					const registered = ctx.sidebarRightTabs.get && ctx.sidebarRightTabs.get(TAB_ID);
 					if (registered && registered.keepMounted !== true) {
-						console.warn("[dsh-db-tool] 当前 DSH 版本不支持 keepMounted，切换页签/会话后面板状态会丢失，请升级 DSH");
+						console.warn("[dsh-db-tool-ru] 当前 DSH 版本不支持 keepMounted，切换页签/会话后面板状态会丢失，请升级 DSH");
 					}
 				} catch (e) { /* 探测失败不影响主流程 */ }
 				return disposer;
-			}, "dsh-db-tool: register tab type");
+			}, "dsh-db-tool-ru: register tab type");
 
 			ctx.effect(function () {
 				return ctx.slots.inject("sidebar.right.pane.tab", function () {
 					return ctx.slots.register({ name: "sidebar.right.pane.tab", key: TAB_ID }, DbToolBody);
 				});
-			}, "dsh-db-tool: register tab body");
+			}, "dsh-db-tool-ru: register tab body");
 
 			ctx.effect(function () {
 				return ctx.slots.inject("sidebar.right.pane.tab.title", function () {
 					return ctx.slots.register({ name: "sidebar.right.pane.tab.title", key: TAB_ID }, DbToolTitle);
 				});
-			}, "dsh-db-tool: register tab title");
+			}, "dsh-db-tool-ru: register tab title");
 		}
 		exports.apply = apply;
 		exports.inject = inject;

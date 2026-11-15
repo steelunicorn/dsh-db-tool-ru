@@ -110,7 +110,7 @@ export function cellToBson(c: TransferCell, midType: MidType, M: MongoRaw['M']):
   if (midType === 'date' || midType === 'datetime' || midType === 'timestamptz') {
     const d = new Date(typeof c === 'string' ? toUtcParse(c) : c);
     if (Number.isNaN(d.getTime())) {
-      throw new Error(`非法日期值「${c}」（${midType} 列）：无法解析为时间`);
+      throw new Error(`Invalid date value "${c}" (${midType} column): cannot be parsed as a time`);
     }
     return d;
   }
@@ -140,7 +140,7 @@ export function createMongoTransferReader(raw: MongoRaw): TransferReader {
     const scale = Math.max(0, frac.length - exp);
     const precision = Math.max(intDigits + scale, 1);
     if (precision > 38 || scale > 10) {
-      throw new Error(`Decimal128「${s}」超出目标端上限 precision=38 scale=10（precision=${precision} scale=${scale}），请先收敛精度再传输`);
+      throw new Error(`Decimal128 "${s}" exceeds the target limit precision=38 scale=10 (precision=${precision} scale=${scale}); reduce the precision before transferring`);
     }
     return { precision, scale };
   }
@@ -362,12 +362,12 @@ export function createMongoTransferWriter(raw: MongoRaw, writeMode: WriteMode = 
       const width = t.columns.length;
       for (const r of rows) {
         if (r.length !== width) {
-          throw new Error(`行宽不匹配：期望 ${width} 列，实际 ${r.length} 列（表 ${t.name}）`);
+          throw new Error(`Row width mismatch: expected ${width} columns, got ${r.length} (table ${t.name})`);
         }
       }
       const idCol = idColumn(t);
       if (writeMode === 'replace' && !idCol) {
-        throw new Error(`replace 模式需要单列主键（映射 _id）：表 ${t.name} 无主键`);
+        throw new Error(`replace mode requires a single-column primary key (mapped to _id): table ${t.name} has no primary key`);
       }
       // 先全量转换再写（转换抛错 → 一条都没写，规避 unordered 部分成功不可回滚）
       const docs = rows.map((r) => rowToDoc(t, r));

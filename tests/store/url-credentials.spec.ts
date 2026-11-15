@@ -58,7 +58,7 @@ describe('mergeUrlCredentials（纯函数）', () => {
   });
 
   it('脱敏 url 无 secretsUrl → 报错（新建场景不应输入 ***）', () => {
-    expect(() => mergeUrlCredentials({ url: 'mysql://root:***@h:3306', urlPassword: 'x' })).toThrow(/脱敏/);
+    expect(() => mergeUrlCredentials({ url: 'mysql://root:***@h:3306', urlPassword: 'x' })).toThrow(/redacted placeholder/);
   });
 
   it('脱敏 url + 用户改了端口/库（密码留空）→ 保留结构性改动，凭据取已存真值，*** 不入库', () => {
@@ -78,11 +78,11 @@ describe('mergeUrlCredentials（纯函数）', () => {
         urlPassword: 'x',
         secretsUrl: 'jdbc:mysql://root:OLD@h:3306/db',
       }),
-    ).toThrow(/无法与已存凭据合并/);
+    ).toThrow(/cannot be merged with the stored credentials/);
   });
 
   it('无效 URL → 报错', () => {
-    expect(() => mergeUrlCredentials({ url: 'not a url', urlPassword: 'x' })).toThrow(/URL 无效/);
+    expect(() => mergeUrlCredentials({ url: 'not a url', urlPassword: 'x' })).toThrow(/Invalid connection URL/);
   });
 
   it('url 为 undefined → 返回 undefined（凭据忽略）', () => {
@@ -237,7 +237,7 @@ describe('mergeUrlCredentials（多主机 / jdbc: 前缀回退路径）', () => 
   });
 
   it('回退路径：残缺文本（无 scheme:// 形态）→ 维持「URL 无效」报错', () => {
-    expect(() => mergeUrlCredentials({ url: 'not a url', urlPassword: 'x' })).toThrow(/URL 无效/);
+    expect(() => mergeUrlCredentials({ url: 'not a url', urlPassword: 'x' })).toThrow(/Invalid connection URL/);
   });
 
   it('redactUrl 往返：多主机注入结果脱敏回 :***@（含 jdbc: 前缀）', () => {

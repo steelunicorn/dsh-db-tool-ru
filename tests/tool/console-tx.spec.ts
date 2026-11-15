@@ -360,7 +360,7 @@ describe('空闲 TTL 自动回收', () => {
       expect(fx.logs[1]).toContain('close');
       const rb = fx.service
         .auditTail(fx.projectA, 200)
-        .find((e) => e.action === 'console_rollback' && e.statement.includes('超时'));
+        .find((e) => e.action === 'console_rollback' && e.statement.includes('idle timeout'));
       expect(rb?.ok).toBe(true);
       // ok:true 的记录不带 error 槽（回收原因在 statement 说明槽，杜绝矛盾审计）
       expect(rb?.error).toBeUndefined();

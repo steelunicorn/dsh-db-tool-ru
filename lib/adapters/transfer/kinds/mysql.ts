@@ -97,8 +97,8 @@ export function toMysqlBind(c: TransferCell, col?: TransferColumn): string | num
 export function createMysqlTransferReader(raw: MysqlRaw): TransferReader {
   const pool = raw.pool;
   const defaultDb = (): string => {
-    if (raw.database === '') throw new Error('mysql 传输读端缺少默认库（连接未指定 database）');
-    return assertIdent(raw.database, '库名');
+    if (raw.database === '') throw new Error('mysql transfer reader is missing a default database (connection has no database configured)');
+    return assertIdent(raw.database, 'database name');
   };
 
   const q = async (sql: string, params?: unknown[]): Promise<RowDataPacket[]> => {
@@ -109,7 +109,7 @@ export function createMysqlTransferReader(raw: MysqlRaw): TransferReader {
 
   const describe = async (table: string): Promise<TransferTable> => {
     const db = defaultDb();
-    const tbl = assertIdent(table, '表名');
+    const tbl = assertIdent(table, 'table name');
     const rows = await q(
       `SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY, COLUMN_DEFAULT, COLUMN_COMMENT, COLUMN_TYPE AS CT,
               NUMERIC_PRECISION, NUMERIC_SCALE, CHARACTER_MAXIMUM_LENGTH, EXTRA
@@ -117,7 +117,7 @@ export function createMysqlTransferReader(raw: MysqlRaw): TransferReader {
        WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION`,
       [db, tbl],
     );
-    if (rows.length === 0) throw new Error(`表不存在: ${db}.${tbl}`);
+    if (rows.length === 0) throw new Error(`Table not found: ${db}.${tbl}`);
     const columns: TransferColumn[] = rows.map((r) => {
       const columnType = String(r.COLUMN_TYPE ?? '');
       const precision = r.NUMERIC_PRECISION == null ? undefined : Number(r.NUMERIC_PRECISION);
@@ -158,7 +158,7 @@ export function createMysqlTransferReader(raw: MysqlRaw): TransferReader {
 
     count: async (table) => {
       const db = defaultDb();
-      const rows = await q(`SELECT COUNT(*) AS n FROM ${quoteIdent(db, '`')}.${quoteIdent(assertIdent(table, '表名'), '`')}`);
+      const rows = await q(`SELECT COUNT(*) AS n FROM ${quoteIdent(db, '`')}.${quoteIdent(assertIdent(table, 'table name'), '`')}`);
       return Number(rows[0]?.n ?? 0);
     },
 
@@ -208,8 +208,8 @@ export function createMysqlTransferReader(raw: MysqlRaw): TransferReader {
 
     keyAt: async (table, column, offset) => {
       const db = defaultDb();
-      const tbl = `${quoteIdent(db, '`')}.${quoteIdent(assertIdent(table, '表名'), '`')}`;
-      const key = quoteIdent(assertIdent(column, '分片键'), '`');
+      const tbl = `${quoteIdent(db, '`')}.${quoteIdent(assertIdent(table, 'table name'), '`')}`;
+      const key = quoteIdent(assertIdent(column, 'shard key'), '`');
       const rows = await q(`SELECT ${key} AS k FROM ${tbl} ORDER BY ${key} LIMIT 1 OFFSET ?`, [offset]);
       return (rows[0]?.k ?? null) as TransferCell | null;
     },
@@ -247,14 +247,14 @@ export function createMysqlTransferWriter(raw: MysqlRaw, writeMode: WriteMode = 
 
     tableExists: async (name) => {
       const db = raw.database;
-      if (db === '') throw new Error('mysql 传输写端缺少默认库（连接未指定 database）');
-      const [rows] = await pool.query(`SELECT COUNT(*) AS n FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`, [db, assertIdent(name, '表名')]);
+      if (db === '') throw new Error('mysql transfer writer is missing a default database (connection has no database configured)');
+      const [rows] = await pool.query(`SELECT COUNT(*) AS n FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`, [db, assertIdent(name, 'table name')]);
       const list = (Array.isArray(rows) ? rows : []) as RowDataPacket[];
       return Number(list[0]?.n ?? 0) > 0;
     },
     dropTable: async (name) => {
-      const db = raw.database !== '' ? `${quoteIdent(assertIdent(raw.database, '库名'), '`')}.` : '';
-      await pool.query(`DROP TABLE ${db}${quoteIdent(assertIdent(name, '表名'), '`')}`);
+      const db = raw.database !== '' ? `${quoteIdent(assertIdent(raw.database, 'database name'), '`')}.` : '';
+      await pool.query(`DROP TABLE ${db}${quoteIdent(assertIdent(name, 'table name'), '`')}`);
     },
     // truncate 模式前置清空（MySQL 8.4 官方手册「Optimizing InnoDB DDL Operations」：清空首选
     // TRUNCATE，有外键时可能需回退 DELETE）。TRUNCATE 要表级独占 MDL，被活跃调度器/长事务
@@ -262,7 +262,7 @@ export function createMysqlTransferWriter(raw: MysqlRaw, writeMode: WriteMode = 
     // 降级 DELETE FROM（行锁由 innodb_lock_wait_timeout 默认 50s 有限等待，可安全完成）
     beforeLoad: async (table) => {
       const db = raw.database !== ''
-        ? `${quoteIdent(assertIdent(raw.database, '库名'), '`')}.`
+        ? `${quoteIdent(assertIdent(raw.database, 'database name'), '`')}.`
         : '';
       const conn = await pool.getConnection();
       try {
@@ -280,7 +280,7 @@ export function createMysqlTransferWriter(raw: MysqlRaw, writeMode: WriteMode = 
 
     createTable: async (table) => {
       const db = raw.database !== ''
-        ? `${quoteIdent(assertIdent(raw.database, '库名'), '`')}.`
+        ? `${quoteIdent(assertIdent(raw.database, 'database name'), '`')}.`
         : '';
       const defs = table.columns.map((c) => {
         let d = `${quoteIdent(c.name, '`')} ${midToMysqlType(c)}`;
@@ -303,15 +303,15 @@ export function createMysqlTransferWriter(raw: MysqlRaw, writeMode: WriteMode = 
       const width = cols.length;
       for (const r of rows) {
         if (r.length !== width) {
-          throw new Error(`行宽不匹配：期望 ${width} 列，实际 ${r.length} 列（表 ${table.name}）`);
+          throw new Error(`Row width mismatch: expected ${width} columns, got ${r.length} (table ${table.name})`);
         }
       }
       // REPLACE INTO 无唯一键时等同纯 INSERT（官方语义）——静默重复必须拦截
       if (writeMode === 'replace' && !table.columns.some((c) => c.primaryKey)) {
-        throw new Error(`replace 模式需要主键：表 ${table.name} 无主键`);
+        throw new Error(`replace mode requires a primary key: table ${table.name} has no primary key`);
       }
       const db = raw.database !== ''
-        ? `${quoteIdent(assertIdent(raw.database, '库名'), '`')}.`
+        ? `${quoteIdent(assertIdent(raw.database, 'database name'), '`')}.`
         : '';
       // 多行 VALUES 单语句（官方示例形态）：一次往返写整批，较逐行快一个数量级；
       // 每语句 ≤1000 行防 max_allowed_packet 溢出

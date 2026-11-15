@@ -66,7 +66,7 @@ async function loadDriver(): Promise<DriverLoadResult> {
           return { ctor: ctor as SqliteCtor, driver: 'node:sqlite' };
         }
       } catch (e) {
-        if (forced === 'node') throw new Error(`强制使用 node:sqlite 失败：${e instanceof Error ? e.message : String(e)}`);
+        if (forced === 'node') throw new Error(`Forcing node:sqlite failed: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
     // 2) better-sqlite3（optionalDependency，可能被离线环境排除或构建失败）。
@@ -77,13 +77,13 @@ async function loadDriver(): Promise<DriverLoadResult> {
           return { ctor: mod.default as SqliteCtor, driver: 'better-sqlite3' };
         }
       } catch (e) {
-        if (forced === 'better') throw new Error(`强制使用 better-sqlite3 失败：${e instanceof Error ? e.message : String(e)}`);
+        if (forced === 'better') throw new Error(`Forcing better-sqlite3 failed: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
     throw new Error(
-      'SQLite 驱动不可用：当前 Node 无内置 node:sqlite（需 Node ≥ 22.5），且可选依赖 better-sqlite3 未安装或构建失败。' +
-        '请升级 Node 到 ≥ 22.5，或在具备编译工具链/预构建的环境执行 `npm install better-sqlite3`；' +
-        '其他 7 种数据库不受影响。',
+      'SQLite driver unavailable: this Node has no built-in node:sqlite (requires Node ≥ 22.5), and the optional dependency better-sqlite3 is not installed or failed to build.' +
+        'Upgrade Node to ≥ 22.5, or run `npm install better-sqlite3` in an environment with a build toolchain or prebuilt binaries;' +
+        'the other 7 databases are unaffected.',
     );
   })();
   cached = result;
@@ -100,7 +100,7 @@ function resolveFile(conn: ResolvedConnection): string {
   if (conn.url) {
     return conn.url.startsWith('file://') ? conn.url.slice('file://'.length) : conn.url;
   }
-  throw new Error('sqlite 连接缺少文件路径（fields.database / fields.path 或 url）');
+  throw new Error('sqlite connection is missing the file path (fields.database / fields.path or url)');
 }
 
 /**
@@ -125,7 +125,7 @@ export async function openRaw(
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     // 只带文件名不带完整路径：错误会经驱动错误通道外发（传输失败快照等），避免内网路径泄露
-    throw new Error(`sqlite 打开失败 (${basename(file)}, 驱动 ${driver}): ${msg}`);
+    throw new Error(`sqlite open failed (${basename(file)}, driver ${driver}): ${msg}`);
   }
 }
 
@@ -167,7 +167,7 @@ export async function createSqliteAdapter(
     connId: conn.meta.id,
 
     testConnect: () =>
-      humanize('sqlite 连接测试', async () => {
+      humanize('sqlite connection test', async () => {
         const row = db.prepare('SELECT sqlite_version() AS v').get() as
           | Record<string, unknown>
           | undefined;
@@ -175,28 +175,28 @@ export async function createSqliteAdapter(
       }),
 
     query: (sql, params) =>
-      humanize('sqlite 查询失败', async () => {
+      humanize('sqlite query failed', async () => {
         const stmt = db.prepare(sql);
         const raw = stmt.all(...(params ?? [])) as Record<string, unknown>[];
         return toQueryResult(raw, stmtColumns(stmt, raw));
       }),
 
     execute: (statement, params) =>
-      humanize('sqlite 执行失败', async (): Promise<ExecResult> => {
+      humanize('sqlite execute failed', async (): Promise<ExecResult> => {
         const stmt = db.prepare(statement);
         const info = stmt.run(...(params ?? []));
         const n = Number(info.changes);
         return {
           affectedRows: Number.isFinite(n) ? n : undefined,
-          message: `执行成功，受影响 ${n} 行`,
+          message: `Execution succeeded, ${n} rows affected`,
         };
       }),
 
     listDatabases: () =>
-      humanize('sqlite 列出数据库', async () => ['main']),
+      humanize('sqlite list databases', async () => ['main']),
 
     listTables: () =>
-      humanize('sqlite 列出表', async () => {
+      humanize('sqlite list tables', async () => {
         const raw = db
           .prepare(
             `SELECT name, type FROM sqlite_master
@@ -210,12 +210,12 @@ export async function createSqliteAdapter(
       }),
 
     describeTable: (table) =>
-      humanize('sqlite 查看表结构', async () => {
-        const tbl = assertIdent(table, '表名');
+      humanize('sqlite describe table', async () => {
+        const tbl = assertIdent(table, 'table name');
         const raw = db
           .prepare(`PRAGMA table_info(${quoteIdent(tbl)})`)
           .all() as Record<string, unknown>[];
-        if (raw.length === 0) throw new Error(`表不存在: ${tbl}`);
+        if (raw.length === 0) throw new Error(`Table does not exist: ${tbl}`);
         return raw.map((r): ColumnInfo => {
           const dflt = r.dflt_value;
           const pk = Number(r.pk) > 0;
@@ -231,8 +231,8 @@ export async function createSqliteAdapter(
       }),
 
     previewRows: (table, limit, _database, offset) =>
-      humanize('sqlite 预览行', async () => {
-        const tbl = quoteIdent(assertIdent(table, '表名'));
+      humanize('sqlite preview rows', async () => {
+        const tbl = quoteIdent(assertIdent(table, 'table name'));
         const lim = clampLimit(limit);
         const off = clampOffset(offset);
         const stmt = db.prepare(`SELECT * FROM ${tbl} LIMIT ? OFFSET ?`);
@@ -241,7 +241,7 @@ export async function createSqliteAdapter(
       }),
 
     close: () =>
-      humanize('sqlite 关闭连接', async () => {
+      humanize('sqlite close connection', async () => {
         if (closed) return; // 幂等：重复 close 为 no-op（见 closed 声明处注释）
         closed = true;
         db.close();

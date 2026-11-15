@@ -117,7 +117,7 @@ function vendorOrNull(): SqlDriver | undefined {
 function vendor(): SqlDriver {
   const m = vendorOrNull();
   if (m === undefined) {
-    throw new Error('sqlserver 驱动不可用：缺少 vendor/sqlserver-driver.cjs。请在插件目录运行 npm run build:sqlserver 构建后重试');
+    throw new Error('sqlserver driver unavailable: vendor/sqlserver-driver.cjs is missing. Run npm run build:sqlserver in the plugin directory to build it, then try again');
   }
   return m;
 }
@@ -152,7 +152,7 @@ function boolParam(sp: URLSearchParams, name: string, dflt: boolean): boolean {
   const s = v.trim().toLowerCase();
   if (s === 'true' || s === '1' || s === 'yes') return true;
   if (s === 'false' || s === '0' || s === 'no') return false;
-  throw new Error(`sqlserver 连接 URL 的 ${name} 取值非法：${JSON.stringify(v)}（只接受 true/false）`);
+  throw new Error(`sqlserver connection URL ${name} has an invalid value: ${JSON.stringify(v)} (only true/false is accepted)`);
 }
 
 /** fields 分支的布尔取值：分字段表单以字符串提交，故与 URL 同口径归一；非法值同样 fail-closed */
@@ -162,7 +162,7 @@ function boolField(v: unknown, name: string, dflt: boolean): boolean {
   const s = String(v).trim().toLowerCase();
   if (s === 'true' || s === '1' || s === 'yes') return true;
   if (s === 'false' || s === '0' || s === 'no') return false;
-  throw new Error(`sqlserver 连接配置的 ${name} 取值非法：${JSON.stringify(v)}（只接受 true/false）`);
+  throw new Error(`sqlserver connection config ${name} has an invalid value: ${JSON.stringify(v)} (only true/false is accepted)`);
 }
 
 /** TDS 版本白名单（URL 与 fields 共用，避免两套文案漂移） */
@@ -171,7 +171,7 @@ function applyTdsVersion(options: Record<string, unknown>, raw: unknown, source:
   const v = String(raw);
   if (!TDS_VERSIONS.has(v)) {
     throw new Error(
-      `sqlserver 连接${source}的 tdsVersion 取值非法：${JSON.stringify(raw)}（可选 ${[...TDS_VERSIONS].join('/')}，默认 7_4）`,
+      `sqlserver connection${source}tdsVersion has an invalid value: ${JSON.stringify(raw)} (accepted: ${[...TDS_VERSIONS].join('/')}; default 7_4)`,
     );
   }
   options.tdsVersion = v;
@@ -212,7 +212,7 @@ function applyEncrypt(options: Record<string, unknown>, raw: unknown, source: st
     return;
   }
   throw new Error(
-    `sqlserver 连接${source}的 encrypt 取值非法：${JSON.stringify(raw)}（只接受 true/false/strict/auto；strict 表示 TDS 8.0 强制加密，仅 SQL Server 2022 及以上并开启 Force Strict Encryption 的实例支持；auto 表示先按明文连接，服务器强制加密时自动以 encrypt=true 并信任服务器证书重试一次）`,
+    `sqlserver connection${source}encrypt has an invalid value: ${JSON.stringify(raw)} (accepted: true/false/strict/auto; strict means TDS 8.0 enforced encryption, supported only by SQL Server 2022 or later instances with Force Strict Encryption enabled; auto means connecting in plaintext first, then retrying once with encrypt=true and a trusted server certificate when the server requires encryption)`,
   );
 }
 
@@ -323,7 +323,7 @@ function normalizePem(text: string, source: string): string {
   }
   // 含 BEGIN 但不是完整证书块（被截断/粘贴残缺）→ fail-closed 说清楚，不要静默接受
   throw new Error(
-    `sqlserver 连接${source}的 caCert 不是完整的 PEM 证书（缺少 -----END 结尾或内容被截断）。请给出完整的 -----BEGIN CERTIFICATE----- ... -----END CERTIFICATE----- 块，或改用文件路径`,
+    `sqlserver connection${source}caCert is not a complete PEM certificate (missing the -----END terminator or truncated). Provide a complete -----BEGIN CERTIFICATE----- ... -----END CERTIFICATE----- block, or use a file path instead`,
   );
 }
 
@@ -393,12 +393,12 @@ function readCaFile(path: string, source: string): string {
     text = readFileSync(path, 'utf8');
   } catch (e) {
     throw new Error(
-      `sqlserver 连接${source}的 caCert 无法读取：${path}（${errText(e)}）。请给出可读的 PEM 证书文件路径，或直接传 PEM 文本；该配置不会被忽略——忽略等于换回系统信任库校验，真正的原因会被掩盖`,
+      `sqlserver connection${source}caCert cannot be read: ${path} (${errText(e)}). Provide a readable PEM certificate file path, or pass the PEM text directly; this setting is not ignored, because ignoring it would fall back to system trust store validation and hide the real cause`,
     );
   }
   if (!text.includes(PEM_HEADER)) {
     throw new Error(
-      `sqlserver 连接${source}的 caCert 指向的文件不含 PEM 证书：${path}（应形如 -----BEGIN CERTIFICATE----- 开头；若本来就想直接传文本，请确认文本未被截断）`,
+      `sqlserver connection${source}caCert points to a file without a PEM certificate: ${path} (it should start with -----BEGIN CERTIFICATE-----; if you meant to pass the text directly, make sure it was not truncated)`,
     );
   }
   return text;
@@ -425,7 +425,7 @@ function applyTlsMinVersion(options: Record<string, unknown>, raw: unknown, sour
   const hit = TLS_MIN_VERSIONS.find((x) => x === v);
   if (hit === undefined) {
     throw new Error(
-      `sqlserver 连接${source}的 tlsMinVersion 取值非法：${JSON.stringify(raw)}（可选 ${TLS_MIN_VERSIONS.join('/')}，默认不设置=沿用 Node 默认 TLSv1.2；TLSv1.3 不可选：底层 tedious 把 TLS 上限封顶在 1.2，设 1.3 会导致最小版本大于最大版本而握手失败）`,
+      `sqlserver connection${source}tlsMinVersion has an invalid value: ${JSON.stringify(raw)} (accepted: ${TLS_MIN_VERSIONS.join('/')}; unset by default, which keeps the Node default TLSv1.2; TLSv1.3 is not selectable: the underlying tedious caps TLS at 1.2, so setting 1.3 makes the minimum version exceed the maximum and the handshake fails)`,
     );
   }
   // 与 caCert 合并进同一份 cryptoCredentialsDetails：两者都可能被用户同时设置，直接整体赋值会互相覆盖
@@ -436,7 +436,7 @@ function decodeCred(raw: string): string {
   try {
     return decodeURIComponent(raw);
   } catch {
-    throw new Error('sqlserver 连接 URL 的用户名或密码 percent 编码非法（如含未编码的 %），请 URL 编码后重试');
+    throw new Error('sqlserver connection URL username or password has invalid percent-encoding (e.g. an unescaped %); URL-encode it and try again');
   }
 }
 
@@ -449,7 +449,7 @@ function validPort(v: unknown, dflt: number): number {
   if (v === undefined || v === null || v === '') return dflt;
   const n = Number(v);
   if (!Number.isInteger(n) || n <= 0 || n > 65535) {
-    throw new Error(`sqlserver 连接的端口取值非法：${JSON.stringify(v)}（须为 1-65535 的整数；留空才使用默认端口 ${dflt}）`);
+    throw new Error(`sqlserver connection port has an invalid value: ${JSON.stringify(v)} (must be an integer between 1 and 65535; only an empty value uses the default port ${dflt})`);
   }
   return n;
 }
@@ -487,10 +487,10 @@ function poolConfig(conn: ResolvedConnection): Record<string, unknown> {
     } catch {
       // 脱敏：错误消息会进 audit.jsonl 与模型上下文，绝不回显 userinfo 明文密码
       throw new Error(
-        `sqlserver 连接 URL 无法解析：${redactUrl(conn.url)}（期望形态 sqlserver://user:pass@host:1433/db?encrypt=true；请检查端口是否在 1-65535、是否有多余字符；命名实例请改用 ?instanceName=实例名 参数）`,
+        `sqlserver connection URL cannot be parsed: ${redactUrl(conn.url)} (expected form: sqlserver://user:pass@host:1433/db?encrypt=true; check that the port is within 1-65535 and that there are no stray characters; for named instances use the ?instanceName=<name> parameter instead)`,
       );
     }
-    if (!u.hostname) throw new Error('sqlserver 连接 URL 缺少主机名（期望形态 sqlserver://user:pass@host:1433/db）');
+    if (!u.hostname) throw new Error('sqlserver connection URL is missing a host name (expected form: sqlserver://user:pass@host:1433/db)');
     cfg.server = u.hostname;
     cfg.port = u.port ? validPort(u.port, 1433) : 1433;
     if (u.username) cfg.user = decodeCred(u.username);
@@ -528,18 +528,18 @@ function poolConfig(conn: ResolvedConnection): Record<string, unknown> {
     // 同口径补齐，默认值仍取自 options 初始值（encrypt=true / trustServerCertificate=false /
     // tdsVersion=7_4 / useUTC=true）。
     // encrypt 与 URL 分支同口径的三态校验（true/false/strict），缺省沿用 options 初始值 encrypt=true
-    applyEncrypt(options, f.encrypt, '配置');
+    applyEncrypt(options, f.encrypt, ' config ');
     options.trustServerCertificate = boolField(
       f.trustServerCertificate,
       'trustServerCertificate',
       options.trustServerCertificate as boolean,
     );
-    applyTdsVersion(options, f.tdsVersion, '配置');
-    applyTlsMinVersion(options, f.tlsMinVersion, '配置');
+    applyTdsVersion(options, f.tdsVersion, ' config ');
+    applyTlsMinVersion(options, f.tlsMinVersion, ' config ');
     applyServerName(options, f.serverName);
-    applyCaCert(options, f.caCert, '配置');
+    applyCaCert(options, f.caCert, ' config ');
   } else {
-    throw new Error('sqlserver 连接缺少 url 或 fields 配置');
+    throw new Error('sqlserver connection is missing url or fields configuration');
   }
 
   // conn.ssl 是通用字段（mysql/pg 适配器同样处理）：语义上等价要求加密信道。
@@ -689,13 +689,13 @@ function assertPlaceholderCount(scan: SqlScan, params: unknown[]): void {
   // 混用会让 @pN 之外的位置也被绑定成同一个参数（静默错值），必须直接拒绝
   if (scan.hasNamedParam && scan.placeholders.length > 0) {
     throw new Error(
-      '不允许在同一条语句中混用 ? 与 @pN 占位符：请统一使用 ?（适配器会自动重写为 @p1..@pN 并按顺序绑定）',
+      'Mixing ? and @pN placeholders in the same statement is not allowed: use ? consistently (the adapter rewrites them to @p1..@pN automatically and binds them in order)',
     );
   }
   if (scan.placeholders.length !== params.length) {
     throw new Error(
-      `SQL 中 ? 占位符个数(${scan.placeholders.length})与传入参数个数(${params.length})不一致：请补齐/减少参数以匹配 ? 的个数` +
-        '（本适配器只接受 ? 占位符并自动重写为 @pN 绑定，不支持在 SQL 里直接写 @pN 再单独传参）',
+      `the number of ? placeholders in the SQL (${scan.placeholders.length}) does not match the number of passed parameters (${params.length}): add or remove parameters so they match the number of ? placeholders` +
+        '(this adapter only accepts ? placeholders and rewrites them to @pN bindings automatically; writing @pN directly in the SQL and passing parameters separately is not supported)',
     );
   }
 }
@@ -729,27 +729,27 @@ function rewritePlaceholders(req: SqlRequest, sql: string, scan: SqlScan, params
 function assertReadOnlyQuery(sql: string, scan: SqlScan): void {
   if (!SQL_READ_HEADS.has(sqlHead(sql))) {
     throw new Error(
-      'DRIVER_ERROR: 只读(ro)模式下 query 仅允许读语句（select/with/show/describe/desc/explain/use/set/help/table），写操作请使用可写连接',
+      'DRIVER_ERROR: in read-only (ro) mode, query only allows read statements (select/with/show/describe/desc/explain/use/set/help/table); use a writable connection for write operations',
     );
   }
   if (scan.multi) {
-    throw new Error('DRIVER_ERROR: 只读(ro)模式下 query 不允许一次提交多条语句（分号后仍有语句），请拆分为独立查询');
+    throw new Error('DRIVER_ERROR: in read-only (ro) mode, query does not allow submitting several statements at once (there is still a statement after the semicolon); split them into separate queries');
   }
   const words = new Set(scan.words);
   if (words.has('into')) {
-    throw new Error('DRIVER_ERROR: 只读(ro)模式下不允许 SELECT ... INTO（会创建新表并复制数据），请使用可写连接');
+    throw new Error('DRIVER_ERROR: in read-only (ro) mode, SELECT ... INTO is not allowed (it creates a new table and copies data); use a writable connection');
   }
   if (
     scan.words[0] === 'with' &&
     (words.has('insert') || words.has('update') || words.has('delete') || words.has('merge'))
   ) {
     throw new Error(
-      'DRIVER_ERROR: 只读(ro)模式下不允许 WITH 子句后跟写操作（insert/update/delete/merge），请使用可写连接',
+      'DRIVER_ERROR: in read-only (ro) mode, a WITH clause followed by a write operation (insert/update/delete/merge) is not allowed; use a writable connection',
     );
   }
   if (words.has('openquery') || words.has('openrowset') || words.has('opendatasource')) {
     throw new Error(
-      'DRIVER_ERROR: 只读(ro)模式下不允许 OPENQUERY/OPENROWSET/OPENDATASOURCE（其字符串参数会在远端/外部数据源执行任意语句，无法审计），请使用可写连接',
+      'DRIVER_ERROR: in read-only (ro) mode, OPENQUERY/OPENROWSET/OPENDATASOURCE are not allowed (their string arguments execute arbitrary statements on a remote/external data source and cannot be audited); use a writable connection',
     );
   }
 }
@@ -786,21 +786,21 @@ function errText(e: unknown): string {
  */
 const EREQUEST_HINTS: Record<number, string> = {
   17819:
-    '服务器只接受加密连接（要求 TDS 8.0 严格加密）：请在连接 URL 追加 ?encrypt=strict 后重试（strict 走 TDS 8.0，TLS 在登录包之前就完成握手，仅 SQL Server 2022 及以上且开启 Force Strict Encryption 的实例支持）',
+    'the server only accepts encrypted connections (TDS 8.0 strict encryption required): append ?encrypt=strict to the connection URL and retry (strict uses TDS 8.0, where the TLS handshake completes before the login packet; only SQL Server 2022 or later instances with Force Strict Encryption enabled support it)',
   17898:
-    '客户端声明的 TDS 协议版本不被服务器接受：官方协议（MS-TDS LOGIN7）规定服务器应降级到自身最高版本，所以正确做法是升级客户端驱动/库的版本，而不是下调 tdsVersion',
+    'the TDS protocol version declared by the client is not accepted by the server: the official protocol (MS-TDS LOGIN7) requires the server to downgrade to its own highest version, so the correct fix is to upgrade the client driver/library, not to lower tdsVersion',
   17802:
-    '服务器拒绝该 TDS 协议版本（中间 TDS 版本不受支持）：请升级客户端驱动/库的版本；下调 tdsVersion 只会让协议降级、后续行为更不可预期',
+    'the server rejected this TDS protocol version (intermediate TDS versions are not supported): upgrade the client driver/library; lowering tdsVersion only downgrades the protocol and makes later behavior even less predictable',
   17835:
-    '服务器强制要求加密连接，而当前配置未启用加密：请在连接 URL 追加 ?encrypt=true 后重试（这是加密开关问题，与证书是否受信无关，不要用关闭证书校验的方式绕过）',
+    'the server requires an encrypted connection but encryption is not enabled in the current configuration: append ?encrypt=true to the connection URL and retry (this is an encryption switch problem, unrelated to whether the certificate is trusted; do not work around it by disabling certificate validation)',
   17836:
-    '登录包长度与网络包声明不一致：通常是代理、端口转发、加密中间层或分片设备改写了 TDS 包，或连到了并非 SQL Server 的端口。请核对端口与链路中间设备',
+    'the login packet length does not match the length declared by the network packet: this usually means a proxy, port forwarder, encryption middlebox or sharding device rewrote the TDS packets, or the connection went to a port that is not SQL Server. Check the port and the intermediate devices on the path',
   17828:
-    '预登录包结构非法（服务器认为客户端发来的预登录包不合法）：通常是代理或加密中间层改写了包结构，请核对网络链路中的中间设备与端口',
+    'the prelogin packet structure is invalid (the server considers the prelogin packet sent by the client malformed): this is usually a proxy or encryption middlebox rewriting the packet structure; check the intermediate devices and port on the network path',
   17832:
-    '服务器无法解析客户端登录包：可能是包被中间层改写、驱动版本与服务端加解密方式不匹配，或连到了非 SQL Server 端口。请核对链路中间设备',
+    'the server cannot parse the client login packet: the packet may have been rewritten by an intermediate layer, the driver version may not match the server encryption/decryption scheme, or the connection may have gone to a port that is not SQL Server. Check the intermediate devices on the path',
   47072:
-    'Azure SQL 要求的最低 TLS 版本未满足：请把客户端 TLS 版本提升到 1.2 及以上（不要下探 tlsMinVersion，也不要关闭证书校验——这个错误只由版本过低触发）',
+    'the minimum TLS version required by Azure SQL is not met: raise the client TLS version to 1.2 or later (do not lower tlsMinVersion and do not disable certificate validation — this error is triggered only by too low a version)',
 };
 
 /** 已知错误号对应的补充诊断（未收录返回 undefined，保持原有通用文案） */
@@ -905,23 +905,23 @@ function mssqlReason(e: unknown): string {
       // 这一步）。命中已知特征时优先给针对性诊断——否则会把"只接受 strict 加密"误报成密码错误，
       // 用户会反复核对账号，方向完全错。
       base = knownHint === undefined
-        ? `登录失败：用户名或密码错误，或账号不允许从当前主机登录（${detail}）`
-        : `登录失败：服务器在登录阶段拒绝了该连接（${knownHint}）。服务器原文：${detail}`;
+        ? `login failed: wrong user name or password, or the account is not allowed to log in from this host (${detail})`
+        : `login failed: the server rejected this connection during login (${knownHint}). Server message: ${detail}`;
       break;
     case 'ETIMEOUT':
       base =
         name === 'ConnectionError'
-          ? `连接超时：未能在超时时间内建立连接，请检查主机/端口/防火墙（${detail}）`
-          : `请求超时：语句执行超过 requestTimeout，请拆小查询或调大超时（${detail}）`;
+          ? `connection timed out: could not establish a connection within the timeout; check the host/port/firewall (${detail})`
+          : `request timed out: statement execution exceeded requestTimeout; split the query into smaller ones or raise the timeout (${detail})`;
       break;
     case 'ESOCKET':
       // 保留「网络不可达」字样（既有断言与用户检索习惯依赖），但 TLS 特征时先说明 TCP 已连通。
       // 协议族与证书族分开表述：前者是版本协商失败，与证书无关。
       base = tlsProtoish
-        ? `TCP 已连通但 TLS 协议版本协商失败：客户端与服务端没有共同的 TLS 协议版本（UNSUPPORTED_PROTOCOL 出现在版本协商阶段，此时证书校验尚未执行，故与证书是否受信无关）（${detail}）`
+        ? `TCP is connected but TLS protocol version negotiation failed: the client and server share no common TLS protocol version (UNSUPPORTED_PROTOCOL occurs during version negotiation, before certificate validation runs, so whether the certificate is trusted is irrelevant) (${detail})`
         : tlsish
-          ? `TCP 已连通但 TLS 握手/证书校验失败（不是网络不可达：网络不可达指主机/端口不可达或连接被拒，此处 TCP 已建立）（${detail}）`
-          : `网络不可达：无法与服务器建立 TCP 连接，请检查主机名、端口与网络；端口确认可达仍反复出现时，也可能是服务器在 TLS 握手阶段主动断开（如老实例仅支持 TLS 1.0）（${detail}）`;
+          ? `TCP is connected but the TLS handshake/certificate validation failed (not network unreachable: network unreachable means the host/port is unreachable or the connection was refused, whereas here TCP is established) (${detail})`
+          : `network unreachable: cannot establish a TCP connection to the server; check the host name, port and network. If the port is confirmed reachable and this still recurs, the server may be actively closing the connection during the TLS handshake (e.g. an old instance that only supports TLS 1.0) (${detail})`;
       break;
     // 服务器强制加密（SQL Server 2022 / Azure SQL 默认）而客户端 encrypt=false：tedious 抛英文原文，
     // 不映射则中文界面里只剩英文，故单列一条给出可直接照做的改法。
@@ -931,24 +931,24 @@ function mssqlReason(e: unknown): string {
     // 两者的药方正好相反（一个要关、一个要开），合并成一句必然把用户引反方向。
     case 'EENCRYPT':
       base = /did not negotiate encryption/i.test(detail)
-        ? `服务器未协商加密：客户端要求加密（encrypt=true）但服务器在预登录响应里没有回 ON/REQ，驱动为避免明文降级直接拒绝连接。若该实例确实不支持加密，可改用 ?encrypt=false 明文连接（内网可接受时）；若要求加密，请在服务器侧启用「强制加密」并配置有效证书（${detail}）`
-        : `服务器要求加密连接：当前 encrypt=false 被服务器拒绝，请改用 ?encrypt=true 后重试（${detail}）`;
+        ? `the server did not negotiate encryption: the client requires encryption (encrypt=true) but the server did not reply ON/REQ in the prelogin response, so the driver refuses the connection instead of silently downgrading to plaintext. If this instance really does not support encryption, you can use ?encrypt=false for a plaintext connection (acceptable on a trusted internal network); if encryption is required, enable Force Encryption on the server side and configure a valid certificate (${detail})`
+        : `the server requires an encrypted connection: the current encrypt=false was rejected by the server; switch to ?encrypt=true and retry (${detail})`;
       break;
     case 'EINSTLOOKUP':
-      base = `实例名解析失败：SQL Server Browser 服务可能未运行或 UDP 1434 不可达（命名实例可改用「主机，端口」直连，如 host,1433）（${detail}）`;
+      base = `instance name resolution failed: the SQL Server Browser service may not be running or UDP 1434 is unreachable (for a named instance you can connect directly using "host,port", e.g. host,1433) (${detail})`;
       break;
     case 'ENOTOPEN':
     case 'ECONNCLOSED':
-      base = `连接已关闭或未打开：请重新连接后重试（${detail}）`;
+      base = `the connection is closed or not open: reconnect and retry (${detail})`;
       break;
     case 'ECANCEL':
-      base = `请求已取消（${detail}）`;
+      base = `request cancelled (${detail})`;
       break;
     // encrypt=auto 的合并错误：文案本身已含「该实例强制加密」与两条原始原因，原样透出即可。
     // 不做任何族建议——重试已带 trustServerCertificate=true，而原始原因②常含 self signed
     // certificate / TLS 字样，让证书族建议跟上来会把人引向「再关一次校验」，那是错误方向。
     case 'EREQUEST': {
-      base = `SQL 执行错误${num !== undefined ? `（错误号 ${num}${sev !== undefined ? `、严重级 ${sev}` : ''}${line !== undefined ? `、第 ${line} 行` : ''}）` : ''}：${knownHint === undefined ? detail : `${knownHint}。服务器原文：${detail}`}`;
+      base = `SQL execution error${num !== undefined ? ` (error number ${num}${sev !== undefined ? `, severity ${sev}` : ''}${line !== undefined ? `, line ${line}` : ''})` : ''}: ${knownHint === undefined ? detail : `${knownHint}. Server message: ${detail}`}`;
       break;
     }
     default:
@@ -968,13 +968,13 @@ function mssqlReason(e: unknown): string {
     // 服务端实际支持的版本）。第③条显式点名「跳过证书校验」是先发制人——用户看到 TLS 报错的第一
     // 反应通常就是去信任证书，明说无效比沉默更省一轮排查；措辞必须是否定式，不得写成可尝试项。
     trail.push(
-      '修复优先级：① 首选在服务端启用 TLS 1.2（SQL Server 2008 R2 SP3 装 KB4057113、SQL Server 2008 SP4 装 KB4057114，之后重启实例）——这是根治，且对所有客户端生效',
+      'fix priority: ① preferably enable TLS 1.2 on the server (install KB4057113 on SQL Server 2008 R2 SP3, KB4057114 on SQL Server 2008 SP4, then restart the instance) — this addresses the root cause and applies to all clients',
     );
     trail.push(
-      '② 若暂时无法动服务端，可在连接 URL 追加 ?tlsMinVersion=TLSv1 让客户端把最低 TLS 版本下探到 1.0（本插件已支持；上限仍由 tedious 封顶在 TLS 1.2）',
+      '② if the server cannot be changed right now, append ?tlsMinVersion=TLSv1 to the connection URL so the client lowers its minimum TLS version to 1.0 (this plugin supports it; the upper limit is still capped at TLS 1.2 by tedious)',
     );
     trail.push(
-      '③ 注意：跳过证书校验（信任任意证书）对这类错误无效——它只影响证书校验阶段，而此处是协议版本协商失败，证书校验根本没执行',
+      '③ note: skipping certificate validation (trusting any certificate) does not help with this kind of error — it only affects the certificate validation stage, whereas here protocol version negotiation failed and certificate validation never ran',
     );
   } else if (tlsCertish) {
     // 证书族（自签/链断/主机名不符/已过期）：解法有强弱两档，必须把官方推荐摆在前面。
@@ -983,16 +983,16 @@ function mssqlReason(e: unknown): string {
     //    时没有传 rejectUnauthorized，证书是强制校验的。必须说清，否则用户在 strict 下改这个开关
     //    会「改完还是同样的错」，白排查一轮。
     trail.push(
-      '官方推荐先在客户端装 CA 而不是关校验：把签发服务器证书的根 CA（自签场景就是该证书本身）经 ?caCert= 指向 PEM 路径或直接给 PEM 文本，让证书校验照常生效；若证书签发给域名而你是用 IP/转发地址连接的，再用 ?serverName=域名 指定用于校验的名字',
+      'the officially recommended fix is to install the CA on the client instead of disabling validation: point ?caCert= at the PEM path of the root CA that issued the server certificate (for a self-signed certificate, that certificate itself) or pass the PEM text directly, so certificate validation still runs; if the certificate was issued for a domain name but you connect via an IP/forwarded address, also use ?serverName=<domain-name> to specify the name used for validation',
     );
     trail.push(
-      '② 不得已才关校验：?trustServerCertificate=true（跳过证书链与主机名校验，仅加密信道不保证对端身份），或 ?encrypt=false（前提是服务器未强制加密）——SQL Server 2008/2008 R2 与使用自签证书的实例常见此情形，但这两条都会削弱安全性，仅建议内网临时使用',
+      '② disable validation only as a last resort: ?trustServerCertificate=true (skips certificate chain and host name validation; the channel is encrypted but the peer identity is not guaranteed), or ?encrypt=false (only if the server does not require encryption) — common with SQL Server 2008/2008 R2 and instances using self-signed certificates, but both weaken security and are recommended only temporarily on an internal network',
     );
     trail.push(
-      '③ 注意：若当前用的是 ?encrypt=strict（TDS 8.0），trustServerCertificate 完全不生效（驱动 strict 路径不传 rejectUnauthorized，证书强制校验），只能装 CA 或改用 ?encrypt=true',
+      '③ note: with ?encrypt=strict (TDS 8.0) trustServerCertificate has no effect at all (the driver\'s strict path does not pass rejectUnauthorized and validates certificates unconditionally); install the CA or switch to ?encrypt=true instead',
     );
   }
-  if (err.originalError !== undefined) trail.push(`原始错误: ${errText(err.originalError)}`);
+  if (err.originalError !== undefined) trail.push(`Original error: ${errText(err.originalError)}`);
   else if (
     err.cause !== undefined &&
     err.cause !== null &&
@@ -1001,12 +1001,12 @@ function mssqlReason(e: unknown): string {
   ) {
     // 建连错误（ESOCKET 等）的底层错误在 cause 且已被 tedious 拼进 message 尾段；仅当
     // message 未包含其全文（如被截断/包装）时补一条干净的底层错误，避免重复
-    trail.push(`原始错误: ${errText(err.cause)}`);
+    trail.push(`Original error: ${errText(err.cause)}`);
   }
   if (Array.isArray(err.precedingErrors) && err.precedingErrors.length > 0) {
-    trail.push(`前序错误: ${err.precedingErrors.map(errText).join('; ')}`);
+    trail.push(`Preceding errors: ${err.precedingErrors.map(errText).join('; ')}`);
   }
-  return trail.length > 0 ? `${base}。${trail.join('；')}` : base;
+  return trail.length > 0 ? `${base}. ${trail.join('; ')}` : base;
 }
 
 /** 映射错误并把结构化信息（code/number/…）透传给上层，便于日志与守卫判断 */
@@ -1117,8 +1117,8 @@ function isServerRequiresEncryption(e: unknown): boolean {
  */
 function autoEncryptFailure(first: unknown, second: unknown): Error {
   const err = new Error(
-    `该实例强制加密：encrypt=auto 先按明文连接被服务器拒绝（服务器要求加密），已自动改用 encrypt=true 并信任服务器证书重试一次，仍然失败。` +
-      `原始原因①（明文连接）：${errText(first)}；原始原因②（加密连接）：${errText(second)}`,
+    `this instance requires encryption: encrypt=auto first attempted a plaintext connection, which the server rejected (it requires encryption); the driver then retried once with encrypt=true and a trusted server certificate, and that also failed. ` +
+      `Original cause ① (plaintext connection): ${errText(first)}; original cause ② (encrypted connection): ${errText(second)}`,
   );
   Object.assign(err, { code: 'EAUTOENCRYPT' });
   return err;
@@ -1142,7 +1142,7 @@ function makePoolBox(Driver: SqlDriver, cfg: Record<string, unknown>): PoolBox {
   // emit('error', err)，EventEmitter 无监听器时直接抛 → 崩掉宿主进程。这里只留痕不中断请求。
   const attachErrorTrap = (p: SqlPool): void => {
     p.on('error', (e: unknown) => {
-      console.error('[sqlserver] 连接池错误（不影响后续请求，连接将按需重建）:', e instanceof Error ? e.message : e);
+      console.error('[sqlserver] connection pool error (does not affect later requests; connections are recreated on demand):', e instanceof Error ? e.message : e);
     });
   };
 
@@ -1334,7 +1334,7 @@ export async function createSqlserverAdapter(
    */
   let closed = false;
   const assertOpen = (): void => {
-    if (closed) throw new Error('sqlserver 连接已关闭：请重新连接后重试');
+    if (closed) throw new Error('sqlserver connection is closed: reconnect and retry');
   };
 
   const dbPools = new Map<string, PoolBox>();
@@ -1368,7 +1368,7 @@ export async function createSqlserverAdapter(
     if (!ref) return { db: undefined, schema: defaultSchema() };
     const i = ref.indexOf('.');
     if (i < 0) return { db: undefined, schema: assertIdent(ref, what) };
-    return { db: assertIdent(ref.slice(0, i), '数据库'), schema: assertIdent(ref.slice(i + 1), what) };
+    return { db: assertIdent(ref.slice(0, i), 'database'), schema: assertIdent(ref.slice(i + 1), what) };
   };
 
   /** 取执行用的 request：事务中走事务连接（跨库请求不参与事务，与 pg-like 同语义） */
@@ -1382,24 +1382,24 @@ export async function createSqlserverAdapter(
 
   const tx: TxHandle = {
     begin: () =>
-      wrap('sqlserver 事务开启', async () => {
-        if (txObj) throw new Error('事务已开启，请勿重复 begin');
+      wrap('sqlserver tx begin', async () => {
+        if (txObj) throw new Error('transaction already open; do not call begin again');
         await mainPool.ready();
         const t = new Driver.Transaction(mainPool.pool);
         await t.begin();
         txObj = t;
       }),
     commit: () =>
-      wrap('sqlserver 事务提交', async () => {
+      wrap('sqlserver tx commit', async () => {
         const t = txObj;
-        if (!t) throw new Error('没有进行中的事务');
+        if (!t) throw new Error('no transaction in progress');
         txObj = null;
         await t.commit();
       }),
     rollback: () =>
-      wrap('sqlserver 事务回滚', async () => {
+      wrap('sqlserver tx rollback', async () => {
         const t = txObj;
-        if (!t) throw new Error('没有进行中的事务');
+        if (!t) throw new Error('no transaction in progress');
         txObj = null;
         await t.rollback();
       }),
@@ -1411,23 +1411,23 @@ export async function createSqlserverAdapter(
     tx,
 
     testConnect: () =>
-      wrap('sqlserver 连接测试', async () => {
+      wrap('sqlserver connection test', async () => {
         assertOpen();
         await mainPool.ready();
         const res = await mainPool.pool.request().query(TEST_CONNECT_SQL);
         const row = rowsOf(res)[0];
         const version = typeof row?.['version'] === 'string' ? row['version'] : '';
-        if (version === '') return { ok: true, serverInfo: 'SQL Server（版本信息不可读）' };
+        if (version === '') return { ok: true, serverInfo: 'SQL Server (version information unavailable)' };
         return { ok: true, serverInfo: serverInfo(version, row?.['major'], row?.['engine']) };
       }),
 
     query: (sql, params, database) =>
-      wrap('sqlserver 查询失败', async () => {
+      wrap('sqlserver query failed', async () => {
         const scan = scanSql(sql);
         if (readOnly) assertReadOnlyQuery(sql, scan);
         const binds = params ?? [];
         assertPlaceholderCount(scan, binds);
-        const db = database ? assertIdent(database, '数据库') : undefined;
+        const db = database ? assertIdent(database, 'database') : undefined;
         const { req } = await requestFor(db);
         const text = rewritePlaceholders(req, sql, scan, binds);
         const res = await req.query(text);
@@ -1435,12 +1435,12 @@ export async function createSqlserverAdapter(
       }),
 
     execute: (statement, params, database) =>
-      wrap('sqlserver 执行失败', async (): Promise<ExecResult> => {
+      wrap('sqlserver execute failed', async (): Promise<ExecResult> => {
         // ro 连接由服务层拦截（本适配器不重复拦 execute：控制台事务通道也会用 execute 发读语句）
         const scan = scanSql(statement);
         const binds = params ?? [];
         assertPlaceholderCount(scan, binds);
-        const db = database ? assertIdent(database, '数据库') : undefined;
+        const db = database ? assertIdent(database, 'database') : undefined;
         const { req } = await requestFor(db);
         const text = rewritePlaceholders(req, statement, scan, binds);
         const res = await req.query(text);
@@ -1455,12 +1455,12 @@ export async function createSqlserverAdapter(
         }
         return {
           affectedRows: known ? sum : undefined,
-          message: known ? `执行成功，受影响 ${sum} 行` : '执行成功',
+          message: known ? `executed successfully, ${sum} row(s) affected` : 'executed successfully',
         };
       }),
 
     listDatabases: () =>
-      wrap('sqlserver 列出数据库', async () => {
+      wrap('sqlserver list databases', async () => {
         const box = poolOf(undefined); // 走主池并经 assertOpen（关闭后抛中文错误而非驱动英文错）
         await box.ready();
         const res = await box.pool.request().query(LIST_DATABASES_SQL);
@@ -1468,15 +1468,15 @@ export async function createSqlserverAdapter(
       }),
 
     listSchemas: (database) =>
-      wrap('sqlserver 列出模式', async () => {
-        const box = poolOf(database ? assertIdent(database, '数据库') : undefined);
+      wrap('sqlserver list schemas', async () => {
+        const box = poolOf(database ? assertIdent(database, 'database') : undefined);
         await box.ready();
         const res = await box.pool.request().query(LIST_SCHEMAS_SQL);
         return rowsOf(res).map((r) => String(r['name']));
       }),
 
     listTables: (database) =>
-      wrap('sqlserver 列出表', async () => {
+      wrap('sqlserver list tables', async () => {
         const { db, schema } = parseBrowseTarget(database, 'schema');
         const box = poolOf(db);
         await box.ready();
@@ -1496,9 +1496,9 @@ export async function createSqlserverAdapter(
       }),
 
     describeTable: (table, database) =>
-      wrap('sqlserver 查看表结构', async () => {
+      wrap('sqlserver describe table', async () => {
         const { db, schema } = parseBrowseTarget(database, 'schema');
-        const tbl = assertIdent(table, '表名');
+        const tbl = assertIdent(table, 'table name');
         const box = poolOf(db);
         await box.ready();
         const ref = `[${schema.replaceAll(']', ']]')}].[${tbl.replaceAll(']', ']]')}]`;
@@ -1507,7 +1507,7 @@ export async function createSqlserverAdapter(
         colReq.input('p1', ref);
         const cols = await colReq.query(DESCRIBE_COLUMNS_SQL);
         const columnRows = rowsOf(cols);
-        if (columnRows.length === 0) throw new Error(`表不存在: ${schema}.${tbl}`);
+        if (columnRows.length === 0) throw new Error(`table does not exist: ${schema}.${tbl}`);
 
         const pkReq = box.pool.request();
         pkReq.input('p1', ref);
@@ -1536,9 +1536,9 @@ export async function createSqlserverAdapter(
       }),
 
     previewRows: (table, limit, database, offset) =>
-      wrap('sqlserver 预览行', async () => {
+      wrap('sqlserver preview rows', async () => {
         const { db, schema } = parseBrowseTarget(database, 'schema');
-        const tbl = assertIdent(table, '表名');
+        const tbl = assertIdent(table, 'table name');
         const lim = clampLimit(limit);
         const off = clampOffset(offset);
         const box = poolOf(db);
@@ -1569,7 +1569,7 @@ export async function createSqlserverAdapter(
       }),
 
     close: () =>
-      wrap('sqlserver 关闭连接', async () => {
+      wrap('sqlserver close connection', async () => {
         if (closed) return;
         closed = true;
         await Promise.all([mainPool.pool.close(), ...[...dbPools.values()].map((b) => b.pool.close())]);

@@ -56,7 +56,7 @@ function connOptions(conn: ResolvedConnection): mysql.PoolOptions {
       if (u.username) base.user = decodeURIComponent(u.username);
       if (u.password) base.password = decodeURIComponent(u.password);
     } catch {
-      throw new Error('mysql 连接 URL 的用户名或密码 percent 编码非法（如含未编码的 %），请 URL 编码后重试');
+      throw new Error('mysql connection URL has invalid percent-encoding in the username or password (e.g. an unencoded %); URL-encode it and retry');
     }
     const db = u.pathname.replace(/^\//, '');
     if (db) base.database = db;
@@ -72,7 +72,7 @@ function connOptions(conn: ResolvedConnection): mysql.PoolOptions {
     if (f.database != null) base.database = String(f.database);
     if (conn.ssl) base.ssl = { rejectUnauthorized: false };
   } else {
-    throw new Error('mysql 连接缺少 url 或 fields 配置');
+    throw new Error('mysql connection is missing url or fields configuration');
   }
   return base;
 }
@@ -103,7 +103,7 @@ export async function createMysqlAdapter(
    */
   let closed = false;
   const assertOpen = (): void => {
-    if (closed) throw new Error('mysql 连接已关闭：请重新连接后重试');
+    if (closed) throw new Error('mysql connection is closed: reconnect and retry');
   };
 
   /** ro 模式：每个新底层连接自动设为只读会话（应用层另有 query 白名单双保险）。
@@ -154,8 +154,8 @@ export async function createMysqlAdapter(
 
   const tx: TxHandle = {
     begin: () =>
-      humanize('mysql 事务开启', async () => {
-        if (txConn) throw new Error('事务已开启，请勿重复 begin');
+      humanize('mysql transaction begin', async () => {
+        if (txConn) throw new Error('Transaction already open; do not call begin again');
         txConn = await pool.getConnection();
         try {
           await txConn.beginTransaction();
@@ -166,9 +166,9 @@ export async function createMysqlAdapter(
         }
       }),
     commit: () =>
-      humanize('mysql 事务提交', async () => {
+      humanize('mysql transaction commit', async () => {
         const c = txConn;
-        if (!c) throw new Error('没有进行中的事务');
+        if (!c) throw new Error('No transaction in progress');
         txConn = null;
         try {
           await c.commit();
@@ -177,9 +177,9 @@ export async function createMysqlAdapter(
         }
       }),
     rollback: () =>
-      humanize('mysql 事务回滚', async () => {
+      humanize('mysql transaction rollback', async () => {
         const c = txConn;
-        if (!c) throw new Error('没有进行中的事务');
+        if (!c) throw new Error('No transaction in progress');
         txConn = null;
         try {
           await c.rollback();
@@ -196,9 +196,9 @@ export async function createMysqlAdapter(
       const p = new URL(conn.url).pathname.slice(1);
       if (p) db = p;
     }
-    if (!db) throw new Error('未指定数据库：请传入 database 参数或配置默认库');
+    if (!db) throw new Error('No database specified: pass a database parameter or configure a default database');
     // fields/URL 提供的库名统一过标识符校验（防注入）
-    return assertIdent(db, '库名');
+    return assertIdent(db, 'database name');
   };
 
   return {
@@ -207,31 +207,31 @@ export async function createMysqlAdapter(
     tx,
 
     testConnect: () =>
-      humanize('mysql 连接测试', async () => {
+      humanize('mysql connection test', async () => {
         const [rows] = await pool.query<RowDataPacket[]>('SELECT VERSION() AS v');
         return { ok: true, serverInfo: `MySQL ${String(rows[0]?.v ?? '')}` };
       }),
 
     query: (sql, params, database) =>
-      humanize('mysql 查询失败', async () => {
+      humanize('mysql query failed', async () => {
         if (readOnly && !RO_READ_PREFIX.test(sql.trimStart())) {
           throw new Error(
-            'DRIVER_ERROR: 只读(ro)模式下 query 仅允许读语句（select/show/desc/describe/explain/use/help/table），写操作请使用可写连接',
+            'DRIVER_ERROR: in read-only (ro) mode, query only allows read statements (select/show/desc/describe/explain/use/help/table); use a writable connection for writes',
           );
         }
         // 跨库请求路由到该库自己的池（白名单校验在前，拒绝发生在建池之前；
         // 缺省判断用 != null：空串等非法值必须进 assertIdent 被拒，不能落回主池）；
         // 无 database 时维持事务粘主池语义（服务层已拒绝事务携带 database）
-        const target = database != null ? poolFor(assertIdent(database, '库名')) : runner();
+        const target = database != null ? poolFor(assertIdent(database, 'database name')) : runner();
         const [rows, fields] = await target.query(sql, params ?? []);
         if (!Array.isArray(rows)) return { columns: [], rows: [], rowCount: 0 };
         return toQueryResult(rows as RowDataPacket[], fields);
       }),
 
     execute: (statement, params, database) =>
-      humanize('mysql 执行失败', async (): Promise<ExecResult> => {
+      humanize('mysql execute failed', async (): Promise<ExecResult> => {
         // mysql2 的 ExecuteValues 不接受 unknown[]，此处值均为绑定参数（string|number|null）
-        const target = database != null ? poolFor(assertIdent(database, '库名')) : runner();
+        const target = database != null ? poolFor(assertIdent(database, 'database name')) : runner();
         const [result] = await target.execute(statement, (params ?? []) as never[]);
         const header = (Array.isArray(result) ? result[0] : result) as
           | ResultSetHeader
@@ -241,13 +241,13 @@ export async function createMysqlAdapter(
           affectedRows: typeof n === 'number' ? n : undefined,
           message:
             typeof n === 'number'
-              ? `执行成功，受影响 ${n} 行`
-              : '执行成功',
+              ? `Executed successfully, ${n} rows affected`
+              : 'Executed successfully',
         };
       }),
 
     listDatabases: () =>
-      humanize('mysql 列出数据库', async () => {
+      humanize('mysql list databases', async () => {
         const [rows] = await pool.query<RowDataPacket[]>(
           'SELECT SCHEMA_NAME FROM information_schema.SCHEMATA ORDER BY SCHEMA_NAME',
         );
@@ -255,8 +255,8 @@ export async function createMysqlAdapter(
       }),
 
     listTables: (database) =>
-      humanize('mysql 列出表', async () => {
-        const db = database ? assertIdent(database, '库名') : defaultDb();
+      humanize('mysql list tables', async () => {
+        const db = database ? assertIdent(database, 'database name') : defaultDb();
         const [rows] = await pool.query<RowDataPacket[]>(
           `SELECT TABLE_NAME, TABLE_TYPE, TABLE_COMMENT FROM information_schema.TABLES
            WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME`,
@@ -275,7 +275,7 @@ export async function createMysqlAdapter(
       }),
 
     searchTables: (keyword, database, limit) =>
-      humanize('mysql 搜索表', async () => {
+      humanize('mysql search tables', async () => {
         // 以 | 为 LIKE 转义符（避开反斜杠在 SQL 字面量/NO_BACKSLASH_ESCAPES 模式下的歧义）：
         // % _ | \ 四字符全部转义后子串匹配，命中值经参数绑定传输、无注入面
         const esc = keyword.replace(/[\\%_|]/g, (m) => `|${m}`);
@@ -302,16 +302,16 @@ export async function createMysqlAdapter(
       }),
 
     describeTable: (table, database) =>
-      humanize('mysql 查看表结构', async () => {
-        const db = database ? assertIdent(database, '库名') : defaultDb();
-        const tbl = assertIdent(table, '表名');
+      humanize('mysql describe table', async () => {
+        const db = database ? assertIdent(database, 'database name') : defaultDb();
+        const tbl = assertIdent(table, 'table name');
         const [rows] = await pool.query<RowDataPacket[]>(
           `SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY, COLUMN_DEFAULT, COLUMN_COMMENT
            FROM information_schema.COLUMNS
            WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION`,
           [db, tbl],
         );
-        if (rows.length === 0) throw new Error(`表不存在: ${db}.${tbl}`);
+        if (rows.length === 0) throw new Error(`Table not found: ${db}.${tbl}`);
         return rows.map((r): ColumnInfo => {
           const dflt = r.COLUMN_DEFAULT;
           const comment = r.COLUMN_COMMENT;
@@ -327,9 +327,9 @@ export async function createMysqlAdapter(
       }),
 
     previewRows: (table, limit, database, offset) =>
-      humanize('mysql 预览行', async () => {
-        const db = quoteIdent(database ? assertIdent(database, '库名') : defaultDb(), '`');
-        const tbl = quoteIdent(assertIdent(table, '表名'), '`');
+      humanize('mysql preview rows', async () => {
+        const db = quoteIdent(database ? assertIdent(database, 'database name') : defaultDb(), '`');
+        const tbl = quoteIdent(assertIdent(table, 'table name'), '`');
         const lim = clampLimit(limit);
         const off = clampOffset(offset);
         const [rows, fields] = await pool.query(
@@ -341,7 +341,7 @@ export async function createMysqlAdapter(
       }),
 
     close: () =>
-      humanize('mysql 关闭连接', async () => {
+      humanize('mysql close connection', async () => {
         if (closed) return; // 幂等：重复 close 为 no-op（pg-pool 二次 end() 会抛的教训）
         closed = true;
         await Promise.all([pool.end(), ...[...dbPools.values()].map((p) => p.end())]);

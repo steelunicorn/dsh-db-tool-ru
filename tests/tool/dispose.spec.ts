@@ -48,7 +48,7 @@ describe('DbToolService.dispose', () => {
     await fx.service.dispose();
     const { ChallengeStore } = await import('../../lib/guard/index.js');
     const cs = (fx.service as unknown as { challenges: InstanceType<typeof ChallengeStore> }).challenges;
-    expect(() => cs.create('SELECT 1')).toThrowError(/已关闭/);
+    expect(() => cs.create('SELECT 1')).toThrowError(/ChallengeStore is closed/);
   });
 
   it('dispose 后拒绝新工作（fail-closed：服务已关闭，而非静默执行）', async () => {

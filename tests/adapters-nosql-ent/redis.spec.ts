@@ -62,13 +62,13 @@ describe('parseRedisCommand', () => {
     expect(parseRedisCommand('["SET","k","hello world"]')).toEqual(['SET', 'k', 'hello world']);
   });
   it('非法 JSON 报错', () => {
-    expect(() => parseRedisCommand('["GET",')).toThrow('JSON 解析失败');
+    expect(() => parseRedisCommand('["GET",')).toThrow('Failed to parse the Redis command JSON');
   });
   it('非字符串数组报错', () => {
-    expect(() => parseRedisCommand('[1,2]')).toThrow('非空字符串数组');
+    expect(() => parseRedisCommand('[1,2]')).toThrow('non-empty array of strings');
   });
   it('空输入报错', () => {
-    expect(() => parseRedisCommand('   ')).toThrow('不能为空');
+    expect(() => parseRedisCommand('   ')).toThrow('must not be empty');
   });
 });
 
@@ -96,24 +96,24 @@ describe('危险命令与白名单常量', () => {
 describe('query 白名单与规范化', () => {
   it('写命令走 query 被拒绝', async () => {
     const a = await createRedisAdapter(conn, { client: makeClient() });
-    await expect(a.query('DEL k')).rejects.toThrow('不支持命令 DEL');
+    await expect(a.query('DEL k')).rejects.toThrow('does not support command DEL');
   });
   it('危险命令被拒绝', async () => {
     const a = await createRedisAdapter(conn, { client: makeClient() });
-    await expect(a.query('KEYS *')).rejects.toThrow('危险命令');
+    await expect(a.query('KEYS *')).rejects.toThrow('dangerous command');
   });
   it('OBJECT 仅允许 ENCODING 子命令', async () => {
     const a = await createRedisAdapter(conn, { client: makeClient() });
-    await expect(a.query('OBJECT REFCOUNT k')).rejects.toThrow('仅支持 OBJECT ENCODING');
+    await expect(a.query('OBJECT REFCOUNT k')).rejects.toThrow('supports only OBJECT ENCODING');
   });
   it('MEMORY USAGE / OBJECT ENCODING 缺 key 参数拒绝', async () => {
     const a = await createRedisAdapter(conn, { client: makeClient() });
-    await expect(a.query('MEMORY USAGE')).rejects.toThrow('缺少 key 参数');
-    await expect(a.query('OBJECT ENCODING')).rejects.toThrow('缺少 key 参数');
+    await expect(a.query('MEMORY USAGE')).rejects.toThrow('is missing the key argument');
+    await expect(a.query('OBJECT ENCODING')).rejects.toThrow('is missing the key argument');
   });
   it('缺参数拒绝', async () => {
     const a = await createRedisAdapter(conn, { client: makeClient() });
-    await expect(a.query('GET')).rejects.toThrow('缺少参数');
+    await expect(a.query('GET')).rejects.toThrow('is missing arguments');
   });
   it('GET → key/value 合成列', async () => {
     const c = makeClient();
@@ -126,7 +126,7 @@ describe('query 白名单与规范化', () => {
     c.get = vi.fn(async () => 'x'.repeat(1500));
     const a = await createRedisAdapter(conn, { client: c });
     const r = await a.query('GET big');
-    expect(r.rows[0]![1]).toBe(`${'x'.repeat(1000)}…[截断,共1500字符]`);
+    expect(r.rows[0]![1]).toBe(`${'x'.repeat(1000)}…[truncated, 1500 chars total]`);
   });
   it('HGETALL → field/value 两行', async () => {
     const a = await createRedisAdapter(conn, { client: makeClient() });
@@ -201,18 +201,18 @@ describe('query 白名单与规范化', () => {
 describe('execute 白名单与 ro 拦截', () => {
   it('读命令走 execute 被拒绝', async () => {
     const a = await createRedisAdapter(conn, { client: makeClient() });
-    await expect(a.execute('GET k')).rejects.toThrow('不支持命令 GET');
+    await expect(a.execute('GET k')).rejects.toThrow('does not support command GET');
   });
   it('FLUSHALL 危险命令拒绝', async () => {
     const a = await createRedisAdapter(conn, { client: makeClient() });
-    await expect(a.execute('FLUSHALL')).rejects.toThrow('危险命令');
+    await expect(a.execute('FLUSHALL')).rejects.toThrow('dangerous command');
   });
   it('SET 经 sendCommand 透传', async () => {
     const c = makeClient();
     const a = await createRedisAdapter(conn, { client: c });
     const r = await a.execute('SET k v');
     expect(c.sendCommand).toHaveBeenCalledWith(['SET', 'k', 'v']);
-    expect(r.message).toContain('SET 成功');
+    expect(r.message).toContain('SET succeeded');
   });
   it('数字回复 → affectedRows', async () => {
     const c = makeClient();
@@ -223,7 +223,7 @@ describe('execute 白名单与 ro 拦截', () => {
   });
   it('ro 模式拒绝 execute（错误信息含「连接为只读(ro)模式」）', async () => {
     const a = await createRedisAdapter(conn, { mode: 'ro', client: makeClient() });
-    await expect(a.execute('SET k v')).rejects.toThrow('连接为只读(ro)模式');
+    await expect(a.execute('SET k v')).rejects.toThrow('Connection is in read-only (ro) mode');
   });
   it('ro 模式仍允许 query', async () => {
     const a = await createRedisAdapter(conn, { mode: 'ro', client: makeClient() });
@@ -287,12 +287,12 @@ describe('buildUrl 端口校验（fail-closed，sqlserver validPort 同口径）
   });
   it('fields 端口非法值抛中文错误（含原值与 1-65535）', () => {
     for (const port of ['abc', 0, -1, 99999, 1433.5]) {
-      expect(() => buildUrl({ host: 'h', port })).toThrow(`redis 连接的端口取值非法：${JSON.stringify(port)}`);
+      expect(() => buildUrl({ host: 'h', port })).toThrow(`redis connection has an invalid port: ${JSON.stringify(port)}`);
     }
   });
   it('接线：createRedisAdapter fields 非法端口在 connect 前抛中文错误（不触网）', async () => {
     await expect(
       createRedisAdapter({ meta: { id: 'redis-port', kind: 'redis' }, fields: { host: '127.0.0.1', port: 'abc' } }),
-    ).rejects.toThrow('redis 连接的端口取值非法："abc"');
+    ).rejects.toThrow('redis connection has an invalid port: "abc"');
   });
 });

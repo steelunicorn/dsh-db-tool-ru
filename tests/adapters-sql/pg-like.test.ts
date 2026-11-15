@@ -108,11 +108,11 @@ describe('createPgLikeAdapter（mock 驱动）', () => {
   it('fields 端口非法值抛中文错误（含原值与 1-65535，不再被驱动 truthy 检查静默回退默认）', async () => {
     for (const port of ['abc', 0, -1, 99999, 1433.5]) {
       await expect(make('postgresql', { host: 'h', database: 'd', port })).rejects.toThrow(
-        `postgresql 连接的端口取值非法：${JSON.stringify(port)}`,
+        `postgresql connection has an invalid port: ${JSON.stringify(port)}`,
       );
     }
     await expect(make('gaussdb', { host: 'h', database: 'd', port: 'abc' })).rejects.toThrow(
-      'gaussdb 连接的端口取值非法："abc"',
+      'gaussdb connection has an invalid port: "abc"',
     );
   });
 
@@ -309,9 +309,9 @@ describe('createPgLikeAdapter（mock 驱动）', () => {
     await a.tx.begin();
     await a.tx.rollback();
     expect(pool.liveClients.length).toBe(0);
-    await expect(a.tx.rollback()).rejects.toThrow('没有进行中的事务');
+    await expect(a.tx.rollback()).rejects.toThrow('No transaction in progress');
     await a.tx.begin();
-    await expect(a.tx.begin()).rejects.toThrow('事务已开启');
+    await expect(a.tx.begin()).rejects.toThrow('Transaction already open');
     await a.tx.rollback();
   });
 
@@ -327,7 +327,7 @@ describe('createPgLikeAdapter（mock 驱动）', () => {
   it('注入类标识符被安全处理：参数绑定 + 引号转义（不再字符白名单拒绝）', async () => {
     const { a, pool } = await make('postgresql');
     // describeTable 走参数绑定：注入串只是普通表名 → 查无此表
-    await expect(a.describeTable('u"; DROP TABLE x')).rejects.toThrow(/表不存在/);
+    await expect(a.describeTable('u"; DROP TABLE x')).rejects.toThrow(/Table not found/);
     // listTables 绑定库名 → 空结果，绝不执行注入
     await expect(a.listTables('pub; drop')).resolves.toEqual([]);
     // previewRows：标识符被引用为 "t--" 普通表名（含连字符合法）
@@ -335,8 +335,8 @@ describe('createPgLikeAdapter（mock 驱动）', () => {
     const sql = pool.executed.at(-1)!.sql;
     expect(sql).toContain('FROM "public"."t--"');
     // NUL/换行仍被直接拒绝（引用标识符内也不允许）
-    await expect(a.describeTable('a\nb')).rejects.toThrow(/非法/);
-    await expect(a.previewRows('a\0b', 10)).rejects.toThrow(/非法/);
+    await expect(a.describeTable('a\nb')).rejects.toThrow(/Invalid/);
+    await expect(a.previewRows('a\0b', 10)).rejects.toThrow(/Invalid/);
   });
 
   it('SSL 开关注入配置', async () => {
@@ -415,8 +415,8 @@ describe('createPgLikeAdapter（mock 驱动）', () => {
     await expect(a.listTables('app')).resolves.toEqual([]);
     expect(createdDb.length).toBe(1); // 只有主池
     // "db.schema" 里的非法字符（NUL/换行）仍被 assertIdent 拒绝
-    await expect(a.listTables('gycwd.a\nb')).rejects.toThrow(/非法/);
-    await expect(a.previewRows('t', 10, 'gycwd.a\0b')).rejects.toThrow(/非法/);
+    await expect(a.listTables('gycwd.a\nb')).rejects.toThrow(/Invalid/);
+    await expect(a.previewRows('t', 10, 'gycwd.a\0b')).rejects.toThrow(/Invalid/);
   });
 
   it('跨库 ro：新开的库池同样注册只读会话钩子与 error 兜底', async () => {
@@ -441,7 +441,7 @@ describe('createPgLikeAdapter（mock 驱动）', () => {
     // 池缓存：多次都复用同一个 gycwd 池
     expect(createdDb.filter((d) => d === 'gycwd').length).toBe(1);
     // 非法库名（控制字符）直接拒绝，不建池
-    await expect(a.query('SELECT 1', [], 'db\0x')).rejects.toThrow(/非法/);
+    await expect(a.query('SELECT 1', [], 'db\0x')).rejects.toThrow(/Invalid/);
     // 无 database → 主池（事务路由路径）
     await a.query('SELECT 1');
     expect(createdDb.filter((d) => d !== 'gycwd')).toEqual(['db']);

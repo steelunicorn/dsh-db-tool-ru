@@ -162,7 +162,7 @@ describe('mysql 跨库路由（按库名建池缓存）', () => {
   it('ro：写语句带 database 在建池前被拒（不新建池）；跨库池同样挂只读监听', async () => {
     const a = await createMysqlAdapter(connByUrl('mysql://u:p@127.0.0.1:3326/maindb'), { mode: 'ro' });
     try {
-      await expect(a.query('UPDATE t SET x = 1', [], 'otherdb')).rejects.toThrow(/只读/);
+      await expect(a.query('UPDATE t SET x = 1', [], 'otherdb')).rejects.toThrow(/read-only/);
       expect(createPoolMock).toHaveBeenCalledTimes(1); // 拒绝发生在建跨库池之前
       await a.query('SELECT 1', [], 'otherdb');
       expect(createPoolMock).toHaveBeenCalledTimes(2);
@@ -187,8 +187,8 @@ describe('mysql 跨库路由（按库名建池缓存）', () => {
   it('close 后 query/execute 带 database：中文「已关闭」且不新建池（不泄漏）', async () => {
     const a = await createMysqlAdapter(connByUrl('mysql://u:p@127.0.0.1:3326/maindb'));
     await a.close();
-    await expect(a.query('SELECT 1', [], 'otherdb')).rejects.toThrow(/已关闭/);
-    await expect(a.execute('UPDATE t SET x = 1', [], 'otherdb')).rejects.toThrow(/已关闭/);
+    await expect(a.query('SELECT 1', [], 'otherdb')).rejects.toThrow(/closed/);
+    await expect(a.execute('UPDATE t SET x = 1', [], 'otherdb')).rejects.toThrow(/closed/);
     expect(createPoolMock).toHaveBeenCalledTimes(1); // 关闭后未新建跨库池
   });
 
@@ -196,7 +196,7 @@ describe('mysql 跨库路由（按库名建池缓存）', () => {
     const a = await createMysqlAdapter(connByUrl('mysql://u:p@127.0.0.1:3326/maindb'));
     try {
       for (const bad of ['', 'db\nc', 'x'.repeat(129), 'db\0x']) {
-        await expect(a.query('SELECT 1', [], bad), `应拒绝: ${JSON.stringify(bad)}`).rejects.toThrow(/非法库名/);
+        await expect(a.query('SELECT 1', [], bad), `应拒绝: ${JSON.stringify(bad)}`).rejects.toThrow(/Invalid database name/);
       }
       expect(createPoolMock).toHaveBeenCalledTimes(1); // 校验发生在建池之前
     } finally {

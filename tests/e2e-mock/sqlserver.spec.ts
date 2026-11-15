@@ -319,7 +319,7 @@ function makeEnv(): Env {
     const qs = entries.length > 0 ? '?' + new URLSearchParams(entries.map(([k, v]) => [k, String(v)])).toString() : '';
     const res = new MockRes();
     await handleDbToolRequest(
-      mockReq(method, '/dsh-db-tool/api/' + p + qs, body),
+      mockReq(method, '/dsh-db-tool-ru/api/' + p + qs, body),
       res as unknown as ServerResponse,
       service,
     );
@@ -602,7 +602,7 @@ describe('4 浏览：库 → schema → 表 → 表结构（PRI）→ 预览分�
     await seed(env, 'ss1', 'ro');
     const r = await env.call('GET', 'schema', undefined, { project: env.project, connId: 'ss1', table: 'nope' });
     expect(r.json.ok).toBe(false);
-    expect(String(r.json.error)).toContain('表不存在');
+    expect(String(r.json.error)).toContain('table does not exist:');
   });
 });
 
@@ -621,7 +621,7 @@ describe('5 SQL 控制台：占位符重写 / 事务会话 / ro 只读闸门', (
     await seed(env, 'ss1', 'ro');
     const r = await env.call('POST', 'query', { projectPath: env.project, connId: 'ss1', sql: 'SELECT ? AS a, ? AS b', params: [1] });
     expect(r.json.ok).toBe(false);
-    expect(String(r.json.error)).toContain('占位符个数');
+    expect(String(r.json.error)).toContain('does not match the number of passed parameters');
   });
 
   it('ro 授权：query 里的写语句先被 guard 判危险，确认重放后仍被适配器只读闸门拒绝（全程未下发驱动）', async () => {
@@ -634,7 +634,7 @@ describe('5 SQL 控制台：占位符重写 / 事务会话 / ro 只读闸门', (
       projectPath: env.project, connId: 'ss1', sql: stmt, params: ['x'], challengeId: guard.json.challengeId,
     });
     expect(replay.json.ok).toBe(false);
-    expect(String(replay.json.error)).toMatch(/只读\(ro\)/);
+    expect(String(replay.json.error)).toMatch(/read-only \(ro\)/);
     // 关键安全性质：ro 下写语句从未到达驱动
     expect(env.tds.executed.some((e) => /UPDATE users/i.test(e.sql))).toBe(false);
   });
@@ -647,7 +647,7 @@ describe('5 SQL 控制台：占位符重写 / 事务会话 / ro 只读闸门', (
 
     const replay = await env.call('POST', 'query', { projectPath: env.project, connId: 'ss1', sql: stmt, challengeId: g.json.challengeId });
     expect(replay.json.ok).toBe(false);
-    expect(String(replay.json.error)).toMatch(/只读\(ro\)/);
+    expect(String(replay.json.error)).toMatch(/read-only \(ro\)/);
     expect(env.tds.executed.some((e) => /INTO backup_users/i.test(e.sql))).toBe(false);
   });
 
@@ -663,7 +663,7 @@ describe('5 SQL 控制台：占位符重写 / 事务会话 / ro 只读闸门', (
 
     const commit = await env.call('POST', 'console/commit', { sessionToken: token });
     expect(commit.json.ok, JSON.stringify(commit.json)).toBe(true);
-    expect(commit.json.data.message).toBe('事务已提交');
+    expect(commit.json.data.message).toBe('Transaction committed');
 
     const tx = env.tds.txs[0];
     expect(tx, '未创建 mssql 事务对象').toBeDefined();
@@ -680,7 +680,7 @@ describe('5 SQL 控制台：占位符重写 / 事务会话 / ro 只读闸门', (
 
     const withDb = await env.call('POST', 'console/begin', { projectPath: env.project, connId: 'ss1', database: 'appdb' });
     expect(withDb.json).toMatchObject({ ok: false, code: 'INVALID_ARGUMENT' });
-    expect(String(withDb.json.error)).toContain('不支持指定数据库');
+    expect(String(withDb.json.error)).toContain('cannot target a specific database');
   });
 });
 
@@ -724,8 +724,8 @@ describe('7 数据传输：源/目标可为 sqlserver，定位参数进 challeng
     });
     expect(r.json, JSON.stringify(r.json)).toMatchObject({ ok: false, code: 'NEEDS_CONFIRMATION' });
     expect(String(r.json.statement)).toContain('sqlserver(ss1) → sqlserver(ss2)');
-    expect(String(r.json.statement)).toContain('源=appdb.sales');
-    expect(String(r.json.statement)).toContain('目标=reportdb.dbo');
+    expect(String(r.json.statement)).toContain('source=appdb.sales');
+    expect(String(r.json.statement)).toContain('target=reportdb.dbo');
   });
 
   it('tables 重复/为空在授权之前被拦（INVALID_ARGUMENT）', async () => {
@@ -840,7 +840,7 @@ describe('9 错误回显：适配器中文错误原样透传到 UI 契约层', (
     const r = await env.call('POST', 'test-draft', { kind: 'sqlserver', url: SS_URL });
     expect(r.json.ok).toBe(false);
     expect(r.json.code).toBe('DRIVER_ERROR');
-    expect(String(r.json.error)).toContain('网络不可达');
+    expect(String(r.json.error)).toContain('network unreachable');
     expect(String(r.json.error)).toContain('Failed to connect to db1.example.com:1433'); // 原始信息不吞
   });
 
@@ -859,7 +859,7 @@ describe('9 错误回显：适配器中文错误原样透传到 UI 契约层', (
     const r = await env.call('POST', 'query', { projectPath: env.project, connId: 'ss1', sql: 'SELECT ? AS a', params: [1] });
     expect(r.status).toBe(200);
     expect(r.json.ok).toBe(false);
-    expect(String(r.json.error)).toContain('SQL 执行错误（错误号 208');
+    expect(String(r.json.error)).toContain('SQL execution error (error number 208');
     expect(String(r.json.error)).toContain("Invalid object name 'nope'.");
   });
 

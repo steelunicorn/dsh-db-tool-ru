@@ -473,7 +473,7 @@ describe('Redis 写端 DUMP/RESTORE 与 payload 重建', () => {
   it('writeMode insert：目标键已存在 → 抛错，不覆盖', async () => {
     const c = makeClient([{ key: 'k' }]);
     const w = writer(c, 'insert');
-    await expect(w.writeBatch(table(), [row('k', 'string', 0n, '{"v":"x"}')])).rejects.toThrow(/已存在/);
+    await expect(w.writeBatch(table(), [row('k', 'string', 0n, '{"v":"x"}')])).rejects.toThrow(/already exists/);
     await w.close();
   });
 
@@ -506,7 +506,7 @@ describe('Redis 写端 DUMP/RESTORE 与 payload 重建', () => {
     const c = makeClient([{ key: 'dup' }]);
     const w = writer(c, 'insert');
     const rows = [row('a', 'string', 0n, '{"v":"1"}'), row('dup', 'string', 0n, '{"v":"2"}'), row('b', 'string', 0n, '{"v":"3"}')];
-    await expect(w.writeBatch(table(), rows)).rejects.toThrow(/已存在/);
+    await expect(w.writeBatch(table(), rows)).rejects.toThrow(/already exists/);
     // 整批回滚：不应留下任何 SET/RESTORE，也不应把键登记进 idx
     const writes = c.calls.filter((a) => ['SET', 'RESTORE', 'SADD'].includes(String(a[0]).toUpperCase()));
     expect(writes).toEqual([]);
@@ -519,7 +519,7 @@ describe('Redis 写端 DUMP/RESTORE 与 payload 重建', () => {
     const t = table();
     await w.createTable(t);
     // 一整批都因重复键失败
-    await expect(w.writeBatch(t, [row('dup', 'string', 0n, '{"v":"1"}')])).rejects.toThrow(/已存在/);
+    await expect(w.writeBatch(t, [row('dup', 'string', 0n, '{"v":"1"}')])).rejects.toThrow(/already exists/);
     // marker 应已被清理：tableExists 不再为真，可重新建表
     expect(await w.tableExists(t.name)).toBe(false);
     await w.close();
@@ -553,7 +553,7 @@ describe('Redis 写端 DUMP/RESTORE 与 payload 重建', () => {
         { name: 'note', midType: 'string', nullable: true, primaryKey: false },
       ],
     } as unknown as TransferTable;
-    await expect(w.writeBatch(wrong, [['1', 'alice', 'x', 'y', 'z', 'n']])).rejects.toThrow(/列/);
+    await expect(w.writeBatch(wrong, [['1', 'alice', 'x', 'y', 'z', 'n']])).rejects.toThrow(/envelope columns/);
     expect(c.calls.filter((a) => String(a[0]).toUpperCase() === 'SET')).toEqual([]);
     await w.close();
   });
@@ -561,7 +561,7 @@ describe('Redis 写端 DUMP/RESTORE 与 payload 重建', () => {
   it('行宽不匹配 → 抛中文错误，一条不写', async () => {
     const c = makeClient();
     const w = writer(c);
-    await expect(w.writeBatch(table(), [['k', 'string', 0n, 'raw', '{}']])).rejects.toThrow(/行宽不匹配/);
+    await expect(w.writeBatch(table(), [['k', 'string', 0n, 'raw', '{}']])).rejects.toThrow(/Row width mismatch/);
     expect(c.calls).toHaveLength(0);
     await w.close();
   });
@@ -569,7 +569,7 @@ describe('Redis 写端 DUMP/RESTORE 与 payload 重建', () => {
   it('未知键类型 → 写端抛明确错误，不静默写空值', async () => {
     const c = makeClient();
     const w = writer(c);
-    await expect(w.writeBatch(table(), [row('k', 'module', 0n, '{}')])).rejects.toThrow(/暂不支持/);
+    await expect(w.writeBatch(table(), [row('k', 'module', 0n, '{}')])).rejects.toThrow(/does not yet support/);
     await w.close();
   });
 

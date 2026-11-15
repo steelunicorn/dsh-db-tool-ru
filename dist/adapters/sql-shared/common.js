@@ -1,0 +1,85 @@
+const MAX_JSON_LEN = 1000;
+/** 标识符基本校验：非空、长度 ≤128、无 NUL/换行等控制字符。
+ *  防注入不靠字符白名单（各库引用标识符合法字符极宽：MySQL 反引号内任意、PG/SQLite "..." 任意、
+ *  Oracle/DM 引用创建的名字可含任意字符——白名单会误杀合法对象名，如 DM ## 开头内部表、
+ *  MySQL `my-table`/中文表名），而是靠「参数绑定 + quoteIdent 引号转义」。 */
+export function assertIdent(name, label = 'identifier') {
+    if (typeof name !== 'string' || name.length === 0 || name.length > 128 ||
+        /[\0\r\n]/.test(name)) {
+        throw new Error(`Invalid ${label}: ${JSON.stringify(String(name))} (must not be empty, exceed 128 characters, or contain NUL/newline)`);
+    }
+    return name;
+}
+/** 校验并用引号包裹标识符，内部引号转义（"..." 内 " → ""，`...` 内 ` → ``）。
+ *  引用标识符内唯一需要转义的就是引号自身，转义后任意名字均安全。 */
+export function quoteIdent(name, quote = '"') {
+    return quote + assertIdent(name).replaceAll(quote, quote + quote) + quote;
+}
+/** preview limit 钳制到 [1, max]（服务层已限 50，适配器再兜底一次） */
+export function clampLimit(limit, max = 50) {
+    const n = Math.floor(Number(limit));
+    if (!Number.isFinite(n) || n < 1)
+        return 1;
+    return n > max ? max : n;
+}
+/** preview offset 钳制到 [0, ∞)（服务层已限 ≥0，适配器再兜底一次；缺省 0） */
+export function clampOffset(offset) {
+    const n = Math.floor(Number(offset ?? 0));
+    return Number.isFinite(n) && n > 0 ? n : 0;
+}
+/**
+ * 端口校验（fail-closed，sqlserver validPort 同口径，各适配器 fields/URL 两路径共用）：
+ * 仅「未提供」（undefined/null/''，表单留空的官方语义）回退该库默认端口；提供了但
+ * Number() 后不是 1-65535 的整数则抛中文错误——绝不静默改写用户配置（各驱动普遍对
+ * falsy 端口 `|| 默认` 静默回退、对非整数静默截断，连错服务/端口后排障会被误导）。
+ */
+export function validPort(v, dflt, label) {
+    if (v === undefined || v === null || v === '')
+        return dflt;
+    const n = Number(v);
+    if (!Number.isInteger(n) || n <= 0 || n > 65535) {
+        throw new Error(`${label} connection has an invalid port: ${JSON.stringify(v)} (must be an integer from 1 to 65535; leave it empty to use the default port ${dflt})`);
+    }
+    return n;
+}
+/** 任意单元格 → NormalizedCell（string | number | null） */
+export function normalizeCell(v) {
+    if (v === null || v === undefined)
+        return null;
+    const t = typeof v;
+    if (t === 'string')
+        return v;
+    if (t === 'number')
+        return v;
+    if (t === 'boolean')
+        return v ? 1 : 0;
+    if (t === 'bigint') {
+        const b = v;
+        return b >= BigInt(Number.MIN_SAFE_INTEGER) && b <= BigInt(Number.MAX_SAFE_INTEGER)
+            ? Number(b)
+            : b.toString();
+    }
+    // Invalid Date（如驱动返回无法解析的日期）不能抛 RangeError：单格异常会放大成整查询失败
+    if (v instanceof Date)
+        return Number.isNaN(v.getTime()) ? String(v) : v.toISOString();
+    if (v instanceof Uint8Array)
+        return `[BLOB ${v.byteLength} bytes]`;
+    let s;
+    try {
+        s = JSON.stringify(v) ?? String(v);
+    }
+    catch {
+        s = String(v);
+    }
+    return s.length > MAX_JSON_LEN ? s.slice(0, MAX_JSON_LEN) + '…[truncated]' : s;
+}
+/** 统一错误包装：转成人类可读并保留原始 message */
+export async function humanize(label, fn) {
+    try {
+        return await fn();
+    }
+    catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        throw new Error(`${label}: ${msg}`);
+    }
+}

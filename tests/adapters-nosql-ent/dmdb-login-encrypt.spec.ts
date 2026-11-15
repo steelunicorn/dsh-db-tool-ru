@@ -87,7 +87,7 @@ describe('达梦通信加密降级（[6071] 回归）', () => {
   it('非加密能力错误不重试（[-2501] 用户名或密码错误）', async () => {
     createPoolMock.mockRejectedValueOnce(new Error('[-2501] 用户名或密码错误'));
     await expect(createDmAdapter(mkConn('c1', 'dm://u:p@dm-fallback-f.example:5236')))
-      .rejects.toThrow('达梦 DM 错误：[-2501] 用户名或密码错误');
+      .rejects.toThrow('DM error: [-2501] 用户名或密码错误');
     expect(createPoolMock).toHaveBeenCalledTimes(1);
   });
 
@@ -202,7 +202,7 @@ describe('达梦通信加密降级（[6071] 回归）', () => {
     expect(err!.message).toContain('loginEncrypt=false');
     expect(err!.message).toContain('COMM_ENCRYPT_NAME');
     // 已经做到的事不能再被建议一次
-    expect(err!.message).not.toContain('可在连接串设置');
+    expect(err!.message).not.toContain('set loginEncrypt=false in the connect string');
     expect(createPoolMock).toHaveBeenCalledTimes(2);
   });
 

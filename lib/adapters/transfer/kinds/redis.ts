@@ -261,7 +261,7 @@ function rebuildCommands(type: string, key: Key, payload: string): CmdArg[][] {
   try {
     doc = JSON.parse(payload) as Record<string, unknown>;
   } catch {
-    throw new Error(`Redis payload 非法 JSON（键 ${b64(key)}）`);
+    throw new Error(`Invalid Redis payload JSON (key ${b64(key)})`);
   }
   const v = (doc.v ?? null) as unknown;
   const f = (doc.f ?? []) as Array<[string, unknown]>;
@@ -289,7 +289,7 @@ function rebuildCommands(type: string, key: Key, payload: string): CmdArg[][] {
       ]);
     }
     default:
-      throw new Error(`Redis 目标暂不支持重建键类型 ${type}（键 ${b64(key)}）`);
+      throw new Error(`Redis target does not yet support rebuilding key type ${type} (key ${b64(key)})`);
   }
 }
 
@@ -336,12 +336,12 @@ export function createRedisTransferWriter(raw: RedisRawClient, writeMode: WriteM
       const names = table.columns.map((c) => c.name);
       if (names.length !== columns.length || names.some((n, i) => n !== columns[i]!.name)) {
         throw new Error(
-          `Redis 传输仅接受 envelope 列（${columns.map((c) => c.name).join('/')}），实际为 ${names.join('/')}`,
+          `Redis transfer accepts only envelope columns (${columns.map((c) => c.name).join('/')}), got ${names.join('/')}`,
         );
       }
       for (const r of rows) {
         if (r.length !== width) {
-          throw new Error(`行宽不匹配：期望 ${width} 列，实际 ${r.length} 列（表 ${table.name}）`);
+          throw new Error(`Row width mismatch: expected ${width} columns, got ${r.length} (table ${table.name})`);
         }
       }
 
@@ -360,7 +360,7 @@ export function createRedisTransferWriter(raw: RedisRawClient, writeMode: WriteM
           const present = await exists(keyArg);
           if (present) {
             if (writeMode === 'insert') {
-              throw new Error(`目标键已存在: ${b64(asArg(r[0] ?? null))}（insert 不覆盖已有数据，请改用 ignore/replace/truncate 或开启覆盖表结构）`);
+              throw new Error(`Target key already exists: ${b64(asArg(r[0] ?? null))} (insert does not overwrite existing data; use ignore/replace/truncate or enable overwrite structure)`);
             }
             if (writeMode === 'ignore') {
               planned.push({ r, skip: true, present });

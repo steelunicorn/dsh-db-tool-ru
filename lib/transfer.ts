@@ -236,7 +236,7 @@ export function startTransferTask(
         const nextLo = rows[rows.length - 1]?.[keyIdx] ?? null;
         // 守恒断言：批间链式（k > lo）下 lastKey 不前进 = 结构漂移致列错位，恒取同一批 → 死循环
         if (!loInclusive && lo !== null && nextLo !== null && String(nextLo) === String(lo)) {
-          throw new Error(`keyset 分片无进展（键 ${String(lo)}），已中止：源表结构可能在传输期间被变更`);
+          throw new Error(`keyset shard made no progress (key ${String(lo)}); aborted: the source table schema may have changed during the transfer`);
         }
         lo = nextLo;
         loInclusive = false; // 批间链式：k > lastKey 且 k < hi
@@ -275,7 +275,7 @@ export function startTransferTask(
         if (opts.writeMode === 'truncate' && w.beforeLoad) {
           await w.beforeLoad(t); // 清空旧数据再写
         } else if (opts.writeMode === 'insert') {
-          throw new Error(`目标表已存在: ${name}（insert 不覆盖已有数据，请改用 ignore/replace/truncate 或开启覆盖表结构）`);
+          throw new Error(`Target table already exists: ${name} (insert does not overwrite existing data; use ignore/replace/truncate or enable overwrite structure)`);
         }
         // ignore/replace：写入语句自带冲突处理，直接写
       } else {

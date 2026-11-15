@@ -148,10 +148,10 @@ for (const mode of ['node', 'better'] as const) {
 
     it('注入类标识符被安全引用（防注入靠引号转义，不再字符白名单拒绝）', async () => {
       // 整串被当作普通表名引用：PRAGMA/SELECT 查无此表即安全失败，注入永不执行
-      await expect(adapter.describeTable('users; DROP TABLE users')).rejects.toThrow(/表不存在/);
+      await expect(adapter.describeTable('users; DROP TABLE users')).rejects.toThrow(/Table does not exist/);
       await expect(adapter.previewRows('users"--', 10)).rejects.toThrow(/no such table/);
       // NUL/换行仍被直接拒绝
-      await expect(adapter.describeTable('a\nb')).rejects.toThrow(/非法/);
+      await expect(adapter.describeTable('a\nb')).rejects.toThrow(/Invalid table name/);
     });
 
     it('ro 模式：query 可用，execute 被拒', async () => {

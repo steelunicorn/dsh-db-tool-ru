@@ -197,51 +197,51 @@ describe('ro 闸门：防线有效面（对照，证明不是所有写形态都�
 describe('ro 闸门：缺陷（Critical）', () => {
   it('[已修复] ro 应拒绝 SELECT 1;DROP TABLE t（修复前：第二条语句全为标识符+空白 → multi 判不出；现 multi 判定前置到所有内容分支）', async () => {
     const { a, pool } = await make('ro');
-    await expect(a.query('SELECT 1;DROP TABLE t')).rejects.toThrow(/只读/);
+    await expect(a.query('SELECT 1;DROP TABLE t')).rejects.toThrow(/read-only \(ro\) mode/);
     console.log('[证据] ro 放行并下发驱动: ' + pool.lastSql);
     await a.close();
   });
 
   it('[已修复] ro 应拒绝分号后的 DELETE / TRUNCATE（无 WHERE、无标点；现统一置 multi）', async () => {
     const { a, pool } = await make('ro');
-    await expect(a.query('SELECT 1;DELETE FROM t')).rejects.toThrow(/只读/);
-    await expect(a.query('SELECT 1; TRUNCATE TABLE t')).rejects.toThrow(/只读/);
+    await expect(a.query('SELECT 1;DELETE FROM t')).rejects.toThrow(/read-only \(ro\) mode/);
+    await expect(a.query('SELECT 1; TRUNCATE TABLE t')).rejects.toThrow(/read-only \(ro\) mode/);
     console.log('[证据] ro 放行并下发驱动: ' + pool.lastSql);
     await a.close();
   });
 
   it("[已修复] ro 应拒绝 SELECT 1;EXEC xp_cmdshell 'whoami'（修复前引号被词法跳过 → 无标点可判）", async () => {
     const { a, pool } = await make('ro');
-    await expect(a.query("SELECT 1;EXEC xp_cmdshell 'whoami'")).rejects.toThrow(/只读/);
+    await expect(a.query("SELECT 1;EXEC xp_cmdshell 'whoami'")).rejects.toThrow(/read-only \(ro\) mode/);
     console.log('[证据] ro 放行并下发驱动: ' + pool.lastSql);
     await a.close();
   });
 
   it("[已修复] ro 应拒绝 SELECT 1;EXEC sp_executesql N'DROP TABLE t'（动态 DDL，现按多语句拒绝）", async () => {
     const { a, pool } = await make('ro');
-    await expect(a.query("SELECT 1;EXEC sp_executesql N'DROP TABLE t'")).rejects.toThrow(/只读/);
+    await expect(a.query("SELECT 1;EXEC sp_executesql N'DROP TABLE t'")).rejects.toThrow(/read-only \(ro\) mode/);
     console.log('[证据] ro 放行并下发驱动: ' + pool.lastSql);
     await a.close();
   });
 
   it("[已修复] ro 应拒绝 SELECT 1;BULK INSERT t FROM 'c:\\x.csv' 与 SELECT 1;SHUTDOWN", async () => {
     const { a, pool } = await make('ro');
-    await expect(a.query("SELECT 1;BULK INSERT t FROM 'c:\\x.csv'")).rejects.toThrow(/只读/);
-    await expect(a.query('SELECT 1;SHUTDOWN')).rejects.toThrow(/只读/);
+    await expect(a.query("SELECT 1;BULK INSERT t FROM 'c:\\x.csv'")).rejects.toThrow(/read-only \(ro\) mode/);
+    await expect(a.query('SELECT 1;SHUTDOWN')).rejects.toThrow(/read-only \(ro\) mode/);
     console.log('[证据] ro 放行并下发驱动: ' + pool.lastSql);
     await a.close();
   });
 
   it('[已修复] ro 应拒绝 USE db;DROP TABLE t（白名单首词 use + 无标点第二条，现按多语句拒绝）', async () => {
     const { a, pool } = await make('ro');
-    await expect(a.query('USE db;DROP TABLE t')).rejects.toThrow(/只读/);
+    await expect(a.query('USE db;DROP TABLE t')).rejects.toThrow(/read-only \(ro\) mode/);
     console.log('[证据] ro 放行并下发驱动: ' + pool.lastSql);
     await a.close();
   });
 
   it('[已修复] ro 跨库 query 应拒绝写语句，且不得为写请求新建跨库池（ro 检查先于建池）', async () => {
     const { a, pools } = await make('ro');
-    await expect(a.query('SELECT 1;DROP TABLE t', [], 'otherdb')).rejects.toThrow(/只读/);
+    await expect(a.query('SELECT 1;DROP TABLE t', [], 'otherdb')).rejects.toThrow(/read-only \(ro\) mode/);
     console.log('[证据] 跨库 ro 放行，池数量=' + pools.length + '（>1 表示已为 otherdb 建了池）');
     await a.close();
   });
@@ -249,7 +249,7 @@ describe('ro 闸门：缺陷（Critical）', () => {
   it('[已修复] ro 应拒绝 OPENROWSET/OPENQUERY 内的远端语句（远端执行等价任意语句，现按顶层 token 整体拒绝）', async () => {
     const { a, pool } = await make('ro');
     // strings 里的分号/关键字全被 scanSql 跳过 → 无 into、无顶层分号 → 闸门放行
-    await expect(a.query("SELECT * FROM OPENQUERY(ls,'EXEC xp_cmdshell ''whoami''')")).rejects.toThrow(/只读/);
+    await expect(a.query("SELECT * FROM OPENQUERY(ls,'EXEC xp_cmdshell ''whoami''')")).rejects.toThrow(/read-only \(ro\) mode/);
     console.log('[证据] ro 放行并下发驱动: ' + pool.lastSql);
     await a.close();
   });
@@ -282,14 +282,14 @@ describe('占位符重写（? → @pN）', () => {
     const { a } = await make();
     // 未闭合时后续内容整体被当字面量 → 占位符计数 0，而传入 1 个参数 → 报个数不一致
     for (const s of ["SELECT 'unclosed ?", 'SELECT [unclosed ?', 'SELECT /* unclosed ?']) {
-      expect(await probe(() => a.query(s, [1])), s).toMatch(/不一致/);
+      expect(await probe(() => a.query(s, [1])), s).toMatch(/does not match/);
     }
     await a.close();
   });
 
   it('混用检测：@pN + ? 拒绝；@@ 系统变量与纯 @pN 不误报', async () => {
     const { a } = await make();
-    expect(await probe(() => a.query('SELECT @p1 + ?', [1]))).toMatch(/混用/);
+    expect(await probe(() => a.query('SELECT @p1 + ?', [1]))).toMatch(/Mixing \? and @pN/);
     expect(await probe(() => a.query('SELECT @@ROWCOUNT'))).toBe('PASS');
     // @@ 是系统函数前缀，不算命名参数 → 与 ? 同用合法（不会误判混用）
     expect(await probe(() => a.query('SELECT @@p1, ?', [1]))).toBe('PASS');
@@ -298,7 +298,7 @@ describe('占位符重写（? → @pN）', () => {
 
   it('execute 通道同样做占位符个数校验（不只在 query 上）', async () => {
     const { a } = await make();
-    expect(await probe(() => a.execute('UPDATE t SET x = ?'))).toMatch(/不一致/);
+    expect(await probe(() => a.execute('UPDATE t SET x = ?'))).toMatch(/does not match/);
     expect(await probe(() => a.execute("SELECT '?'"))).toBe('PASS');
     await a.close();
   });
@@ -306,7 +306,7 @@ describe('占位符重写（? → @pN）', () => {
   it('[已修复] SELECT @p1x, ? 不该被判为“混用 @pN”（现只在 token 精确匹配 @p\\d+ 时置位）', async () => {
     const { a } = await make();
     // 误报代价：用户写了一个恰好以 @p 开头的局部变量名就无法使用 ? 绑定
-    expect(await probe(() => a.query('SELECT @p1x, ?', [1]))).not.toMatch(/混用/);
+    expect(await probe(() => a.query('SELECT @p1x, ?', [1]))).not.toMatch(/Mixing \? and @pN/);
     await a.close();
   });
 
@@ -317,8 +317,9 @@ describe('占位符重写（? → @pN）', () => {
       () => null,
       (e: unknown) => e,
     );
-    expect(msgOf(err)).toMatch(/只接受 \? 占位符/);
-    expect(msgOf(err)).not.toMatch(/或直接书写/);
+    expect(msgOf(err)).toMatch(/only accepts \? placeholders/);
+    // 不推荐「直接书写 @pN」的等价事实：新文案明确说明这样写不受支持
+    expect(msgOf(err)).toMatch(/writing @pN directly .* is not supported/);
     // 对照：纯 ? 通道正常工作
     expect(await probe(() => a.query('SELECT ?', [1]))).toBe('PASS');
     await a.close();
@@ -399,8 +400,8 @@ describe('transfer：标识符与切批', () => {
     expect(sqlserverIdent("a';DROP TABLE x--")).toBe("[a';DROP TABLE x--]");
     expect(sqlserverIdent('a]]b')).toBe('[a]]]]b]');
     expect(sqlserverIdent('中文表名')).toBe('[中文表名]');
-    expect(() => sqlserverIdent('a\nb')).toThrow(/非法标识符/);
-    expect(() => sqlserverIdent('')).toThrow(/非法标识符/);
+    expect(() => sqlserverIdent('a\nb')).toThrow(/Invalid identifier/);
+    expect(() => sqlserverIdent('')).toThrow(/Invalid identifier/);
   });
 
   it('sqlserverPerStmt：0 列兜底 1，双上限取小，不产出 0 行语句', () => {
@@ -429,7 +430,7 @@ describe('transfer：标识符与切批', () => {
     const executed: string[] = [];
     const tx = txRecorder(executed, () => ({ recordset: [], rowsAffected: [1] }));
     const w = createSqlserverTransferWriter(new FakePool({}), () => tx, 'dbo', 'insert');
-    await expect(w.writeBatch({ name: 't', columns: [] } as never, [[] as never])).rejects.toThrow(/无列定义/);
+    await expect(w.writeBatch({ name: 't', columns: [] } as never, [[] as never])).rejects.toThrow(/has no column definitions/);
     console.log('[证据] ' + JSON.stringify(executed));
     expect(executed.join('')).not.toMatch(/\(\) VALUES \(\)/);
   });
@@ -650,7 +651,7 @@ describe('生命周期', () => {
       ['query@otherdb', () => a.query('SELECT 1', [], 'otherdb')],
     ];
     for (const [name, fn] of methods) {
-      expect(await probe(fn), name).toMatch(/连接已关闭/);
+      expect(await probe(fn), name).toMatch(/is closed: reconnect and retry/);
     }
     expect(pools).toHaveLength(1); // 关闭后没有新建跨库池（无连接泄漏）
     expect(await probe(() => a.close())).toBe('PASS'); // close 幂等

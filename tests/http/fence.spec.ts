@@ -87,9 +87,9 @@ function makeCtx(opts: {
   };
   apply(ctx as Parameters<typeof apply>[0]);
   expect(registrations.length).toBe(1);
-  // 挂载形态契约：必须以 prefix 挂在 /dsh-db-tool/api 下
+  // 挂载形态契约：必须以 prefix 挂在 /dsh-db-tool-ru/api 下
   expect(registrations[0]!.kind).toBe('prefix');
-  expect(registrations[0]!.path).toBe('/dsh-db-tool/api');
+  expect(registrations[0]!.path).toBe('/dsh-db-tool-ru/api');
   return registrations[0]!.handler;
 }
 
@@ -101,7 +101,7 @@ describe('插件入口 Connection 鉴权栅栏', () => {
   it('requestRejection=403 → 兜底写 403 JSON，不进入业务 handler', async () => {
     const handler = makeCtx({ rejection: () => 403 });
     const res = new MockRes();
-    await handler(mockReq('/dsh-db-tool/api/state'), res as unknown as ServerResponse);
+    await handler(mockReq('/dsh-db-tool-ru/api/state'), res as unknown as ServerResponse);
     expect(res.statusCode).toBe(403);
     const json = JSON.parse(res.body) as { ok: boolean; code: string; error: string };
     expect(json.ok).toBe(false);
@@ -112,7 +112,7 @@ describe('插件入口 Connection 鉴权栅栏', () => {
   it('requestRejection=401 → 兜底写 401 JSON', async () => {
     const handler = makeCtx({ rejection: () => 401 });
     const res = new MockRes();
-    await handler(mockReq('/dsh-db-tool/api/state'), res as unknown as ServerResponse);
+    await handler(mockReq('/dsh-db-tool-ru/api/state'), res as unknown as ServerResponse);
     expect(res.statusCode).toBe(401);
     const json = JSON.parse(res.body) as { code: string; error: string };
     expect(json.code).toBe('UNAUTHORIZED');
@@ -122,7 +122,7 @@ describe('插件入口 Connection 鉴权栅栏', () => {
   it('requestRejection=undefined → 放行进入业务 handler（未知路由得到业务 404）', async () => {
     const handler = makeCtx({ rejection: () => undefined });
     const res = new MockRes();
-    await handler(mockReq('/dsh-db-tool/api/definitely-not-a-route'), res as unknown as ServerResponse);
+    await handler(mockReq('/dsh-db-tool-ru/api/definitely-not-a-route'), res as unknown as ServerResponse);
     // 栅栏放行的证明：响应由 handleDbToolRequest 写出（NOT_FOUND），而非静默或栅栏 JSON
     expect(res.statusCode).toBe(404);
     expect((JSON.parse(res.body) as { ok: boolean; code: string }).code).toBe('NOT_FOUND');
@@ -131,7 +131,7 @@ describe('插件入口 Connection 鉴权栅栏', () => {
   it('宿主无 connection 服务 → 回退本地 trust 校验（无 Host 头 → 403）', async () => {
     const handler = makeCtx({});
     const res = new MockRes();
-    await handler(mockReq('/dsh-db-tool/api/state', {}), res as unknown as ServerResponse);
+    await handler(mockReq('/dsh-db-tool-ru/api/state', {}), res as unknown as ServerResponse);
     expect(res.statusCode).toBe(403);
   });
 
@@ -147,7 +147,7 @@ describe('插件入口 Connection 鉴权栅栏', () => {
     const res = new MockRes();
     await handler(
       mockReq(
-        '/dsh-db-tool/api/project-context',
+        '/dsh-db-tool-ru/api/project-context',
         { host: '127.0.0.1' },
         { method: 'POST', body: { sessionId: 'sess-1' } },
       ),

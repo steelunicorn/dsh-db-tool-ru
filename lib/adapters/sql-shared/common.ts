@@ -8,12 +8,12 @@ const MAX_JSON_LEN = 1000;
  *  防注入不靠字符白名单（各库引用标识符合法字符极宽：MySQL 反引号内任意、PG/SQLite "..." 任意、
  *  Oracle/DM 引用创建的名字可含任意字符——白名单会误杀合法对象名，如 DM ## 开头内部表、
  *  MySQL `my-table`/中文表名），而是靠「参数绑定 + quoteIdent 引号转义」。 */
-export function assertIdent(name: string, label = '标识符'): string {
+export function assertIdent(name: string, label = 'identifier'): string {
   if (
     typeof name !== 'string' || name.length === 0 || name.length > 128 ||
     /[\0\r\n]/.test(name)
   ) {
-    throw new Error(`非法${label}: ${JSON.stringify(String(name))}（不允许为空、超 128 字符或含 NUL/换行）`);
+    throw new Error(`Invalid ${label}: ${JSON.stringify(String(name))} (must not be empty, exceed 128 characters, or contain NUL/newline)`);
   }
   return name;
 }
@@ -47,7 +47,7 @@ export function validPort(v: unknown, dflt: number, label: string): number {
   if (v === undefined || v === null || v === '') return dflt;
   const n = Number(v);
   if (!Number.isInteger(n) || n <= 0 || n > 65535) {
-    throw new Error(`${label} 连接的端口取值非法：${JSON.stringify(v)}（须为 1-65535 的整数；留空才使用默认端口 ${dflt}）`);
+    throw new Error(`${label} connection has an invalid port: ${JSON.stringify(v)} (must be an integer from 1 to 65535; leave it empty to use the default port ${dflt})`);
   }
   return n;
 }
@@ -74,7 +74,7 @@ export function normalizeCell(v: unknown): NormalizedCell {
   } catch {
     s = String(v);
   }
-  return s.length > MAX_JSON_LEN ? s.slice(0, MAX_JSON_LEN) + '…[已截断]' : s;
+  return s.length > MAX_JSON_LEN ? s.slice(0, MAX_JSON_LEN) + '…[truncated]' : s;
 }
 
 /** 统一错误包装：转成人类可读并保留原始 message */

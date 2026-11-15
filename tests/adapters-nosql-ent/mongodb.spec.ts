@@ -85,7 +85,7 @@ describe('testConnect（版本信息取 buildInfo，hello 响应无 version 字�
     const a = await createMongoAdapter(conn, { client });
     const r = await a.testConnect();
     expect(r.ok).toBe(true);
-    expect(r.serverInfo).toContain('版本信息不可读');
+    expect(r.serverInfo).toContain('version information unavailable');
     expect(dbObj.command).toHaveBeenLastCalledWith({ hello: 1 });
   });
   it('hello 也失败 → ok:false（连通性判定不受兜底影响）', async () => {
@@ -115,9 +115,9 @@ describe('DANGEROUS_OPS 常量完备性', () => {
 
 describe('assertExplicitFilter（空 filter 防线）', () => {
   it('updateMany/deleteMany 空 filter 拒绝', () => {
-    expect(() => assertExplicitFilter('updateMany', {})).toThrow('缺少显式 filter');
-    expect(() => assertExplicitFilter('deleteMany', undefined)).toThrow('缺少显式 filter');
-    expect(() => assertExplicitFilter('deleteMany', null)).toThrow('缺少显式 filter');
+    expect(() => assertExplicitFilter('updateMany', {})).toThrow('requires an explicit filter');
+    expect(() => assertExplicitFilter('deleteMany', undefined)).toThrow('requires an explicit filter');
+    expect(() => assertExplicitFilter('deleteMany', null)).toThrow('requires an explicit filter');
   });
   it('显式 filter 通过', () => {
     expect(() => assertExplicitFilter('updateMany', { status: 'old' })).not.toThrow();
@@ -186,7 +186,7 @@ describe('buildUri（fields 模式）', () => {
   });
   it('端口非法值抛中文错误（含原值与 1-65535，不再被 typeof 门静默丢弃回退 27017）', () => {
     for (const port of ['abc', 0, -1, 99999, 1433.5]) {
-      expect(() => buildUri({ host: 'h', port })).toThrow(`mongodb 连接的端口取值非法：${JSON.stringify(port)}`);
+      expect(() => buildUri({ host: 'h', port })).toThrow(`mongodb connection has an invalid port: ${JSON.stringify(port)}`);
     }
   });
 });
@@ -212,8 +212,8 @@ describe('normalizeMongoCell', () => {
     expect(normalizeMongoCell({ a: 1 })).toBe('{"a":1}');
     const big = { s: 'y'.repeat(2000) };
     const out = normalizeMongoCell(big) as string;
-    expect(out.length).toBeLessThanOrEqual(1000 + 20);
-    expect(out).toContain('截断');
+    expect(out).toBe(`${JSON.stringify(big).slice(0, 1000)}…[truncated, 2008 chars total]`);
+    expect(out).toContain('truncated');
   });
   it('boolean → true/false 字符串，null → null', () => {
     expect(normalizeMongoCell(true)).toBe('true');
@@ -259,11 +259,11 @@ describe('query', () => {
   });
   it('非法 JSON 拒绝', async () => {
     const a = await createMongoAdapter(conn, { client: makeClient().client });
-    await expect(a.query('{find:')).rejects.toThrow('不是合法 JSON');
+    await expect(a.query('{find:')).rejects.toThrow('is not valid JSON');
   });
   it('写操作走 query 拒绝', async () => {
     const a = await createMongoAdapter(conn, { client: makeClient().client });
-    await expect(a.query('{"insertOne":"u"}')).rejects.toThrow('不支持操作 insertOne');
+    await expect(a.query('{"insertOne":"u"}')).rejects.toThrow('does not support operation insertOne');
   });
   it('count 返回 count 列', async () => {
     const a = await createMongoAdapter(conn, { client: makeClient().client });
@@ -276,12 +276,12 @@ describe('execute 白名单与防线', () => {
   it('updateMany 空 filter 直接拒绝（适配器级防线）', async () => {
     const { client } = makeClient();
     const a = await createMongoAdapter(conn, { client });
-    await expect(a.execute('{"updateMany":"u","update":{"$set":{"x":1}}}')).rejects.toThrow('缺少显式 filter');
+    await expect(a.execute('{"updateMany":"u","update":{"$set":{"x":1}}}')).rejects.toThrow('requires an explicit filter');
   });
   it('deleteMany 空 filter 直接拒绝', async () => {
     const { client } = makeClient();
     const a = await createMongoAdapter(conn, { client });
-    await expect(a.execute('{"deleteMany":"u","filter":{}}')).rejects.toThrow('缺少显式 filter');
+    await expect(a.execute('{"deleteMany":"u","filter":{}}')).rejects.toThrow('requires an explicit filter');
   });
   it('带 filter 的 deleteMany 通过', async () => {
     const { client, coll } = makeClient();
@@ -292,7 +292,7 @@ describe('execute 白名单与防线', () => {
   });
   it('非白名单写操作拒绝', async () => {
     const a = await createMongoAdapter(conn, { client: makeClient().client });
-    await expect(a.execute('{"dropDatabase":1}')).rejects.toThrow(/不支持操作|暂未实现/);
+    await expect(a.execute('{"dropDatabase":1}')).rejects.toThrow(/does not support operation|does not yet implement operation/);
   });
   it('insertOne 缺 document 报错', async () => {
     const a = await createMongoAdapter(conn, { client: makeClient().client });
@@ -300,7 +300,7 @@ describe('execute 白名单与防线', () => {
   });
   it('ro 模式拒绝 execute（错误信息含「连接为只读(ro)模式」）', async () => {
     const a = await createMongoAdapter(conn, { mode: 'ro', client: makeClient().client });
-    await expect(a.execute('{"insertOne":"u","document":{"a":1}}')).rejects.toThrow('连接为只读(ro)模式');
+    await expect(a.execute('{"insertOne":"u","document":{"a":1}}')).rejects.toThrow('Connection is in read-only (ro) mode');
   });
   it('ro 模式仍允许 query', async () => {
     const a = await createMongoAdapter(conn, { mode: 'ro', client: makeClient([{ _id: 'i', v: 1 }]).client });
@@ -384,7 +384,7 @@ describe('execute 文档级 DML 的 Extended JSON 复活', () => {
     const a = await createMongoAdapter(conn, { client });
     const r = await a.execute('{"createIndexes":"u","indexes":[{"key":{"a":1},"name":"a_1"},{"key":{"b":1},"name":"b_1"}]}');
     expect(r.affectedRows).toBe(2);
-    expect(r.message).toContain('2 个');
+    expect(r.message).toContain('2 in total');
   });
 });
 

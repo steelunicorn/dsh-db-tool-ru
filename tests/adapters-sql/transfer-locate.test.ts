@@ -35,8 +35,8 @@ describe('pg 定位解析（pgLocate，离线）', () => {
   it('loc.schema 校验后生效；空串拒绝（assertIdent 卫生校验）', () => {
     const rc = rcOf({ database: 'app' });
     expect(pgLocate(rc, { schema: 'other' }).schema).toBe('other');
-    expect(() => pgLocate(rc, { schema: '' })).toThrow(/非法模式名/);
-    expect(() => pgLocate(rc, { schema: 'a\nb' })).toThrow(/非法模式名/);
+    expect(() => pgLocate(rc, { schema: '' })).toThrow(/Invalid schema name/);
+    expect(() => pgLocate(rc, { schema: 'a\nb' })).toThrow(/Invalid schema name/);
   });
 
   it('database 跨库：浅拷贝 rc 仅覆盖 fields.database（原 rc 不被改）；同库/缺省不改', () => {
@@ -222,8 +222,8 @@ describe.skipIf(!nodeSqliteAvailable && !betterAvailable)('manager transferStart
   it('全缺省：statement 无定位片段（与现状一致），challenge 往返后任务跑通', async () => {
     const r1 = await service.transferStart(project, startBody());
     const st = (r1 as unknown as { statement: string }).statement;
-    expect(st).not.toContain('源=');
-    expect(st).not.toContain('目标=');
+    expect(st).not.toContain('source=');
+    expect(st).not.toContain('target=');
     const cid = (r1 as unknown as { challengeId: string }).challengeId;
     const r2 = await service.transferStart(project, startBody(), cid);
     const taskId = (r2 as unknown as { taskId: string }).taskId;
@@ -237,7 +237,7 @@ describe.skipIf(!nodeSqliteAvailable && !betterAvailable)('manager transferStart
     const r1 = await service.transferStart(project, body);
     const st = (r1 as unknown as { statement: string }).statement;
     // sourceSchema 空白被忽略；定位片段追加在模板尾部
-    expect(st.endsWith(' 源=srcdb 目标=dstdb.pub')).toBe(true);
+    expect(st.endsWith(' source=srcdb target=dstdb.pub')).toBe(true);
     const cid = (r1 as unknown as { challengeId: string }).challengeId;
     // 同 input 重放：statement 稳定 → challenge 消费成功
     const r2 = await service.transferStart(project, body, cid);
@@ -249,6 +249,6 @@ describe.skipIf(!nodeSqliteAvailable && !betterAvailable)('manager transferStart
     const cid3 = (r3 as unknown as { challengeId: string }).challengeId;
     await expect(
       service.transferStart(project, startBody({ targetDatabase: 'y' }), cid3),
-    ).rejects.toThrow(/确认凭据无效/);
+    ).rejects.toThrow(/Confirmation token is invalid/);
   });
 });

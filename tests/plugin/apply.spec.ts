@@ -62,12 +62,12 @@ describe('插件装配（inject / apply）', () => {
     expect(inject).not.toContain('webRuntime');
   });
 
-  it('宿主没有 webRuntime 时仍注册 /dsh-db-tool/api 前缀路由', () => {
+  it('宿主没有 webRuntime 时仍注册 /dsh-db-tool-ru/api 前缀路由', () => {
     const routes: Route[] = [];
     apply(makeCtx(routes) as never);
     expect(routes).toHaveLength(1);
     expect(routes[0]?.kind).toBe('prefix');
-    expect(routes[0]?.path).toBe('/dsh-db-tool/api');
+    expect(routes[0]?.path).toBe('/dsh-db-tool-ru/api');
   });
 
   it('读不到 webRuntime 时 handler 退化为空信任列表，loopback 仍放行', async () => {
@@ -86,7 +86,7 @@ describe('插件装配（inject / apply）', () => {
         this.ended = true;
       },
     };
-    await handler({ method: 'OPTIONS', url: '/dsh-db-tool/api/connections', headers: { host: '127.0.0.1:55606' } }, res);
+    await handler({ method: 'OPTIONS', url: '/dsh-db-tool-ru/api/connections', headers: { host: '127.0.0.1:55606' } }, res);
 
     expect(res.statusCode).toBe(204);
     expect(res.ended).toBe(true);

@@ -139,7 +139,7 @@ describe('Oracle 连接池别名（匿名池退化回归）', () => {
 
   it('建池失败仍经 humanizeOraError 包装（catch 路径）', async () => {
     createPoolMock.mockRejectedValueOnce(new Error('ORA-01017: invalid username/password'));
-    await expect(createOracleAdapter(mkConn('c1'))).rejects.toThrow('用户名或密码错误');
+    await expect(createOracleAdapter(mkConn('c1'))).rejects.toThrow('invalid username or password');
     // 证明确实走的是建池调用（且只调一次），而非在校验/解析阶段提前失败
     expect(createPoolMock).toHaveBeenCalledTimes(1);
   });

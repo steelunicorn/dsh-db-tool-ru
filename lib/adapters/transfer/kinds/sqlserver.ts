@@ -51,7 +51,7 @@ export function sqlserverPerStmt(columnCount: number): number {
 /** T-SQL 标识符：一律 [x]，内部 ] 双写为 ]]（引用标识符内唯一需要转义的字符）。
  *  sql-shared 的 quoteIdent 只支持 " 与 ` 两种库，此处按 SQL Server 方言单独实现。 */
 export function sqlserverIdent(name: string): string {
-  return '[' + assertIdent(name, '标识符').replaceAll(']', ']]') + ']';
+  return '[' + assertIdent(name, 'identifier').replaceAll(']', ']]') + ']';
 }
 
 /** information_schema.columns.data_type → 中间类型（maxLength = CHARACTER_MAXIMUM_LENGTH，
@@ -265,7 +265,7 @@ async function detectSqlserverMajor(pool: SqlPool): Promise<number> {
 }
 
 export function createSqlserverTransferReader(pool: SqlPool, schema: string): TransferReader {
-  const sch = assertIdent(schema, '模式名');
+  const sch = assertIdent(schema, 'schema name');
   const tblOf = (table: string): string => `${sqlserverIdent(sch)}.${sqlserverIdent(table)}`;
   // 版本探测结果缓存（Promise 缓存：并发首批只探测一次）
   let majorPromise: Promise<number> | undefined;
@@ -279,7 +279,7 @@ export function createSqlserverTransferReader(pool: SqlPool, schema: string): Tr
   };
 
   const describe = async (table: string): Promise<TransferTable> => {
-    const tbl = assertIdent(table, '表名');
+    const tbl = assertIdent(table, 'table name');
     const rows = await q(
       `SELECT c.COLUMN_NAME, c.DATA_TYPE, c.IS_NULLABLE, c.COLUMN_DEFAULT,
               c.CHARACTER_MAXIMUM_LENGTH, c.NUMERIC_PRECISION, c.NUMERIC_SCALE,
@@ -290,7 +290,7 @@ export function createSqlserverTransferReader(pool: SqlPool, schema: string): Tr
        ORDER BY c.ORDINAL_POSITION`,
       { schema: sch, table: tbl },
     );
-    if (rows.length === 0) throw new Error(`表不存在: ${sch}.${tbl}`);
+    if (rows.length === 0) throw new Error(`table does not exist: ${sch}.${tbl}`);
     const pkRows = await q(
       `SELECT kcu.COLUMN_NAME FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
        JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
@@ -338,7 +338,7 @@ export function createSqlserverTransferReader(pool: SqlPool, schema: string): Tr
 
     count: async (table) => {
       // COUNT_BIG：COUNT 的 int 返回值在 >21 亿行时溢出
-      const rows = await q(`SELECT COUNT_BIG(*) AS n FROM ${tblOf(assertIdent(table, '表名'))}`);
+      const rows = await q(`SELECT COUNT_BIG(*) AS n FROM ${tblOf(assertIdent(table, 'table name'))}`);
       return Number(rows[0]?.n ?? 0);
     },
 
@@ -407,9 +407,9 @@ export function createSqlserverTransferReader(pool: SqlPool, schema: string): Tr
     keyAt: async (table, column, offset) => {
       const t = await describe(table);
       const keyCol = t.columns.find((c) => c.name === column);
-      const key = sqlserverIdent(assertIdent(column, '分片键'));
+      const key = sqlserverIdent(assertIdent(column, 'shard key'));
       const keyExpr = keyCol ? readExpr(keyCol) : key;
-      const target = tblOf(assertIdent(table, '表名'));
+      const target = tblOf(assertIdent(table, 'table name'));
       const off = inlineInt(offset, 0);
       // 2008 降级：ROW_NUMBER 按分片键排序定位第 off+1 行（keyAt 语义本就是按该键排序取第 offset 行）
       const rows = (await major()) < SQLSERVER_MIN_MAJOR_FOR_OFFSET_FETCH
@@ -432,8 +432,8 @@ export function createSqlserverTransferWriter(
   schema: string,
   writeMode: WriteMode = 'insert',
 ): TransferWriter {
-  const sch = assertIdent(schema, '模式名');
-  const tblOf = (name: string): string => `${sqlserverIdent(sch)}.${sqlserverIdent(assertIdent(name, '表名'))}`;
+  const sch = assertIdent(schema, 'schema name');
+  const tblOf = (name: string): string => `${sqlserverIdent(sch)}.${sqlserverIdent(assertIdent(name, 'table name'))}`;
 
   const q = async (sql: string, binds?: Record<string, unknown>): Promise<Record<string, unknown>[]> => {
     const req = pool.request();
@@ -448,7 +448,7 @@ export function createSqlserverTransferWriter(
     tableExists: async (name) => {
       const rows = await q(
         `SELECT COUNT(*) AS n FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = @schema AND TABLE_NAME = @table`,
-        { schema: sch, table: assertIdent(name, '表名') },
+        { schema: sch, table: assertIdent(name, 'table name') },
       );
       return Number(rows[0]?.n ?? 0) > 0;
     },
@@ -475,8 +475,8 @@ export function createSqlserverTransferWriter(
           if (!isLockWaitError(e)) {
             const num = errorNumber(e);
             throw new Error(
-              `TRUNCATE TABLE ${sch}.${table.name} 失败${num != null ? `（错误号 ${num}）` : ''}，`
-              + `未降级 DELETE（仅锁等待超时才降级）：${e instanceof Error ? e.message : String(e)}`,
+              `TRUNCATE TABLE ${sch}.${table.name} failed${num != null ? ` (error number ${num})` : ''}, `
+              + `not falling back to DELETE (only lock-wait timeouts are downgraded): ${e instanceof Error ? e.message : String(e)}`,
             );
           }
           await tx.request().query(`DELETE FROM ${tbl}`);
@@ -494,7 +494,7 @@ export function createSqlserverTransferWriter(
 
     createTable: async (table) => {
       if (table.columns.length === 0) {
-        throw new Error(`表 ${table.name} 无列定义，无法建表（源表结构为空？）`);
+        throw new Error(`table ${table.name} has no column definitions; cannot create the table (is the source table structure empty?)`);
       }
       const defs = table.columns.map((c) => {
         let d = `${sqlserverIdent(c.name)} ${midToSqlserverType(c)}`;
@@ -514,18 +514,18 @@ export function createSqlserverTransferWriter(
       if (rows.length === 0) return 0;
       const cols = table.columns;
       if (cols.length === 0) {
-        throw new Error(`表 ${table.name} 无列定义，无法写入（源表结构为空？）`);
+        throw new Error(`table ${table.name} has no column definitions; cannot write to it (is the source table structure empty?)`);
       }
       const width = cols.length;
       for (const r of rows) {
         if (r.length !== width) {
-          throw new Error(`行宽不匹配：期望 ${width} 列，实际 ${r.length} 列（表 ${table.name}）`);
+          throw new Error(`row width mismatch: expected ${width} columns, got ${r.length} (table ${table.name})`);
         }
       }
       const colIds = cols.map((c) => sqlserverIdent(c.name));
       const pkIds = cols.filter((c) => c.primaryKey).map((c) => sqlserverIdent(c.name));
       if (writeMode === 'replace' && pkIds.length === 0) {
-        throw new Error(`replace 模式需要主键：表 ${table.name} 无主键`);
+        throw new Error(`replace mode requires a primary key: table ${table.name} has no primary key`);
       }
       // T-SQL 无 INSERT IGNORE / ON CONFLICT：ignore/replace 用 MERGE（官方 upsert 形态）。
       // MERGE 需要冲突判定键；ignore 无主键时无重复可判，退化为纯 INSERT（同 pg 无冲突目标语义）。
@@ -588,7 +588,7 @@ export function createSqlserverTransferWriter(
  *  按该字段决定连接的默认库）。 */
 export function sqlserverLocate(rc: ResolvedConnection, loc?: TransferLocator): { rc: ResolvedConnection; schema: string } {
   const s = rc.fields?.schema;
-  const schema = loc?.schema != null ? assertIdent(loc.schema, '模式名') : (typeof s === 'string' && s ? s : 'dbo');
+  const schema = loc?.schema != null ? assertIdent(loc.schema, 'schema name') : (typeof s === 'string' && s ? s : 'dbo');
   const cur = rc.fields?.database != null ? String(rc.fields.database) : undefined;
   if (!loc?.database || loc.database === cur) return { rc, schema };
   return { rc: { ...rc, fields: { ...rc.fields, database: loc.database } }, schema };

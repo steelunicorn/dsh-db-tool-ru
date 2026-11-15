@@ -1,0 +1,149 @@
+/**
+ * run_script 子进程执行器。
+ *
+ * 为什么不用 node:vm 同进程沙箱：node:vm 官方明确不是安全边界，脚本可经
+ * Function constructor 等已知路径逃逸到宿主 realm 拿到 process/require，
+ * 读取 secrets.json 与任意文件。子进程 + Node permission model（禁 fs）+
+ * 新 vm realm 双层隔离：vm 逃逸后仍是无文件权限的 worker 进程。
+ * 超时用 SIGKILL 进程级强杀（vm timeout 管不到异步调用），并对会话专用
+ * 适配器立即 close，中断在途调用。
+ */
+import { fork } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import * as path from 'node:path';
+import { DbToolError } from '../manager.js';
+const WORKER_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'worker.cjs');
+/** permission model 的版本兼容 flag：Node ≥22 用稳定名，20/21 用 experimental 别名 */
+function permissionFlags() {
+    const major = Number(process.versions.node.split('.')[0]);
+    return major >= 22 ? ['--permission'] : ['--experimental-permission'];
+}
+/** worker 启动/运行所需的环境变量白名单（Windows/Unix 各取所需），其余一律不透传 */
+const ENV_ALLOWLIST = [
+    'PATH', 'SYSTEMROOT', 'SYSTEMDRIVE', 'TEMP', 'TMP', 'COMSPEC', 'PATHEXT',
+    'USERPROFILE', 'HOME', 'LANG', 'TZ',
+];
+/** 最小化环境变量：--permission 只禁 fs，脚本仍可读 process.env，故 fork 时按白名单裁剪 */
+export function minimalEnv() {
+    const env = {};
+    for (const key of ENV_ALLOWLIST) {
+        const value = process.env[key];
+        if (value !== undefined)
+            env[key] = value;
+    }
+    return env;
+}
+export async function runScriptInChild(opts) {
+    const timeoutMs = opts.timeoutMs ?? 60_000;
+    const child = fork(WORKER_PATH, [], {
+        execArgv: permissionFlags(),
+        env: minimalEnv(),
+        stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
+    });
+    const pendingDb = new Map();
+    let dbSeq = 0;
+    let settled = false;
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            if (settled)
+                return;
+            settled = true;
+            child.kill('SIGKILL');
+            opts.onTimeout?.();
+            reject(new DbToolError('SCRIPT_TIMEOUT', `Script execution timed out (${Math.round(timeoutMs / 1000)}s); the process was killed and this session's connection was closed`));
+        }, timeoutMs);
+        timer.unref?.();
+        child.on('message', (raw) => {
+            if (!raw || typeof raw !== 'object')
+                return;
+            const msg = raw;
+            if (msg.type === 'db') {
+                const reqId = Number(msg.reqId);
+                // 先注册回包通道再发起调用（同一处理器内，保证时序）
+                pendingDb.set(reqId, (r) => {
+                    child.send({ type: 'dbResult', reqId, ...r }, () => {
+                        /* 忽略回包失败（worker 可能已死） */
+                    });
+                });
+                void handleDbCall(String(msg.method ?? ''), Array.isArray(msg.args) ? msg.args : [])
+                    .then((result) => pendingDb.get(reqId)?.({ ok: true, result }))
+                    .catch((e) => pendingDb.get(reqId)?.({ ok: false, error: errorOf(e) }));
+                return;
+            }
+            if (msg.type === 'log') {
+                opts.onLog?.(msg.level === 'error' ? 'error' : 'log', String(msg.text ?? ''));
+                return;
+            }
+            if (msg.type === 'done' && !settled) {
+                settled = true;
+                clearTimeout(timer);
+                child.kill();
+                if (msg.ok) {
+                    resolve(msg.result);
+                }
+                else {
+                    const err = msg.error ?? {};
+                    if (err.code === 'NEEDS_CONFIRMATION' && err.payload) {
+                        reject(needConfirmFromPayload(err.payload));
+                    }
+                    else if (err.code === 'SCRIPT_TIMEOUT') {
+                        reject(new DbToolError('SCRIPT_TIMEOUT', err.message ?? 'Script execution timed out'));
+                    }
+                    else if (err.code === 'READ_ONLY') {
+                        reject(new DbToolError('READ_ONLY', err.message ?? 'This connection is read-only; write operations are refused'));
+                    }
+                    else {
+                        const e = new Error(err.message ?? 'Script execution failed');
+                        reject(e);
+                    }
+                }
+            }
+        });
+        child.on('exit', (code, signal) => {
+            if (settled)
+                return;
+            settled = true;
+            clearTimeout(timer);
+            reject(new Error(`Script process exited abnormally (code=${code ?? 'null'}${signal ? `, signal=${signal}` : ''})`));
+        });
+        child.on('error', (e) => {
+            if (settled)
+                return;
+            settled = true;
+            clearTimeout(timer);
+            reject(new DbToolError('DRIVER_ERROR', `Failed to start the script process: ${e.message}`));
+        });
+        child.send({ type: 'run', code: opts.code }, () => {
+            /* 入队即可 */
+        });
+    });
+    async function handleDbCall(method, args) {
+        const [statement, params, rawDatabase] = args;
+        // IPC JSON 序列化会把 undefined 变 null，归一回 undefined 保持与直连调用语义一致
+        const database = rawDatabase ?? undefined;
+        if (method === 'query')
+            return opts.dbQuery(statement, params, database);
+        if (method === 'execute')
+            return opts.dbExecute(statement, params, database);
+        throw new DbToolError('INVALID_ARGUMENT', `Unknown db method: ${method}`);
+    }
+    function errorOf(e) {
+        if (e instanceof DbToolError) {
+            if (e.code === 'NEEDS_CONFIRMATION') {
+                let payload;
+                try {
+                    payload = JSON.parse(e.message);
+                }
+                catch {
+                    payload = undefined;
+                }
+                return { code: e.code, message: e.message, payload };
+            }
+            return { code: e.code, message: e.message };
+        }
+        return { message: e instanceof Error ? e.message : String(e) };
+    }
+    function needConfirmFromPayload(payload) {
+        return new DbToolError('NEEDS_CONFIRMATION', JSON.stringify(payload));
+    }
+}

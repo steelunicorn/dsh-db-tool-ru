@@ -90,7 +90,7 @@ export function createPgTransferReader(kind: 'postgresql' | 'gaussdb', pool: PgL
        ORDER BY ordinal_position`,
       [schema, tbl],
     );
-    if (rows.length === 0) throw new Error(`表不存在: ${schema}.${tbl}`);
+    if (rows.length === 0) throw new Error(`Table not found: ${schema}.${tbl}`);
     const pks = await q(
       `SELECT kcu.column_name FROM information_schema.table_constraints tc
        JOIN information_schema.key_column_usage kcu
@@ -178,8 +178,8 @@ export function createPgTransferReader(kind: 'postgresql' | 'gaussdb', pool: PgL
 
     keyAt: async (table, column, offset) => {
       const rows = await q(
-        `SELECT ${quoteIdent(assertIdent(column, '分片键'))} AS k FROM ${quoteIdent(schema)}.${quoteIdent(assertIdent(table, '表名'))}
-         ORDER BY ${quoteIdent(assertIdent(column, '分片键'))} LIMIT 1 OFFSET $1`,
+        `SELECT ${quoteIdent(assertIdent(column, 'shard key'))} AS k FROM ${quoteIdent(schema)}.${quoteIdent(assertIdent(table, 'table name'))}
+         ORDER BY ${quoteIdent(assertIdent(column, 'shard key'))} LIMIT 1 OFFSET $1`,
         [offset],
       );
       return materialize(rows[0]?.k ?? null);
@@ -245,7 +245,7 @@ export function createPgTransferWriter(
       const width = cols.length;
       for (const r of rows) {
         if (r.length !== width) {
-          throw new Error(`行宽不匹配：期望 ${width} 列，实际 ${r.length} 列（表 ${table.name}）`);
+          throw new Error(`Row width mismatch: expected ${width} columns, got ${r.length} (table ${table.name})`);
         }
       }
       // ON CONFLICT 是 PG 系官方冲突语法（9.5+，GaussDB 兼容）；replace 依赖主键做冲突判定
@@ -254,7 +254,7 @@ export function createPgTransferWriter(
       if (writeMode === 'ignore') {
         action = ' ON CONFLICT DO NOTHING';
       } else if (writeMode === 'replace') {
-        if (pkCols.length === 0) throw new Error(`replace 模式需要主键：表 ${table.name} 无主键`);
+        if (pkCols.length === 0) throw new Error(`replace mode requires a primary key: table ${table.name} has no primary key`);
         const updaters = cols
           .filter((c) => !c.primaryKey)
           .map((c) => `${quoteIdent(c.name)} = EXCLUDED.${quoteIdent(c.name)}`)
@@ -333,7 +333,7 @@ function pgSchemaOf(rc: ResolvedConnection): string {
  *  覆盖显式字段，故 URL 形态的跨库覆盖在 openPgLikePool 经 pgCfgWithDatabase
  *  改写 URL path 段生效，此处只负责把目标库写进 fields.database */
 export function pgLocate(rc: ResolvedConnection, loc?: TransferLocator): { rc: ResolvedConnection; schema: string } {
-  const schema = loc?.schema != null ? assertIdent(loc.schema, '模式名') : pgSchemaOf(rc);
+  const schema = loc?.schema != null ? assertIdent(loc.schema, 'schema name') : pgSchemaOf(rc);
   const cur = rc.fields?.database != null ? String(rc.fields.database) : undefined;
   if (!loc?.database || loc.database === cur) return { rc, schema };
   return { rc: { ...rc, fields: { ...rc.fields, database: loc.database } }, schema };

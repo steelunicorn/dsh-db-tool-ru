@@ -58,14 +58,14 @@ describe('传输读写端池回收（owner 非法不得泄漏池）', () => {
   it('writer：owner 超长 → 抛错且已建池被回收', async () => {
     await expect(
       createTransferWriter(rc, 'insert', { database: 'a'.repeat(200) }),
-    ).rejects.toThrow('非法');
+    ).rejects.toThrow('Invalid Oracle');
     expect(createPoolMock).toHaveBeenCalledTimes(1); // 池确实建过
     expect(pools.size).toBe(0); // 但已被回收
   });
 
   it('reader：连接无用户名 → ownerOfFromConn 抛错时回收池', async () => {
     const noUser: ResolvedConnection = { meta: { id: 'dm3', kind: 'dmdb' }, url: 'dm://:@localhost:5236' };
-    await expect(createTransferReader(noUser)).rejects.toThrow('缺少用户名');
+    await expect(createTransferReader(noUser)).rejects.toThrow('missing the username');
     expect(pools.size).toBe(0);
   });
 
@@ -81,7 +81,7 @@ describe('传输读写端池回收（owner 非法不得泄漏池）', () => {
 
   it('writer：连接无用户名 → ownerOfFromConn 抛错时也回收池', async () => {
     const noUser: ResolvedConnection = { meta: { id: 'dm2', kind: 'dmdb' }, url: 'dm://:@localhost:5236' };
-    await expect(createTransferWriter(noUser, 'insert')).rejects.toThrow('缺少用户名');
+    await expect(createTransferWriter(noUser, 'insert')).rejects.toThrow('missing the username');
     expect(pools.size).toBe(0);
   });
 

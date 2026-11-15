@@ -34,20 +34,20 @@ const LOADERS: Record<DbKind, Loader> = {
 const INSTALL_HINTS: Record<DbKind, string> = {
   mysql: 'npm install mysql2',
   postgresql: 'npm install pg',
-  gaussdb: 'npm install gaussdb-node（或重装插件恢复依赖）',
-  sqlite: '升级 Node ≥ 22.5（内置 node:sqlite），或 npm install better-sqlite3',
+  gaussdb: 'npm install gaussdb-node (or reinstall the plugin to restore dependencies)',
+  sqlite: 'upgrade to Node ≥ 22.5 (built-in node:sqlite), or npm install better-sqlite3',
   redis: 'npm install redis',
-  mongodb: 'npm run build:mongodb（构建 vendor/mongodb-driver.cjs；发布包已内置产物，仅在缺失时需要）',
+  mongodb: 'npm run build:mongodb (builds vendor/mongodb-driver.cjs; the published package already ships the artifact, so this is only needed when it is missing)',
   oracle: 'npm install oracledb',
   dmdb: 'npm install dmdb',
-  sqlserver: 'npm run build:sqlserver（重建 vendor/sqlserver-driver.cjs；mssql 仅在 devDependencies）',
+  sqlserver: 'npm run build:sqlserver (rebuilds vendor/sqlserver-driver.cjs; mssql is only a devDependency)',
 };
 
 /** 生成带安装指引的驱动缺失错误 */
 export function driverMissingError(kind: DbKind, cause?: unknown): Error {
   const detail = cause instanceof Error ? cause.message : String(cause ?? '');
   const err = new Error(
-    `${kind} 驱动不可用${detail ? `：${detail}` : ''}。请安装/构建后重试：${INSTALL_HINTS[kind]}`,
+    `${kind} driver unavailable${detail ? `: ${detail}` : ''}. Install/build it and retry: ${INSTALL_HINTS[kind]}`,
   );
   err.name = 'DriverMissingError';
   return err;

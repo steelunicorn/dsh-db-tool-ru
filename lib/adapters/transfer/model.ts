@@ -176,7 +176,7 @@ export async function createTransferReader(rc: ResolvedConnection, loc?: Transfe
     const { createRedisTransferReaderFromConn } = await import('./kinds/redis.js');
     return createRedisTransferReaderFromConn(rc); // redis 无库/模式层级，loc 忽略
   }
-  throw new Error(`数据传输暂不支持读取 ${kind}（待后续版本支持）`);
+  throw new Error(`Data transfer does not yet support reading ${kind} (planned for a later version)`);
 }
 
 export async function createTransferWriter(
@@ -226,5 +226,5 @@ export async function createTransferWriter(
     const { createRedisTransferWriterFromConn } = await import('./kinds/redis.js');
     return createRedisTransferWriterFromConn(rc, writeMode); // redis 无库/模式层级，loc 忽略
   }
-  throw new Error(`数据传输暂不支持写入 ${kind}（待后续版本支持）`);
+  throw new Error(`Data transfer does not yet support writing ${kind} (planned for a later version)`);
 }

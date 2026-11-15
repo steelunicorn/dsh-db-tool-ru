@@ -217,7 +217,7 @@ describe('mongo 值转换', () => {
   it('cellToBson：墙钟串产出同一时刻 Date（UTC 语义），非法值抛错', () => {
     const got = cellToBson('2024-01-01 10:00:00', 'datetime', M) as Date;
     expect(got.toISOString()).toBe('2024-01-01T10:00:00.000Z');
-    expect(() => cellToBson('not-a-date', 'datetime', M)).toThrow(/非法日期值/);
+    expect(() => cellToBson('not-a-date', 'datetime', M)).toThrow(/Invalid date value/);
   });
 
   it('shardKey：样本外混 _id 类型仍返回 null（全集合巡检，防区间漏行）', async () => {

@@ -129,7 +129,7 @@ async function request(options: CtxOptions, req: Record<string, unknown>) {
 function optionsReq(host: string, origin?: string) {
   const headers: Record<string, string> = { host };
   if (origin !== undefined) headers.origin = origin;
-  return { method: 'OPTIONS', url: '/dsh-db-tool/api/connections', headers };
+  return { method: 'OPTIONS', url: '/dsh-db-tool-ru/api/connections', headers };
 }
 
 let home = '';
@@ -338,14 +338,14 @@ describe('注册契约快照（tools / inject / effect 注销）', () => {
     const { routes, effects, canceled } = await request({ services: {} }, optionsReq('127.0.0.1:55606'));
 
     expect(routes[0]?.kind).toBe('prefix');
-    expect(routes[0]?.path).toBe('/dsh-db-tool/api');
+    expect(routes[0]?.path).toBe('/dsh-db-tool-ru/api');
 
-    const apiEffect = effects.find((e) => e.name === 'db-tool-api');
-    const disposeEffect = effects.find((e) => e.name === 'db-tool-dispose');
+    const apiEffect = effects.find((e) => e.name === 'db-tool-ru-api');
+    const disposeEffect = effects.find((e) => e.name === 'db-tool-ru-dispose');
     expect(apiEffect).toBeDefined();
     expect(disposeEffect).toBeDefined();
 
-    // 路由注销：调用 db-tool-api 的 disposer 应触发 webServer.register 返回的注销函数
+    // 路由注销：调用 db-tool-ru-api 的 disposer 应触发 webServer.register 返回的注销函数
     expect(canceled).toEqual([]);
     apiEffect!.dispose();
     expect(canceled).toEqual(['route']);

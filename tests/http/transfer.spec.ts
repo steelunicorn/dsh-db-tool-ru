@@ -116,7 +116,7 @@ describe.skipIf(!anySqlite)('transfer 路由（sqlite 端到端）', () => {
     const r1 = await post('/api/transfer/start', body);
     expect(r1).toMatchObject({ ok: false, code: 'NEEDS_CONFIRMATION', danger: 'danger' });
     // optStr 直通非空即收（manager 侧 trim）：' dstdb ' 收为 dstdb，定位进 statement
-    expect(String(r1.statement)).toContain(' 源=srcdb 目标=dstdb.pub');
+    expect(String(r1.statement)).toContain(' source=srcdb target=dstdb.pub');
 
     const r2 = await post('/api/transfer/start', { ...body, challengeId: r1.challengeId });
     expect(r2).toMatchObject({ ok: true });
@@ -162,7 +162,7 @@ describe.skipIf(!anySqlite)('transfer 路由（sqlite 端到端）', () => {
     expect(h).toMatchObject({ ok: true });
     const rec = h.data.find((x: { taskId: string }) => x.taskId === taskId);
     expect(rec?.status).toBe('done');
-    expect(rec?.statement).toContain('数据传输');
+    expect(rec?.statement).toContain('Data transfer');
     expect(fs.existsSync((service.store as { transferLog: { file: string } }).transferLog.file)).toBe(true);
   }, 30000);
 
@@ -191,8 +191,8 @@ describe.skipIf(!anySqlite)('transfer 路由（sqlite 端到端）', () => {
     const challengeId = (r3 as { challengeId: string }).challengeId;
     tasks.set('fake-busy', { task: fakeTask, sourceConnId: 'tsrc', targetConnId: 'tdst', projectKey: normalizeProjectKey(projectA), statement: 'fake' });
     try {
-      await expect(service.transferStart(projectA, startBody(), challengeId)).rejects.toThrow(/已有传输任务在执行/);
-      await expect(service.transferStart(projectA, { ...startBody(), tables: ['t', 't'] })).rejects.toThrow(/重复表名/);
+      await expect(service.transferStart(projectA, startBody(), challengeId)).rejects.toThrow(/already running against this target/);
+      await expect(service.transferStart(projectA, { ...startBody(), tables: ['t', 't'] })).rejects.toThrow(/duplicate table names/);
       await expect(service.transferCancel(projectA, 'fake-busy')).resolves.toMatchObject({ cancelled: true });
       expect(cancelCalled).toBe(true);
       // 取消落审计（与 start/finish 同链）

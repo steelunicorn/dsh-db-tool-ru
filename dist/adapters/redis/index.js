@@ -1,0 +1,498 @@
+/**
+ * Redis 适配器（redis v6，单连接多路复用，官方免池）。
+ *
+ * 设计要点（依据官方文档调研）：
+ *  - createClient({ url }) + 显式 await connect()；socket 5s 连接超时、指数退避重连。
+ *  - query() 只允许读白名单命令；SCAN 用 scanIterator（禁用 KEYS）。
+ *  - execute() 只允许写白名单命令，统一经 sendCommand 透传
+ *    （官方：sendCommand 不解析键位/不加 keyPrefix——本插件不使用 keyPrefix，无影响）。
+ *  - ro 模式适配器层直接拒绝 execute（服务层另有拦截）。
+ *  - 只读账号建议由用户在服务端配置 ACL 只读用户（见 README/文档）。
+ */
+import { createClient } from 'redis';
+import { validPort } from '../sql-shared/common.js';
+/** 危险命令：服务层拦截器在用户确认前拒绝执行（KEYS 同时被 query 白名单禁用）。对齐官方 ACL dangerous 类。 */
+export const DANGEROUS_COMMANDS = new Set([
+    'FLUSHALL', 'FLUSHDB', 'SWAPDB', 'CONFIG', 'DEBUG', 'SAVE', 'SHUTDOWN',
+    'REPLICAOF', 'SLAVEOF', 'MIGRATE', 'RESTORE', 'SORT', 'SORT_RO', 'ACL', 'KEYS',
+    'MODULE', 'FUNCTION', 'SCRIPT', 'RESET',
+]);
+/** 读白名单（OBJECT 仅限 ENCODING、MEMORY 仅限 USAGE 子命令） */
+export const READ_COMMANDS = new Set([
+    'GET', 'MGET', 'EXISTS', 'TYPE', 'HGET', 'HGETALL', 'HKEYS', 'HVALS', 'HLEN',
+    'LRANGE', 'LLEN', 'SMEMBERS', 'SCARD', 'SISMEMBER', 'ZRANGE', 'ZSCORE',
+    'ZCARD', 'ZRANK', 'XLEN', 'XRANGE', 'SCAN', 'DBSIZE', 'INFO', 'SELECT',
+    'TTL', 'PTTL', 'GETRANGE', 'STRLEN', 'OBJECT', 'MEMORY',
+]);
+/** 写白名单 */
+export const WRITE_COMMANDS = new Set([
+    'SET', 'SETEX', 'DEL', 'UNLINK', 'INCR', 'DECR', 'INCRBY', 'HSET', 'HDEL',
+    'LPUSH', 'RPUSH', 'LPOP', 'RPOP', 'SADD', 'SREM', 'ZADD', 'ZREM', 'EXPIRE',
+    'PERSIST', 'RENAME', 'APPEND', 'SETRANGE',
+]);
+/** 键类型 → 对应长度命令（describeTable 用） */
+const LENGTH_CMD_BY_TYPE = {
+    string: { cmd: 'STRLEN', method: 'strLen' },
+    hash: { cmd: 'HLEN', method: 'hLen' },
+    list: { cmd: 'LLEN', method: 'lLen' },
+    set: { cmd: 'SCARD', method: 'sCard' },
+    zset: { cmd: 'ZCARD', method: 'zCard' },
+    stream: { cmd: 'XLEN', method: 'xLen' },
+};
+const CELL_TRUNC = 1000;
+const SCAN_COUNT = 100;
+const SCAN_MAX_KEYS = 200;
+const LIST_TABLES_MAX = 500;
+const PREVIEW_MAX = 50;
+/** query 通道集合类读命令（HGETALL/HKEYS/HVALS/SMEMBERS）结果行数上限 */
+const READ_CLAMP = 500;
+function trunc(s, max = CELL_TRUNC) {
+    return s.length > max ? `${s.slice(0, max)}…[truncated, ${s.length} chars total]` : s;
+}
+/** 规范化 Redis 回复为 NormalizedCell：数字原样、字符串截断、Buffer 转 utf8、其余 JSON 序列化 */
+function cell(v) {
+    if (v === null || v === undefined)
+        return null;
+    if (typeof v === 'number')
+        return Number.isFinite(v) ? v : String(v);
+    if (typeof v === 'bigint')
+        return v.toString();
+    if (typeof v === 'string')
+        return trunc(v);
+    if (typeof v === 'object' && Buffer.isBuffer(v))
+        return trunc(v.toString('utf8'));
+    try {
+        return trunc(JSON.stringify(v) ?? String(v));
+    }
+    catch {
+        return trunc(String(v));
+    }
+}
+/**
+ * 解析命令输入：JSON 数组（'["GET","key with space"]'）或空格分隔（"GET key"）。
+ * 带空格的值必须用 JSON 数组形式（空格分隔无法表达）。
+ */
+export function parseRedisCommand(input) {
+    const s = input.trim();
+    if (s === '')
+        throw new Error('Redis command must not be empty. Example: \'["GET","key"]\' or "GET key"');
+    if (s.startsWith('[')) {
+        let arr;
+        try {
+            arr = JSON.parse(s);
+        }
+        catch (e) {
+            throw new Error(`Failed to parse the Redis command JSON: ${e instanceof Error ? e.message : String(e)}`);
+        }
+        if (!Array.isArray(arr) || arr.length === 0 || !arr.every((x) => typeof x === 'string')) {
+            throw new Error('Redis command must be a non-empty array of strings, e.g. \'["GET","key"]\'');
+        }
+        return arr;
+    }
+    return s.split(/\s+/);
+}
+/** 列出支持的命令（错误提示用） */
+function supportedList() {
+    return `Read commands: ${[...READ_COMMANDS].sort().join('/')} (OBJECT only ENCODING, MEMORY only USAGE); write commands (execute): ${[...WRITE_COMMANDS].sort().join('/')}`;
+}
+/** 解析 INFO 输出为 [key, value] 行（跳过 # 注释与空行） */
+function parseInfo(raw) {
+    const rows = [];
+    for (const line of raw.split(/\r?\n/)) {
+        if (line === '' || line.startsWith('#'))
+            continue;
+        const idx = line.indexOf(':');
+        if (idx <= 0)
+            continue;
+        const k = line.slice(0, idx);
+        const v = line.slice(idx + 1);
+        const n = Number(v);
+        rows.push([k, v !== '' && Number.isFinite(n) ? n : trunc(v)]);
+    }
+    return rows;
+}
+/** 从 fields 拼接连接 URL（url 缺省时） */
+export function buildUrl(fields, ssl) {
+    const host = typeof fields?.host === 'string' && fields.host !== '' ? fields.host : '127.0.0.1';
+    // 前端原样发字符串端口：显式校验；历史 typeof==='number' 门把一切字符串（含合法 '14330'）
+    // 静默丢弃回退 6379，属静默错连
+    const port = validPort(fields?.port, 6379, 'redis');
+    const user = typeof fields?.user === 'string' && fields.user !== '' ? encodeURIComponent(fields.user) : '';
+    const pass = typeof fields?.password === 'string' ? `:${encodeURIComponent(fields.password)}@` : '';
+    const db = typeof fields?.database === 'number' && fields.database !== 0 ? `/${fields.database}` : '';
+    const scheme = ssl || connSsl(fields) ? 'rediss' : 'redis';
+    return `${scheme}://${user}${pass}${host}:${port}${db}`;
+}
+function connSsl(fields) {
+    return fields?.ssl === true || fields?.tls === true;
+}
+export async function createRedisAdapter(conn, opts) {
+    const mode = opts?.mode ?? 'rw';
+    let client;
+    if (opts?.client) {
+        client = opts.client;
+    }
+    else {
+        const url = conn.url ?? buildUrl(conn.fields, conn.ssl);
+        client = createClient({
+            url,
+            socket: {
+                connectTimeout: 5000,
+                reconnectStrategy: (retries) => Math.min(retries * 50, 2000),
+            },
+        });
+        try {
+            await client.connect();
+        }
+        catch (e) {
+            throw new Error(`Redis connection failed (${sanitizeUrl(url)}): ${e instanceof Error ? e.message : String(e)}`);
+        }
+    }
+    function wrap(e) {
+        return new Error(`Redis error: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    function requireRw(action) {
+        if (mode === 'ro') {
+            throw new Error(`Connection is in read-only (ro) mode; refusing to run ${action}; use an rw connection or send queries (query) only`);
+        }
+    }
+    /** 统一入口：解析并校验命令白名单 */
+    function parseAndCheck(input, whitelist, action) {
+        const args = parseRedisCommand(input);
+        const cmd = (args[0] ?? '').toUpperCase();
+        if (DANGEROUS_COMMANDS.has(cmd)) {
+            throw new Error(`Redis command ${cmd} is a dangerous command (KEYS/FLUSHALL/CONFIG etc.); it is disabled by this tool or requires server-layer confirmation`);
+        }
+        if (!whitelist.has(cmd)) {
+            throw new Error(`Redis ${action} does not support command ${cmd}. ${supportedList()}`);
+        }
+        if ((cmd === 'OBJECT' && (args[1] ?? '').toUpperCase() !== 'ENCODING') ||
+            (cmd === 'MEMORY' && (args[1] ?? '').toUpperCase() !== 'USAGE')) {
+            throw new Error(`Redis ${action} supports only OBJECT ENCODING and MEMORY USAGE`);
+        }
+        if ((cmd === 'OBJECT' || cmd === 'MEMORY') && args.length < 3) {
+            throw new Error(`Redis ${cmd} ${cmd === 'OBJECT' ? 'ENCODING' : 'USAGE'} is missing the key argument`);
+        }
+        if (args.length < 2 && !['DBSIZE', 'INFO', 'SCAN', 'SELECT'].includes(cmd)) {
+            throw new Error(`Redis ${cmd} is missing arguments`);
+        }
+        return args;
+    }
+    const adapter = {
+        kind: 'redis',
+        connId: conn.meta.id,
+        async testConnect() {
+            try {
+                const pong = await client.ping();
+                let serverInfo = pong;
+                try {
+                    const info = await client.info('server');
+                    const m = /redis_version:([^\r\n]+)/.exec(info);
+                    if (m?.[1])
+                        serverInfo = `Redis ${m[1].trim()}`;
+                }
+                catch { /* INFO 失败不影响连通性 */ }
+                return { ok: true, serverInfo };
+            }
+            catch (e) {
+                return { ok: false, error: wrap(e).message };
+            }
+        },
+        async query(sql) {
+            try {
+                const args = parseAndCheck(sql, READ_COMMANDS, 'query');
+                const cmd = args[0].toUpperCase();
+                const rest = args.slice(1);
+                // SCAN：scanIterator 实现，禁用 KEYS；透传用户 MATCH/COUNT，行数仍 clamp 200
+                if (cmd === 'SCAN') {
+                    let match = '*';
+                    let count = SCAN_COUNT;
+                    for (let i = 0; i < rest.length; i++) {
+                        const a = (rest[i] ?? '').toUpperCase();
+                        if (a === 'MATCH' && rest[i + 1] !== undefined) {
+                            match = rest[i + 1];
+                            i++;
+                        }
+                        else if (a === 'COUNT' && rest[i + 1] !== undefined) {
+                            const c = Number(rest[i + 1]);
+                            if (Number.isInteger(c) && c > 0)
+                                count = c;
+                            i++;
+                        }
+                    }
+                    const rows = [];
+                    const keys = [];
+                    for await (const k of client.scanIterator({ MATCH: match, COUNT: count })) {
+                        keys.push(...(Array.isArray(k) ? k : [String(k)]));
+                        if (keys.length >= SCAN_MAX_KEYS)
+                            break;
+                    }
+                    if (keys.length > 0) {
+                        const multi = client.multi();
+                        for (const k of keys)
+                            multi.type(k);
+                        const types = (await multi.exec());
+                        for (let i = 0; i < keys.length; i++) {
+                            rows.push([keys[i] ?? '', cell(types[i] ?? 'none')]);
+                        }
+                    }
+                    return { columns: ['key', 'type'], rows, rowCount: rows.length, truncated: keys.length >= SCAN_MAX_KEYS || undefined };
+                }
+                // SELECT：切换逻辑库
+                if (cmd === 'SELECT') {
+                    const db = Number(rest[0]);
+                    if (!Number.isInteger(db) || db < 0)
+                        throw new Error('SELECT requires a non-negative integer database index, e.g. "SELECT 1"');
+                    await client.select(db);
+                    return { columns: ['name', 'value'], rows: [['db', db]], rowCount: 1 };
+                }
+                // INFO：解析为 key/value 行
+                if (cmd === 'INFO') {
+                    const raw = await client.info(rest[0]);
+                    const rows = parseInfo(raw).map(([k, v]) => [k, v]);
+                    return { columns: ['key', 'value'], rows, rowCount: rows.length };
+                }
+                // DBSIZE
+                if (cmd === 'DBSIZE') {
+                    const n = await client.dbSize();
+                    return { columns: ['name', 'value'], rows: [['dbsize', n]], rowCount: 1 };
+                }
+                // MEMORY USAGE / OBJECT ENCODING：sendCommand 透传
+                if (cmd === 'MEMORY' || cmd === 'OBJECT') {
+                    const reply = await client.sendCommand(args);
+                    const key = rest[1] ?? '';
+                    return { columns: ['key', 'value'], rows: [[cell(key), cell(reply)]], rowCount: 1 };
+                }
+                // ---- 单键值类 → ['key','value'] ----
+                const key = rest[0] ?? '';
+                switch (cmd) {
+                    case 'GET': {
+                        const v = await client.get(key);
+                        return kv(key, v);
+                    }
+                    case 'MGET': {
+                        const vals = await client.mGet(rest);
+                        const rows = rest.map((k, i) => [cell(k), cell(vals[i])]);
+                        return { columns: ['key', 'value'], rows, rowCount: rows.length };
+                    }
+                    case 'EXISTS': {
+                        // redis v6：exists 接受 RedisVariadicArgument（string | string[]），直接传数组
+                        const n = await client.exists(rest);
+                        return kv(key, n);
+                    }
+                    case 'TYPE': {
+                        const t = await client.type(key);
+                        return kv(key, t);
+                    }
+                    case 'HGET': {
+                        const v = await client.hGet(key, rest[1] ?? '');
+                        return kv(rest[1] ?? '', v);
+                    }
+                    case 'TTL': return kv(key, await client.ttl(key));
+                    case 'PTTL': return kv(key, await client.pTTL(key));
+                    case 'STRLEN': return kv(key, await client.strLen(key));
+                    case 'GETRANGE': return kv(key, await client.getRange(key, Number(rest[1] ?? 0), Number(rest[2] ?? -1)));
+                    case 'HLEN': return kv(key, await client.hLen(key));
+                    case 'LLEN': return kv(key, await client.lLen(key));
+                    case 'SCARD': return kv(key, await client.sCard(key));
+                    case 'ZCARD': return kv(key, await client.zCard(key));
+                    case 'XLEN': return kv(key, await client.xLen(key));
+                    case 'SISMEMBER': return kv(rest[1] ?? '', await client.sIsMember(key, rest[1] ?? ''));
+                    case 'ZSCORE': return kv(rest[1] ?? '', await client.zScore(key, rest[1] ?? ''));
+                    case 'ZRANK': return kv(rest[1] ?? '', await client.zRank(key, rest[1] ?? ''));
+                    case 'HGETALL': {
+                        const map = await client.hGetAll(key);
+                        const all = Object.entries(map).map(([f, v]) => [cell(f), cell(v)]);
+                        const rows = all.slice(0, READ_CLAMP);
+                        return { columns: ['field', 'value'], rows, rowCount: rows.length, truncated: all.length > READ_CLAMP || undefined };
+                    }
+                    case 'HKEYS': {
+                        const vals = await client.hKeys(key);
+                        const all = (vals ?? []).map((f) => [cell(f)]);
+                        const rows = all.slice(0, READ_CLAMP);
+                        return { columns: ['field'], rows, rowCount: rows.length, truncated: all.length > READ_CLAMP || undefined };
+                    }
+                    case 'HVALS': {
+                        const vals = await client.hVals(key);
+                        const all = (vals ?? []).map((v) => [cell(v)]);
+                        const rows = all.slice(0, READ_CLAMP);
+                        return { columns: ['value'], rows, rowCount: rows.length, truncated: all.length > READ_CLAMP || undefined };
+                    }
+                    case 'LRANGE': {
+                        const all = await client.lRange(key, Number(rest[1] ?? 0), Number(rest[2] ?? -1));
+                        const rows = all.slice(0, PREVIEW_MAX).map((v) => [cell(v)]);
+                        return { columns: ['value'], rows, rowCount: rows.length, truncated: all.length > PREVIEW_MAX || undefined };
+                    }
+                    case 'SMEMBERS': {
+                        const vals = await client.sMembers(key);
+                        const all = (vals ?? []).map((v) => [cell(v)]);
+                        const rows = all.slice(0, READ_CLAMP);
+                        return { columns: ['member'], rows, rowCount: rows.length, truncated: all.length > READ_CLAMP || undefined };
+                    }
+                    case 'ZRANGE': {
+                        const withScores = rest.slice(3).some((a) => a.toUpperCase() === 'WITHSCORES');
+                        if (withScores) {
+                            const pairs = await client.zRangeWithScores(key, rest[1] ?? '0', rest[2] ?? '-1');
+                            const rows = pairs.map((m) => [cell(m.value), cell(m.score)]);
+                            return { columns: ['member', 'score'], rows, rowCount: rows.length };
+                        }
+                        const vals = await client.zRange(key, rest[1] ?? '0', rest[2] ?? '-1');
+                        const rows = vals.map((v) => [cell(v)]);
+                        return { columns: ['member'], rows, rowCount: rows.length };
+                    }
+                    case 'XRANGE': {
+                        const countIdx = rest.findIndex((a, i) => i > 0 && a.toUpperCase() === 'COUNT');
+                        const entries = await client.xRange(key, rest[1] ?? '-', rest[2] ?? '+', countIdx > 0 ? { COUNT: Number(rest[countIdx + 1] ?? 20) } : undefined);
+                        const rows = [];
+                        // xRange 返回 NullReply | StreamMessageReply[]：键不存在时服务端回空数组、
+                        // 客户端类型却含 null（XRANGE.d.ts transformReply），直接迭代会 TypeError。
+                        for (const entry of entries ?? []) {
+                            const fields = Object.entries(entry.message ?? {});
+                            if (fields.length === 0)
+                                rows.push([cell(entry.id), null, null]);
+                            for (const [f, v] of fields)
+                                rows.push([cell(entry.id), cell(f), cell(v)]);
+                        }
+                        return { columns: ['id', 'field', 'value'], rows, rowCount: rows.length };
+                    }
+                    default:
+                        throw new Error(`Redis query does not yet implement command ${cmd}`);
+                }
+            }
+            catch (e) {
+                throw wrap(e);
+            }
+        },
+        async execute(statement) {
+            requireRw('write commands (execute)');
+            try {
+                const args = parseAndCheck(statement, WRITE_COMMANDS, 'execute');
+                const cmd = args[0].toUpperCase();
+                const reply = await client.sendCommand(args);
+                const affected = typeof reply === 'number' ? reply : undefined;
+                return {
+                    affectedRows: affected,
+                    message: `${cmd} succeeded${affected !== undefined ? ` (affected ${affected})` : String(reply) !== 'OK' ? ` (${String(reply)})` : ''}`,
+                };
+            }
+            catch (e) {
+                throw wrap(e);
+            }
+        },
+        async listDatabases() {
+            try {
+                const raw = await client.info('keyspace');
+                const dbs = [...raw.matchAll(/^(db\d+):/gm)].map((m) => m[1]).sort();
+                return dbs.length > 0 ? dbs : ['db0'];
+            }
+            catch {
+                return ['db0'];
+            }
+        },
+        async listTables() {
+            try {
+                const keys = [];
+                for await (const k of client.scanIterator({ MATCH: '*', COUNT: SCAN_COUNT })) {
+                    keys.push(...(Array.isArray(k) ? k : [String(k)]));
+                    if (keys.length >= LIST_TABLES_MAX)
+                        break;
+                }
+                if (keys.length === 0)
+                    return [];
+                const multi = client.multi();
+                for (const k of keys)
+                    multi.type(k);
+                const types = (await multi.exec());
+                return keys.map((name, i) => ({ name, type: String(types[i] ?? 'none') }));
+            }
+            catch (e) {
+                throw wrap(e);
+            }
+        },
+        async describeTable(key) {
+            try {
+                const type = await client.type(key);
+                const lenCmd = LENGTH_CMD_BY_TYPE[type];
+                const encoding = await client.sendCommand(['OBJECT', 'ENCODING', key]);
+                const ttl = await client.ttl(key);
+                const length = lenCmd ? await client[lenCmd.method](key) : null;
+                const cols = [
+                    { name: 'type', dataType: type, nullable: false },
+                    { name: 'encoding', dataType: 'OBJECT ENCODING', nullable: true, default: encoding === null ? null : String(encoding) },
+                    { name: 'ttl', dataType: 'seconds', nullable: true, default: String(ttl), comment: '-1 means no expiration set' },
+                ];
+                if (lenCmd) {
+                    cols.push({ name: 'length', dataType: lenCmd.cmd, nullable: true, default: length === null ? null : String(length) });
+                }
+                return cols;
+            }
+            catch (e) {
+                throw wrap(e);
+            }
+        },
+        // KV 型无行偏移语义（契约允许忽略 database/offset），仅按 limit 取样本
+        async previewRows(key, limit, _database, _offset) {
+            try {
+                const n = Math.max(1, Math.min(Math.floor(limit) || PREVIEW_MAX, PREVIEW_MAX));
+                const type = await client.type(key);
+                switch (type) {
+                    case 'string': {
+                        const v = await client.get(key);
+                        return { columns: ['key', 'value'], rows: [[cell(key), cell(v)]], rowCount: v === null ? 0 : 1 };
+                    }
+                    case 'hash': {
+                        const map = await client.hGetAll(key);
+                        const rows = Object.entries(map).slice(0, n).map(([f, v]) => [cell(f), cell(v)]);
+                        return { columns: ['field', 'value'], rows, rowCount: rows.length };
+                    }
+                    case 'list': {
+                        const vals = await client.lRange(key, 0, n - 1);
+                        return { columns: ['value'], rows: vals.map((v) => [cell(v)]), rowCount: vals.length };
+                    }
+                    case 'set': {
+                        const vals = await client.sMembers(key);
+                        const rows = (vals ?? []).slice(0, n).map((v) => [cell(v)]);
+                        return { columns: ['member'], rows, rowCount: rows.length };
+                    }
+                    case 'zset': {
+                        const pairs = await client.zRangeWithScores(key, '0', String(n - 1));
+                        const rows = pairs.map((m) => [cell(m.value), cell(m.score)]);
+                        return { columns: ['member', 'score'], rows, rowCount: rows.length };
+                    }
+                    case 'stream': {
+                        const entries = await client.xRange(key, '-', '+', { COUNT: n });
+                        const rows = [];
+                        // 同上：xRange 类型含 null，空键时必须按空结果处理而非迭代崩溃
+                        for (const entry of entries ?? []) {
+                            const fields = Object.entries(entry.message ?? {});
+                            if (fields.length === 0)
+                                rows.push([cell(entry.id), null, null]);
+                            for (const [f, v] of fields)
+                                rows.push([cell(entry.id), cell(f), cell(v)]);
+                        }
+                        return { columns: ['id', 'field', 'value'], rows, rowCount: rows.length };
+                    }
+                    default:
+                        return { columns: ['value'], rows: [], rowCount: 0 };
+                }
+            }
+            catch (e) {
+                throw wrap(e);
+            }
+        },
+        async close() {
+            try {
+                await client.quit();
+            }
+            catch { /* 已断开等场景忽略 */ }
+        },
+    };
+    function kv(key, v) {
+        return { columns: ['key', 'value'], rows: [[cell(key), cell(v)]], rowCount: 1 };
+    }
+    return adapter;
+}
+function sanitizeUrl(url) {
+    return url.replace(/:\/\/[^@/]*@/, '://***:***@');
+}
+export const factory = async (conn) => createRedisAdapter(conn);

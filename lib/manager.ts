@@ -52,6 +52,7 @@ export class DbToolError extends Error {
     readonly code:
       | 'UNAUTHORIZED_PROJECT'
       | 'READ_ONLY'
+      | 'DATABASE_NOT_GRANTED'
       | 'NEEDS_CONFIRMATION'
       | 'INVALID_CHALLENGE'
       | 'NOT_FOUND'
@@ -117,7 +118,7 @@ export interface DbToolServiceOptions {
 
 function assertNonEmpty(v: string | undefined, label: string): string {
   const s = typeof v === 'string' ? v.trim() : '';
-  if (s === '') throw new DbToolError('INVALID_ARGUMENT', `缺少必填参数: ${label}`);
+  if (s === '') throw new DbToolError('INVALID_ARGUMENT', `Missing required parameter: ${label}`);
   return s;
 }
 
@@ -201,7 +202,7 @@ export class DbToolService {
 
   updateConnection(id: string, patch: Parameters<DbToolStore['connections']['update']>[1]): ConnectionMeta {
     const meta = this.store.connections.update(id, patch);
-    if (!meta) throw new DbToolError('NOT_FOUND', `连接不存在: ${id}`);
+    if (!meta) throw new DbToolError('NOT_FOUND', `Connection not found: ${id}`);
     // url/凭证/ssl 变更后旧适配器仍持旧连接串，必须作废重建；
     // 控制台事务会话的专用适配器不在缓存里，单独回收（否则旧凭据最长存活到空闲 TTL）；
     // 传输任务持独立连接，同样回收（凭证变更后不得按旧凭据继续读写）
@@ -214,7 +215,7 @@ export class DbToolService {
 
   removeConnection(id: string): boolean {
     const ok = this.store.connections.remove(id);
-    if (!ok) throw new DbToolError('NOT_FOUND', `连接不存在: ${id}`);
+    if (!ok) throw new DbToolError('NOT_FOUND', `Connection not found: ${id}`);
     void this.dropAdapters(id);
     void this.dropConsoleSessions(id);
     this.cancelTransferTasksForConn(id);
@@ -303,11 +304,11 @@ export class DbToolService {
   exportConnections(passphrase: string): string {
     const pp = assertNonEmpty(passphrase, 'passphrase');
     if (pp.length < DbToolService.PASSPHRASE_MIN) {
-      throw new DbToolError('INVALID_ARGUMENT', `口令长度至少 ${DbToolService.PASSPHRASE_MIN} 位`);
+      throw new DbToolError('INVALID_ARGUMENT', `Passphrase must be at least ${DbToolService.PASSPHRASE_MIN} characters long`);
     }
     const bundle = this.store.connections.exportBundle();
     const json = encryptPayload(bundle, pp);
-    this.audit('', '', 'export_connections', `导出 ${bundle.connections.length} 个连接`, 'none', false, true);
+    this.audit('', '', 'export_connections', `export ${bundle.connections.length} connection(s)`, 'none', false, true);
     return json;
   }
 
@@ -319,7 +320,7 @@ export class DbToolService {
     const enc = assertNonEmpty(encryptedJson, 'json');
     const pp = assertNonEmpty(passphrase, 'passphrase');
     if (pp.length < DbToolService.PASSPHRASE_MIN) {
-      throw new DbToolError('INVALID_ARGUMENT', `口令长度至少 ${DbToolService.PASSPHRASE_MIN} 位`);
+      throw new DbToolError('INVALID_ARGUMENT', `Passphrase must be at least ${DbToolService.PASSPHRASE_MIN} characters long`);
     }
     let bundle: unknown;
     try {
@@ -349,7 +350,7 @@ export class DbToolService {
       throw new DbToolError('INVALID_ARGUMENT', DECRYPT_FAIL_MESSAGE);
     }
     const summary = this.store.connections.importBundle(bundle as Parameters<DbToolStore['connections']['importBundle']>[0]);
-    this.audit('', '', 'import_connections', `导入 ${summary.imported} 个连接，跳过 ${summary.skipped.length} 个，失败 ${summary.errors.length} 个`, 'none', false, true);
+    this.audit('', '', 'import_connections', `imported ${summary.imported} connection(s), skipped ${summary.skipped.length}, failed ${summary.errors.length}`, 'none', false, true);
     return summary;
   }
 
@@ -360,18 +361,23 @@ export class DbToolService {
     return normalizeProjectKey(projectPath);
   }
 
-  grantsFor(projectPath: string): { connId: string; mode: 'ro' | 'rw' }[] {
+  grantsFor(projectPath: string): { connId: string; mode: 'ro' | 'rw'; databases?: string[] }[] {
     return this.store.grants.grantsFor(normalizeProjectKey(projectPath));
   }
 
-  grant(projectPath: string, connId: string, mode: 'ro' | 'rw'): void {
+  /**
+   * 授权/改授权。databases 为 undefined 表示保持既有库白名单不变，
+   * 数组表示覆盖（空数组 = 解除库限制 → 全部库）。
+   */
+  grant(projectPath: string, connId: string, mode: 'ro' | 'rw', databases?: string[]): void {
     const key = normalizeProjectKey(projectPath);
-    this.store.grants.grant(key, connId, mode);
+    this.store.grants.grant(key, connId, mode, databases);
     // 授权模式变更（含 rw→ro 降级）必须作废旧会话适配器，否则降级不生效；
     // 控制台事务会话的粘性适配器不在缓存里，单独回收（回滚未提交事务并 close）
     void this.dropAdapters(connId);
     void this.dropConsoleSessions(connId);
-    this.audit(key, connId, 'grant', `${connId} -> ${mode}`, 'none', false, true);
+    const dbPart = databases && databases.length > 0 ? ` dbs=${databases.join(',')}` : '';
+    this.audit(key, connId, 'grant', `${connId} -> ${mode}${dbPart}`, 'none', false, true);
   }
 
   revokeGrant(projectPath: string, connId: string): void {
@@ -386,11 +392,11 @@ export class DbToolService {
   /* -- 浏览（ro 即可） -- */
 
   async databases(projectPath: string | undefined, connId: string): Promise<string[]> {
-    const { key, adapter } = await this.authorize(projectPath, connId, false);
+    const { key, adapter, databases: allowed } = await this.authorize(projectPath, connId, false);
     try {
       const result = await adapter.listDatabases();
       this.audit(key, connId, 'databases', 'listDatabases', 'none', false, true);
-      return result;
+      return filterDatabaseList(result, allowed);
     } catch (e) {
       this.audit(key, connId, 'databases', 'listDatabases', 'none', false, false, this.errText(e));
       throw this.toDriverError(e);
@@ -398,7 +404,7 @@ export class DbToolService {
   }
 
   async tables(projectPath: string | undefined, connId: string, database?: string): Promise<TableInfo[]> {
-    const { key, adapter } = await this.authorize(projectPath, connId, false);
+    const { key, adapter } = await this.authorize(projectPath, connId, false, database);
     try {
       const result = await adapter.listTables(database);
       this.audit(key, connId, 'tables', database ?? 'default', 'none', false, true);
@@ -423,12 +429,25 @@ export class DbToolService {
   ): Promise<TableSearchHit[]> {
     const kw = assertNonEmpty(keyword, 'keyword').trim();
     const cap = Math.max(1, Math.min(200, Math.floor(Number(limit) || 100)));
-    const { key, adapter } = await this.authorize(projectPath, connId, false);
+    const { key, adapter, databases: allowed } = await this.authorize(projectPath, connId, false, database);
     const auditStmt = `search "${kw.length > 100 ? kw.slice(0, 100) + '…' : kw}"${database ? ` @ ${database}` : ''}`;
     try {
       let hits: TableSearchHit[];
       if (adapter.searchTables) {
-        hits = await adapter.searchTables(kw, database, cap);
+        if (!database && allowed && allowed.length > 0) {
+          // 库白名单下不允许「不指定库」的全局搜索：逐授权库调用，避免泄漏未授权库的表
+          hits = [];
+          for (const db of allowed) {
+            if (hits.length >= cap) break;
+            try {
+              hits = hits.concat(await adapter.searchTables(kw, db, cap));
+            } catch {
+              continue; // 个别库不可读（权限/系统库）不拖垮整体搜索
+            }
+          }
+        } else {
+          hits = await adapter.searchTables(kw, database, cap);
+        }
       } else if (SEARCH_FALLBACK_KINDS.has(adapter.kind)) {
         // 回退仅对「listTables(database) 语义 = 库名」的 kind 安全：
         // pg/gaussdb 走原生 searchTables；redis listTables 忽略库名（逐库循环会重复返回同一批键）、
@@ -437,7 +456,7 @@ export class DbToolService {
           const list = await adapter.listTables(database);
           hits = filterTables(list, kw, database);
         } else {
-          const dbs = await adapter.listDatabases();
+          const dbs = filterDatabaseList(await adapter.listDatabases(), allowed);
           hits = [];
           for (let i = 0; i < dbs.length && hits.length < cap; i += 8) {
             const batch = await Promise.all(
@@ -465,7 +484,7 @@ export class DbToolService {
 
   /** 库内 schema 清单（仅 PG/GaussDB 等三层语义适配器实现；ro 即可）。 */
   async schemas(projectPath: string | undefined, connId: string, database?: string): Promise<string[]> {
-    const { key, adapter } = await this.authorize(projectPath, connId, false);
+    const { key, adapter } = await this.authorize(projectPath, connId, false, database);
     if (!adapter.listSchemas) return [];
     try {
       const result = await adapter.listSchemas(database);
@@ -479,7 +498,7 @@ export class DbToolService {
 
   async schema(projectPath: string | undefined, connId: string, table: string, database?: string): Promise<ColumnInfo[]> {
     const t = assertNonEmpty(table, 'table');
-    const { key, adapter } = await this.authorize(projectPath, connId, false);
+    const { key, adapter } = await this.authorize(projectPath, connId, false, database);
     try {
       const result = await adapter.describeTable(t, database);
       this.audit(key, connId, 'schema', t, 'none', false, true);
@@ -501,7 +520,7 @@ export class DbToolService {
     const t = assertNonEmpty(table, 'table');
     const capped = Math.max(1, Math.min(50, Math.floor(Number(limit) || 10)));
     const off = Math.max(0, Math.floor(Number(offset) || 0));
-    const { key, adapter } = await this.authorize(projectPath, connId, false);
+    const { key, adapter } = await this.authorize(projectPath, connId, false, database);
     try {
       const result = await adapter.previewRows(t, capped, database, off);
       this.audit(key, connId, 'preview', `PREVIEW ${t} LIMIT ${capped} OFFSET ${off}`, 'none', false, true, undefined, result.rowCount);
@@ -529,6 +548,7 @@ export class DbToolService {
       op: 'query',
       statement,
       challengeId,
+      database,
       run: (adapter) => adapter.query(statement, params, database),
       rowsAffected: (r) => r.rowCount,
     });
@@ -549,6 +569,7 @@ export class DbToolService {
       op: 'execute',
       statement: stmt,
       challengeId,
+      database,
       run: (adapter) => adapter.execute(stmt, params, database),
       rowsAffected: (r) => r.affectedRows,
     });
@@ -618,7 +639,7 @@ export class DbToolService {
     database?: string,
   ): Promise<{ sessionToken: string }> {
     if (database !== undefined) {
-      throw new DbToolError('INVALID_ARGUMENT', '事务会话暂不支持指定数据库（粘性事务绑定连接默认库），请清空库选择后再开始事务');
+      throw new DbToolError('INVALID_ARGUMENT', 'A transaction session cannot target a specific database (the sticky transaction is bound to the default database of the connection); clear the database selection before starting a transaction');
     }
     // authorize(needWrite=true) 已拒绝 ro 授权（与 runScript 同构；顺带建立缓存适配器）
     const { key, mode } = await this.authorize(projectPath, connId, true);
@@ -626,7 +647,7 @@ export class DbToolService {
     // 每会话独占一个驱动池 + checkout 连接，放任创建会耗尽数据库连接（ponytail: 固定上限，不做 LRU）
     const live = [...this.consoleSessions.values()].filter((s) => s.connId === connId).length;
     if (live >= MAX_CONSOLE_SESSIONS_PER_CONN) {
-      throw new DbToolError('INVALID_ARGUMENT', `该连接并发事务会话已达上限（${MAX_CONSOLE_SESSIONS_PER_CONN}），请先提交或回滚既有事务`);
+      throw new DbToolError('INVALID_ARGUMENT', `Concurrent transaction sessions for this connection reached the limit (${MAX_CONSOLE_SESSIONS_PER_CONN}); commit or roll back an existing transaction first`);
     }
     const factory = await this.resolver(rc.meta.kind);
     const sessionAdapter = await factory(rc, { mode }).catch((e: unknown) => {
@@ -665,7 +686,7 @@ export class DbToolService {
   ): Promise<QueryResult | ExecResult | NeedConfirm> {
     const stmt = assertNonEmpty(statement, 'statement');
     if (params !== undefined && !Array.isArray(params)) {
-      throw new DbToolError('INVALID_ARGUMENT', 'params 必须是数组（绑定参数）');
+      throw new DbToolError('INVALID_ARGUMENT', 'params must be an array (bound parameters)');
     }
     const s = this.requireConsoleSession(sessionToken);
     s.lastAccess = Date.now();
@@ -679,11 +700,11 @@ export class DbToolService {
       if (!challengeId) {
         const { id: cid } = this.challenges.create(stmt, scope);
         this.audit(s.projectKey, s.connId, 'console_exec', stmt, 'danger', false, false, 'NEEDS_CONFIRMATION');
-        return { needConfirmation: true, challengeId: cid, statement: stmt, danger: 'danger', reason: verdict.reason ?? '危险操作，需要用户确认' };
+        return { needConfirmation: true, challengeId: cid, statement: stmt, danger: 'danger', reason: verdict.reason ?? 'Dangerous operation; user confirmation required' };
       }
       if (!this.challenges.consume(challengeId, stmt, scope)) {
         this.audit(s.projectKey, s.connId, 'console_exec', stmt, 'danger', false, false, 'INVALID_CHALLENGE');
-        throw new DbToolError('INVALID_CHALLENGE', '确认凭据无效（不存在、已使用、已过期或语句已变更），请重新发起');
+        throw new DbToolError('INVALID_CHALLENGE', 'Confirmation token is invalid (missing, already used, expired, or the statement changed); start over');
       }
     }
 
@@ -721,7 +742,7 @@ export class DbToolService {
     try {
       await s.finish(how);
       this.audit(s.projectKey, s.connId, action, verb, 'none', false, true);
-      return { message: how === 'commit' ? '事务已提交' : '事务已回滚' };
+      return { message: how === 'commit' ? 'Transaction committed' : 'Transaction rolled back' };
     } catch (e) {
       this.audit(s.projectKey, s.connId, action, verb, 'none', false, false, this.errText(e));
       throw this.toDriverError(e);
@@ -786,28 +807,64 @@ export class DbToolService {
     try {
       return this.store.connections.testTarget(connId);
     } catch {
-      throw new DbToolError('NOT_FOUND', `连接不存在: ${connId}`);
+      throw new DbToolError('NOT_FOUND', `Connection not found: ${connId}`);
     }
   }
 
-  /** 授权校验 + 取（缓存的）适配器 */
+  /** 授权校验（模式 + 可选库白名单）+ 取（缓存的）适配器 */
   private async authorize(
     projectPath: string | undefined,
     connId: string,
     needWrite: boolean,
-  ): Promise<{ key: string; mode: 'ro' | 'rw'; adapter: DatabaseAdapter }> {
-    if (this.disposed) throw new DbToolError('INVALID_ARGUMENT', '服务已关闭');
+    database?: string,
+  ): Promise<{ key: string; mode: 'ro' | 'rw'; adapter: DatabaseAdapter; databases?: string[] }> {
+    if (this.disposed) throw new DbToolError('INVALID_ARGUMENT', 'Service is shut down');
     if (!projectPath || projectPath.trim() === '') {
-      throw new DbToolError('UNAUTHORIZED_PROJECT', '项目路径为空：请先在面板顶部填写当前项目路径（或重新打开侧边栏让插件自动解析），再进行数据浏览/查询');
+      throw new DbToolError('UNAUTHORIZED_PROJECT', 'Project path is empty: fill in the current project path at the top of the panel (or reopen the sidebar so the plugin resolves it automatically) before browsing or querying data');
     }
     const key = normalizeProjectKey(projectPath);
-    const mode = this.store.grants.check(key, connId);
-    if (!mode) throw new DbToolError('UNAUTHORIZED_PROJECT', `项目未授权该连接: ${connId}（请切到「项目授权」面板，为当前项目勾选该连接的 ro/rw 授权后重试）`);
-    if (needWrite && mode === 'ro') {
-      throw new DbToolError('READ_ONLY', '该连接对本项目为只读授权（ro），拒绝写操作');
+    const grant = this.store.grants.resolve(key, connId);
+    if (!grant) throw new DbToolError('UNAUTHORIZED_PROJECT', `Project is not granted this connection: ${connId} (open the "Project grants" panel, tick ro/rw for this connection, then retry)`);
+    if (needWrite && grant.mode === 'ro') {
+      throw new DbToolError('READ_ONLY', 'This connection is read-only (ro) for the current project; write operations are refused');
     }
-    const adapter = await this.adapterFor(connId, mode);
-    return { key, mode, adapter };
+    // 库白名单判定放在 ro 判定之后：只读连接上的写操作仍以 READ_ONLY 优先报出
+    this.assertDatabaseAllowed(grant.databases, connId, database);
+    const adapter = await this.adapterFor(connId, grant.mode);
+    return { key, mode: grant.mode, adapter, databases: grant.databases };
+  }
+
+  /**
+   * 目标库名解析：显式入参 > 连接保存的默认库；"db.schema" 形式取点前一段。
+   * 单文件语义（sqlite）与无法判定时返回 undefined（白名单不生效）。
+   */
+  private targetDatabaseName(connId: string, database?: string): string | undefined {
+    const rc = this.requireConn(connId);
+    if (rc.meta.kind === 'sqlite') return undefined;
+    const explicit = typeof database === 'string' ? database.trim() : '';
+    if (explicit) return explicit.split('.')[0]?.trim() || undefined;
+    const def = typeof rc.meta.database === 'string' ? rc.meta.database.trim() : '';
+    return def === '' ? undefined : def;
+  }
+
+  /** 库白名单校验：清单为空 = 不限；目标库不可判定时放行 */
+  private assertDatabaseAllowed(allowed: string[] | undefined, connId: string, database?: string): void {
+    if (!allowed || allowed.length === 0) return;
+    const target = this.targetDatabaseName(connId, database);
+    if (!target) return;
+    if (allowed.some((db) => db.toLowerCase() === target.toLowerCase())) return;
+    throw new DbToolError(
+      'DATABASE_NOT_GRANTED',
+      `Database ${target} is not granted for connection ${connId} (databases allowed for this project: ${allowed.join(', ')})`,
+    );
+  }
+
+  /** 授权 + 库白名单校验（不取适配器的入口用，如数据传输两端） */
+  private assertGrantDatabase(projectPath: string | undefined, connId: string, database?: string): void {
+    const key = normalizeProjectKey(projectPath ?? '');
+    const grant = this.store.grants.resolve(key, connId);
+    if (!grant) throw new DbToolError('UNAUTHORIZED_PROJECT', `Project is not granted this connection: ${connId}`);
+    this.assertDatabaseAllowed(grant.databases, connId, database);
   }
 
   /** 关闭指定连接的全部缓存适配器（mode 变更/凭证变更/删除时） */
@@ -830,15 +887,15 @@ export class DbToolService {
 
   private requireConsoleSession(token: string): ConsoleTxSession {
     const s = this.consoleSessions.get(token);
-    if (!s) throw new DbToolError('NOT_FOUND', '事务会话不存在（已提交/回滚或空闲超时回收）');
+    if (!s) throw new DbToolError('NOT_FOUND', 'Transaction session not found (already committed/rolled back, or reclaimed after idle timeout)');
     return s;
   }
 
   /** 会话存活期间的授权复核（语义与 authorize 一致，但不取适配器） */
   private recheckConsoleAuth(s: ConsoleTxSession): void {
     const mode = this.store.grants.check(s.projectKey, s.connId);
-    if (!mode) throw new DbToolError('UNAUTHORIZED_PROJECT', `项目未授权该连接: ${s.connId}`);
-    if (mode === 'ro') throw new DbToolError('READ_ONLY', '该连接对本项目为只读授权（ro），拒绝写操作');
+    if (!mode) throw new DbToolError('UNAUTHORIZED_PROJECT', `Project is not granted this connection: ${s.connId}`);
+    if (mode === 'ro') throw new DbToolError('READ_ONLY', 'This connection is read-only (ro) for the current project; write operations are refused');
   }
 
   /**
@@ -853,7 +910,7 @@ export class DbToolService {
     const token = 't_' + randomBytes(12).toString('hex');
     const tx = adapter.tx;
     if (!tx) {
-      throw new DbToolError('INVALID_ARGUMENT', `连接类型 ${adapter.kind} 不支持控制台事务会话`);
+      throw new DbToolError('INVALID_ARGUMENT', `Connection kind ${adapter.kind} does not support console transaction sessions`);
     }
     const chain: { p: Promise<unknown> } = { p: Promise.resolve() };
     // 结算标志：commit/rollback/sweep/drop/dispose 并发到达时首个 finisher 生效，后续 no-op
@@ -903,7 +960,7 @@ export class DbToolService {
         lastAccess,
         run: (stmt, params) =>
           enqueue(chain, async () => {
-            if (!channel) throw new DbToolError('DRIVER_ERROR', '事务通道已关闭');
+            if (!channel) throw new DbToolError('DRIVER_ERROR', 'Transaction channel is closed');
             return (await channel(stmt, params)) as QueryResult | ExecResult;
           }),
         finish: (how) => {
@@ -920,7 +977,7 @@ export class DbToolService {
               } else {
                 // rollback 以 reject 结束 fn：tx 原子实现执行 ROLLBACK 并吞掉回滚自身的
                 // 次生错误（适配器语义），占位 reject 原因不是真实故障，不上抛
-                settle.reject(new Error('控制台事务回滚'));
+                settle.reject(new Error('Console transaction rolled back'));
                 await opened;
               }
             } finally {
@@ -969,12 +1026,12 @@ export class DbToolService {
         .finish('rollback')
         // 回收原因放 statement 说明槽：ok:true 的记录不得带 error 槽（矛盾审计）
         .then(() =>
-          this.audit(s.projectKey, s.connId, 'console_rollback', 'ROLLBACK（空闲超时自动回收）', 'none', false, true),
+          this.audit(s.projectKey, s.connId, 'console_rollback', 'ROLLBACK (auto-reclaimed after idle timeout)', 'none', false, true),
         )
         .catch((e: unknown) =>
           this.audit(
             s.projectKey, s.connId, 'console_rollback', 'ROLLBACK', 'none', false, false,
-            `空闲超时自动回滚失败: ${this.errText(e)}`,
+            `Idle-timeout auto-rollback failed: ${this.errText(e)}`,
           ),
         );
     }
@@ -1052,18 +1109,18 @@ export class DbToolService {
   ): Promise<{ taskId: string } | NeedConfirm> {
     const tables = input.tables;
     if (!Array.isArray(tables) || tables.length === 0) {
-      throw new DbToolError('INVALID_ARGUMENT', 'tables 必须是非空字符串数组');
+      throw new DbToolError('INVALID_ARGUMENT', 'tables must be a non-empty array of strings');
     }
     // 编排层按表名反查进度条目：重复名会让两遍传输共享同一进度对象且第二条永久 pending
     if (new Set(tables).size !== tables.length) {
-      throw new DbToolError('INVALID_ARGUMENT', 'tables 存在重复表名，请去重后重试');
+      throw new DbToolError('INVALID_ARGUMENT', 'tables contains duplicate table names; deduplicate and retry');
     }
     if (tables.length > MAX_TRANSFER_TABLES) {
-      throw new DbToolError('INVALID_ARGUMENT', `单任务表数超上限（${tables.length} > ${MAX_TRANSFER_TABLES}），请分批传输`);
+      throw new DbToolError('INVALID_ARGUMENT', `Table count per task exceeds the limit (${tables.length} > ${MAX_TRANSFER_TABLES}); split the transfer into batches`);
     }
     const writeMode = input.writeMode ?? 'insert';
     if (writeMode !== 'insert' && writeMode !== 'ignore' && writeMode !== 'replace' && writeMode !== 'truncate') {
-      throw new DbToolError('INVALID_ARGUMENT', `writeMode 非法: ${String(writeMode)}（insert/ignore/replace/truncate）`);
+      throw new DbToolError('INVALID_ARGUMENT', `Invalid writeMode: ${String(writeMode)} (insert/ignore/replace/truncate)`);
     }
     // 源连接只读授权即可（传输读端自建专用连接）；目标连接需写
     const { key: srcKey } = await this.authorize(projectPath, input.sourceConnId, false);
@@ -1079,15 +1136,18 @@ export class DbToolService {
     const srcSchema = optLoc(input.sourceSchema);
     const dstDb = optLoc(input.targetDatabase);
     const dstSchema = optLoc(input.targetSchema);
+    // 库白名单：两端分别校验（源读侧、目标写侧各自受本项目授权约束）
+    this.assertGrantDatabase(projectPath, input.sourceConnId, srcDb);
+    this.assertGrantDatabase(projectPath, input.targetConnId, dstDb);
     // 定位进 statement（start/finish/cancel 三链审计与 challenge 绑定共用一条），
     // 首次生成与带 challengeId 重放同 input 必同值；schema 附着于库（前端联动恒先选库）
     const locSeg = (db: string | undefined, schema: string | undefined): string =>
       db ? (schema ? `${db}.${schema}` : db) : '';
     const locPart = [
-      srcDb ? ` 源=${locSeg(srcDb, srcSchema)}` : '',
-      dstDb ? ` 目标=${locSeg(dstDb, dstSchema)}` : '',
+      srcDb ? ` source=${locSeg(srcDb, srcSchema)}` : '',
+      dstDb ? ` target=${locSeg(dstDb, dstSchema)}` : '',
     ].join('');
-    const statement = `数据传输 ${source.meta.kind}(${source.meta.id}) → ${target.meta.kind}(${target.meta.id}) 表[${tables.join(', ')}] 模式=${writeMode}${locPart}`;
+    const statement = `Data transfer ${source.meta.kind}(${source.meta.id}) → ${target.meta.kind}(${target.meta.id}) tables[${tables.join(', ')}] mode=${writeMode}${locPart}`;
 
     // 危险操作确认（批量建表+写入，对齐 runGuarded 的 danger 分支语义）
     const scope: ChallengeScope = { connId: input.targetConnId, projectKey: dstKey };
@@ -1100,23 +1160,23 @@ export class DbToolService {
         statement,
         danger: 'danger',
         reason: writeMode === 'truncate'
-          ? `【危险】将清空目标库 ${target.meta.kind}(${target.meta.id}) 中 ${tables.length} 张表的全部已有数据，随后重新写入，清空不可恢复，需要确认`
-          : `将向目标库 ${target.meta.kind}(${target.meta.id}) 建表并批量写入 ${tables.length} 张表，需要确认`,
+          ? `[DANGER] This clears all existing data of ${tables.length} table(s) in target ${target.meta.kind}(${target.meta.id}) and rewrites them; clearing cannot be undone, confirmation required`
+          : `This creates tables in target ${target.meta.kind}(${target.meta.id}) and bulk-writes ${tables.length} table(s); confirmation required`,
       };
     }
     if (!this.challenges.consume(challengeId, statement, scope)) {
       this.audit(dstKey, input.targetConnId, 'transfer', statement, 'danger', false, false, 'INVALID_CHALLENGE');
-      throw new DbToolError('INVALID_CHALLENGE', '确认凭据无效（不存在、已使用、已过期或语句已变更），请重新发起');
+      throw new DbToolError('INVALID_CHALLENGE', 'Confirmation token is invalid (missing, already used, expired, or the statement changed); start over');
     }
 
     // —— 同步段：预算检查 + 注册之间零 await，杜绝并发 start 双过检查（TOCTOU）——
     this.sweepTransferTasks();
     const running = [...this.transferTasks.values()].filter((e) => e.task.snapshot().status === 'running');
     if (running.length >= MAX_TRANSFER_TASKS) {
-      throw new DbToolError('INVALID_ARGUMENT', `全局并发传输任务已达上限（${MAX_TRANSFER_TASKS}），请等待既有任务完成`);
+      throw new DbToolError('INVALID_ARGUMENT', `Global concurrent transfer task limit reached (${MAX_TRANSFER_TASKS}); wait for running tasks to finish`);
     }
     if (running.some((e) => e.targetConnId === input.targetConnId)) {
-      throw new DbToolError('INVALID_ARGUMENT', '该目标连接已有传输任务在执行（同目标并发写入会互踩），请等待完成或先取消');
+      throw new DbToolError('INVALID_ARGUMENT', 'A transfer task is already running against this target connection (concurrent writes to one target collide); wait for it or cancel it first');
     }
     const task = startTransferTask(source, target, {
       tables,
@@ -1156,7 +1216,7 @@ export class DbToolService {
     this.audit(dstKey, input.targetConnId, 'transfer', statement, 'danger', true, true);
     void task.finished.then((s: TransferSnapshot) => {
       const failed = s.failures.length > 0;
-      this.audit(dstKey, input.targetConnId, 'transfer_finish', statement, 'danger', true, !failed, failed ? `${s.failures.length} 个分片/表失败` : undefined);
+      this.audit(dstKey, input.targetConnId, 'transfer_finish', statement, 'danger', true, !failed, failed ? `${s.failures.length} shard(s)/table(s) failed` : undefined);
       // 终态不无限滞留 Map：保留一个轮询窗口（前端 800ms 轮询 + 慢网络余量）供拉到
       // 终态快照，之后定时清除；start 时的 sweepTransferTasks 兜底清同一批条目
       setTimeout(() => {
@@ -1168,19 +1228,19 @@ export class DbToolService {
 
   async transferProgress(projectPath: string | undefined, taskId: string): Promise<TransferSnapshot> {
     const entry = this.transferTasks.get(taskId);
-    if (!entry) throw new DbToolError('NOT_FOUND', `传输任务不存在或已结束: ${taskId}`);
+    if (!entry) throw new DbToolError('NOT_FOUND', `Transfer task not found or already finished: ${taskId}`);
     // 快照含表清单/行数/错误详情，非公开信息：与数据面接口一致要求项目授权，
     // 且必须与发起项目同 key（taskId 可枚举，不能凭 id 越项目读取）
     const { key } = await this.authorize(projectPath, entry.targetConnId, false);
     if (key !== entry.projectKey) {
-      throw new DbToolError('UNAUTHORIZED_PROJECT', `传输任务不属于该项目: ${taskId}`);
+      throw new DbToolError('UNAUTHORIZED_PROJECT', `Transfer task does not belong to this project: ${taskId}`);
     }
     return entry.task.snapshot();
   }
 
   async transferCancel(projectPath: string | undefined, taskId: string): Promise<{ cancelled: boolean }> {
     const entry = this.transferTasks.get(taskId);
-    if (!entry) throw new DbToolError('NOT_FOUND', `传输任务不存在或已结束: ${taskId}`);
+    if (!entry) throw new DbToolError('NOT_FOUND', `Transfer task not found or already finished: ${taskId}`);
     // 取消需对目标连接有写授权（能发起即能取消，授权语义对齐）
     await this.authorize(projectPath, entry.targetConnId, true);
     entry.task.cancel();
@@ -1224,7 +1284,7 @@ export class DbToolService {
   transferHistoryClear(projectPath?: string): { removed: number } {
     const key = projectPath && projectPath.trim() !== '' ? normalizeProjectKey(projectPath) : undefined;
     const removed = this.store.transferLog.clear(key);
-    this.audit(key ?? '', '', 'transfer_history_clear', key !== undefined ? `清除项目传输历史: ${key}` : '清除全部传输历史', 'none', false, true);
+    this.audit(key ?? '', '', 'transfer_history_clear', key !== undefined ? `clear transfer history of project: ${key}` : 'clear all transfer history', 'none', false, true);
     return { removed };
   }
 
@@ -1261,14 +1321,15 @@ export class DbToolService {
     statement: string;
     params?: unknown[];
     challengeId?: string;
+    database?: string;
     run: (adapter: DatabaseAdapter) => Promise<T>;
     rowsAffected?: (r: T) => number | undefined;
   }): Promise<T | NeedConfirm> {
-    const { projectPath, connId, op, statement, challengeId } = args;
+    const { projectPath, connId, op, statement, challengeId, database } = args;
     if (args.params !== undefined && !Array.isArray(args.params)) {
-      throw new DbToolError('INVALID_ARGUMENT', 'params 必须是数组（绑定参数）');
+      throw new DbToolError('INVALID_ARGUMENT', 'params must be an array (bound parameters)');
     }
-    const { key, adapter } = await this.authorize(projectPath, connId, op === 'execute');
+    const { key, adapter } = await this.authorize(projectPath, connId, op === 'execute', database);
     const kind = adapter.kind;
     const verdict = classifyStatement(kind, statement, op);
 
@@ -1277,11 +1338,11 @@ export class DbToolService {
       if (!challengeId) {
         const { id: cid } = this.challenges.create(statement, scope);
         this.audit(key, connId, op, statement, 'danger', false, false, 'NEEDS_CONFIRMATION');
-        return { needConfirmation: true, challengeId: cid, statement, danger: 'danger', reason: verdict.reason ?? '危险操作，需要用户确认' };
+        return { needConfirmation: true, challengeId: cid, statement, danger: 'danger', reason: verdict.reason ?? 'Dangerous operation; user confirmation required' };
       }
       if (!this.challenges.consume(challengeId, statement, scope)) {
         this.audit(key, connId, op, statement, 'danger', false, false, 'INVALID_CHALLENGE');
-        throw new DbToolError('INVALID_CHALLENGE', '确认凭据无效（不存在、已使用、已过期或语句已变更），请重新发起');
+        throw new DbToolError('INVALID_CHALLENGE', 'Confirmation token is invalid (missing, already used, expired, or the statement changed); start over');
       }
     }
 
@@ -1346,6 +1407,13 @@ function filterTables(list: TableInfo[], keyword: string, database: string): Tab
         (t.comment !== undefined && t.comment.toLowerCase().includes(kw)),
     )
     .map((t) => ({ database, name: t.name, type: t.type, comment: t.comment }));
+}
+
+/** 库白名单过滤（清单为空 = 不限；大小写不敏感） */
+function filterDatabaseList(list: string[], allowed?: string[]): string[] {
+  if (!allowed || allowed.length === 0) return list;
+  const set = new Set(allowed.map((db) => db.toLowerCase()));
+  return list.filter((db) => set.has(db.toLowerCase()));
 }
 
 /** guard 判定（导出供 HTTP 层/script 入口识别） */
@@ -1425,7 +1493,7 @@ export async function handleToolAction(
       }
 
       default:
-        throw new DbToolError('INVALID_ARGUMENT', `未知 action: ${action}（可用: list_connections/query/execute/schema/preview/run_script）`);
+        throw new DbToolError('INVALID_ARGUMENT', `Unknown action: ${action} (available: list_connections/query/execute/schema/preview/run_script)`);
     }
   } catch (e) {
     const code = e instanceof DbToolError ? e.code : 'DRIVER_ERROR';
@@ -1434,12 +1502,12 @@ export async function handleToolAction(
 }
 
 function requireConn(connId: string | undefined): string {
-  if (!connId || connId.trim() === '') throw new DbToolError('INVALID_ARGUMENT', '缺少必填参数: conn_id');
+  if (!connId || connId.trim() === '') throw new DbToolError('INVALID_ARGUMENT', 'Missing required parameter: conn_id');
   return connId;
 }
 
 function assertArg(v: string | undefined, label: string): string {
-  if (!v || v.trim() === '') throw new DbToolError('INVALID_ARGUMENT', `缺少必填参数: ${label}`);
+  if (!v || v.trim() === '') throw new DbToolError('INVALID_ARGUMENT', `Missing required parameter: ${label}`);
   return v;
 }
 
@@ -1450,6 +1518,6 @@ function needConfirmText(r: unknown): string | null {
     ok: false,
     code: 'NEEDS_CONFIRMATION',
     ...nc,
-    hint: `该操作危险（${nc.reason}）。请先向用户说明并征得确认，用户同意后携带 challenge_id=${nc.challengeId} 重试同一语句；challenge 一次性、5 分钟内有效、绑定本语句。`,
+    hint: `Dangerous operation (${nc.reason}). Explain it to the user and get explicit consent first; after consent, retry the same statement with challenge_id=${nc.challengeId}. The challenge is single-use, valid for 5 minutes, and bound to this statement.`,
   }, null, 2);
 }
