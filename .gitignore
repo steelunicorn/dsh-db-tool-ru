@@ -37,3 +37,6 @@ docs/*
 !docs/ui-screenshot-guidance.md
 DESIGN.md
 PRODUCT.md
+
+# 本地打包产物（发布走 GitHub Release）
+*.tgz
