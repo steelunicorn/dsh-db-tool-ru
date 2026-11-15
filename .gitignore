@@ -22,6 +22,8 @@ dsh-boot-diag*.txt
 .npm-cache/
 .fork-i18n-map/
 tools/
+# 界面改版的离线预览（tools/preview-form.mjs 生成的静态 HTML 与截图）
+.preview/
 
 .planning/
 .tmp-verify/

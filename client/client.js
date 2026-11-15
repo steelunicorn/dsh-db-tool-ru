@@ -116,6 +116,12 @@ window.__ModuleLoader__.load({
 			fieldsPassword: "密码",
 			passwordSaved: "已保存（留空保持不变）",
 			fieldsDatabase: "数据库名",
+			lblUrl: "连接串",
+			lblHost: "主机",
+			lblPort: "端口",
+			lblDatabase: "数据库",
+			lblUser: "用户名",
+			lblPassword: "密码",
 			fieldsTlsMinVersion: "最低 TLS 版本（连老实例报协议族错误时才需要下探）",
 			tlsMinDefault: "默认（TLSv1.2）",
 			fieldsEncrypt: "加密",
@@ -379,6 +385,12 @@ window.__ModuleLoader__.load({
 			fieldsPassword: "Password",
 			passwordSaved: "Saved (leave blank to keep)",
 			fieldsDatabase: "Database",
+			lblUrl: "Connection string",
+			lblHost: "Host",
+			lblPort: "Port",
+			lblDatabase: "Database",
+			lblUser: "User",
+			lblPassword: "Password",
 			fieldsTlsMinVersion: "Minimum TLS version (lower it only when an old instance reports a protocol error)",
 			tlsMinDefault: "Default (TLSv1.2)",
 			fieldsEncrypt: "Encryption",
@@ -636,6 +648,12 @@ window.__ModuleLoader__.load({
 			fieldsPassword: "Пароль",
 			passwordSaved: "Сохранён (оставьте пустым, чтобы не менять)",
 			fieldsDatabase: "База данных",
+			lblUrl: "Строка подключения",
+			lblHost: "Хост",
+			lblPort: "Порт",
+			lblDatabase: "База данных",
+			lblUser: "Пользователь",
+			lblPassword: "Пароль",
 			fieldsTlsMinVersion: "Минимальная версия TLS (снижайте, только если старый экземпляр выдаёт ошибку протокола)",
 			tlsMinDefault: "По умолчанию (TLSv1.2)",
 			fieldsEncrypt: "Шифрование",
@@ -918,6 +936,15 @@ window.__ModuleLoader__.load({
 				"/* ===== inset grouped 卡片 ===== */",
 				".dbt-card{background:var(--dbt-surface);border:none;border-radius:var(--dbt-radius-card);padding:12px;display:flex;flex-direction:column;gap:8px;}",
 				".dbt-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}",
+				"/* ===== 表单字段：左侧标签 + 输入框（连接表单的字段列表） ===== */",
+				// 标签宽度按文案自适应（11px 下最长「Пользователь」约 70px）：侧栏只有 320~420px，
+				// 固定标签列会把「主机 / 端口」这类同排字段的输入框挤成一条缝
+				".dbt-field{display:flex;align-items:center;gap:8px;min-width:0;flex:1 1 0;}",
+				".dbt-field>span{flex:0 0 auto;max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dbt-text-secondary);font-size:var(--dbt-caption,11px);}",
+				// 同一行放两个字段时给最小宽度：侧栏过窄就让第二个字段换行，而不是把输入框挤成一条缝
+				".dbt-row>.dbt-field{min-width:132px;}",
+				// 输入框规则在后面（.dbt-card input 设了 min-width:60px），这里用更高优先级把字段内输入框压到容器宽度
+				".dbt-card .dbt-field>input,.dbt-card .dbt-field>select{flex:1 1 auto;min-width:0;}",
 				"/* ===== 共享列布局（T1 逐步替换各视图内联 flex-column） ===== */",
 				".dbt-col{display:flex;flex-direction:column;gap:8px;}",
 				".dbt-col.dbt-col-tight{gap:2px;}",
@@ -1834,6 +1861,14 @@ window.__ModuleLoader__.load({
 			// aria-label 局部文案：与 placeholder 同源，避免表达式重复
 			const pwLabel = props.initial && props.initial.hasPassword ? t("passwordSaved") : t("fieldsPassword");
 			const idLabel = t("connId") + "（" + t("idAutoHint") + "）";
+			// 表单字段：左侧标签 + 输入框，输入框继承 aria-label，标签不再另起一套文案。
+			// opts.flex 控制字段占宽（同一行两个字段时用 1.6 比 1，给主机多留一点）。
+			const dbField = (label, input, opts) => React.createElement(
+				"label",
+				{ className: "dbt-field", style: { flex: (opts && opts.flex) || "1 1 0" } },
+				React.createElement("span", null, label),
+				input,
+			);
 			return React.createElement(
 				"div",
 				{ className: "dbt-card" },
@@ -1860,22 +1895,21 @@ window.__ModuleLoader__.load({
 					? React.createElement(
 						"div",
 						{ style: { display: "flex", flexDirection: "column", gap: 6 } },
-						React.createElement("input", { placeholder: t("url"), "aria-label": t("url") + t("requiredMark"), "aria-required": "true", ref: firstInputRef, value: form.url, onChange: (e) => patch({ url: e.target.value }) }),
-						React.createElement("div", { className: "dbt-row" },
-							React.createElement("input", { placeholder: t("urlUser"), "aria-label": t("urlUser"), value: form.urlUser, onChange: (e) => patch({ urlUser: e.target.value }) }),
-							React.createElement("input", { type: "password", placeholder: t("urlPassword"), "aria-label": t("urlPassword"), value: form.urlPassword, onChange: (e) => patch({ urlPassword: e.target.value }) })),
+						dbField(t("lblUrl"), React.createElement("input", { placeholder: t("url"), "aria-label": t("url") + t("requiredMark"), "aria-required": "true", ref: firstInputRef, value: form.url, onChange: (e) => patch({ url: e.target.value }) })),
+						dbField(t("lblUser"), React.createElement("input", { placeholder: t("urlUser"), "aria-label": t("urlUser"), value: form.urlUser, onChange: (e) => patch({ urlUser: e.target.value }) })),
+						dbField(t("lblPassword"), React.createElement("input", { type: "password", placeholder: t("urlPassword"), "aria-label": t("urlPassword"), value: form.urlPassword, onChange: (e) => patch({ urlPassword: e.target.value }) })),
 					)
 					: React.createElement(
 						"div",
 						{ style: { display: "flex", flexDirection: "column", gap: 6 } },
+						// 主机与端口同一行：主机可占更多宽度（sqlserver 命名实例地址相对更长）
 						React.createElement("div", { className: "dbt-row" },
 							// sqlserver：官方模型 port 可选（默认 1433）且与命名实例互斥——host 直接填 主机\实例名，端口留空
-							React.createElement("input", { placeholder: form.kind === "sqlserver" ? t("fieldsHostInstance") : t("fieldsHost"), "aria-label": t("fieldsHost") + t("requiredMark"), "aria-required": "true", ref: firstInputRef, value: form.host, onChange: (e) => patch({ host: e.target.value }) }),
-							React.createElement("input", { placeholder: t("fieldsPort"), "aria-label": t("fieldsPort"), value: form.port, onChange: (e) => patch({ port: e.target.value }) }),
-							React.createElement("input", { placeholder: t("fieldsDatabase"), "aria-label": t("fieldsDatabase"), value: form.database, onChange: (e) => patch({ database: e.target.value }) })),
-						React.createElement("div", { className: "dbt-row" },
-							React.createElement("input", { placeholder: t("fieldsUser"), "aria-label": t("fieldsUser") + t("requiredMark"), "aria-required": "true", value: form.user, onChange: (e) => patch({ user: e.target.value }) }),
-							React.createElement("input", { type: "password", placeholder: pwLabel, "aria-label": pwLabel, value: form.password, onChange: (e) => patch({ password: e.target.value }) })),
+							dbField(t("lblHost"), React.createElement("input", { placeholder: form.kind === "sqlserver" ? t("fieldsHostInstance") : "", "aria-label": t("fieldsHost") + t("requiredMark"), "aria-required": "true", ref: firstInputRef, value: form.host, onChange: (e) => patch({ host: e.target.value }) }), { flex: "1.6 1 0" }),
+							dbField(t("lblPort"), React.createElement("input", { "aria-label": t("fieldsPort"), value: form.port, onChange: (e) => patch({ port: e.target.value }) }), { flex: "1 1 0" })),
+						dbField(t("lblDatabase"), React.createElement("input", { "aria-label": t("fieldsDatabase"), value: form.database, onChange: (e) => patch({ database: e.target.value }) })),
+						dbField(t("lblUser"), React.createElement("input", { "aria-label": t("fieldsUser") + t("requiredMark"), "aria-required": "true", value: form.user, onChange: (e) => patch({ user: e.target.value }) })),
+						dbField(t("lblPassword"), React.createElement("input", { type: "password", placeholder: props.initial && props.initial.hasPassword ? t("passwordSaved") : "", "aria-label": pwLabel, value: form.password, onChange: (e) => patch({ password: e.target.value }) })),
 						// TLS 相关项（仅 sqlserver）。设计原则：默认留空 = 沿用适配器默认
 						// （encrypt='auto' 交适配器协商 + 校验证书 + Node 默认 TLS 下限），即「默认安全」；
 						// 只有连老实例/自签证书失败时才需要动下面这些开关。

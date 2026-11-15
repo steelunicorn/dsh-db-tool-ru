@@ -1,6 +1,6 @@
 {
   "name": "dsh-db-tool-ru",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "DSH community plugin (Russian localization fork of dsh-db-tool): chat-operated multi-database admin tool with sidebar management, project-scoped grants, per-grant database allowlists, ro/rw modes and dangerous-operation confirmation",
   "type": "module",
   "license": "Apache-2.0",
