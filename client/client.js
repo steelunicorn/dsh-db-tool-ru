@@ -268,7 +268,17 @@ window.__ModuleLoader__.load({
 			ok: "操作完成",
 			// 授权库范围与行数单位
 			grantDbLabel: "库范围",
-			grantDbPlaceholder: "留空 = 全部库；逗号分隔库名以限制",
+			grantDbAll: "全部库",
+			grantDbToggle: "库范围",
+			grantDbSelectAll: "全选",
+			grantDbClearAll: "全不选",
+			grantDbSaveBtn: "保存库范围",
+			grantDbEmptySel: "至少勾选一个库：要允许全部库请点「全选」并保存，或撤销该连接授权",
+			grantDbLoading: "加载库列表…",
+			grantDbLoadErr: "库列表加载失败",
+			grantDbRetry: "重试",
+			grantDbNone: "连接未返回任何库",
+			grantDbSqlite: "SQLite 为单文件库，库级限制不适用",
 			grantDbSaved: "已保存",
 			rowsSuffix: "行",
 		};
@@ -515,7 +525,17 @@ window.__ModuleLoader__.load({
 			ok: "Done",
 			// Database scope per grant + row-count unit
 			grantDbLabel: "Databases",
-			grantDbPlaceholder: "empty = all databases; comma-separated names to restrict",
+			grantDbAll: "All databases",
+			grantDbToggle: "Database scope",
+			grantDbSelectAll: "Select all",
+			grantDbClearAll: "Clear all",
+			grantDbSaveBtn: "Save scope",
+			grantDbEmptySel: "Pick at least one database: to allow every database, press «Select all» and save, or revoke the grant for this connection",
+			grantDbLoading: "Loading databases…",
+			grantDbLoadErr: "Failed to load the database list",
+			grantDbRetry: "Retry",
+			grantDbNone: "The connection returned no databases",
+			grantDbSqlite: "SQLite is a single-file database; the per-database restriction does not apply",
 			grantDbSaved: "Saved",
 			rowsSuffix: "rows",
 		};
@@ -759,7 +779,17 @@ window.__ModuleLoader__.load({
 			ok: "Готово",
 			// 授权库范围与行数单位
 			grantDbLabel: "Базы данных",
-			grantDbPlaceholder: "пусто = все базы; имена через запятую, чтобы ограничить",
+			grantDbAll: "Все базы",
+			grantDbToggle: "Список баз",
+			grantDbSelectAll: "Выбрать все",
+			grantDbClearAll: "Снять все",
+			grantDbSaveBtn: "Сохранить список",
+			grantDbEmptySel: "Выберите хотя бы одну базу: чтобы разрешить все, нажмите «Выбрать все» и сохраните, либо отзовите грант этого подключения",
+			grantDbLoading: "Загрузка списка баз…",
+			grantDbLoadErr: "Не удалось загрузить список баз",
+			grantDbRetry: "Повторить",
+			grantDbNone: "Подключение не вернуло ни одной базы",
+			grantDbSqlite: "SQLite — один файл, ограничение по базам не применяется",
 			grantDbSaved: "Сохранено",
 			rowsSuffix: "строк",
 		};
@@ -2121,42 +2151,142 @@ window.__ModuleLoader__.load({
 		}
 
 		/* ---------------- 项目授权 ---------------- */
-		// 连接内的库白名单输入：留空（或全清）＝不限库；逗号分隔（, 或 ，）＝允许的库名列表，
-		// 大小写不敏感、不做前缀匹配。保存走 PUT /grants：databases 键缺省=保持原值、数组=覆盖、[]=清空。
-		function GrantDbRow(props) {
+
+		// 连接内的库白名单：折叠列表 + 勾选（白名单为空＝不限库）。
+		// 库清单来自 GET /grant-databases：该入口不按现有白名单收窄，否则收窄后无法再放开。
+		// 保存走 PUT /grants：勾满全部库＝[]（解除限制），否则＝勾选的库名数组；
+		// 一个都不勾无法表达（空数组的语义是「不限」），故只提示，不改写服务端。
+		function GrantDbPicker(props) {
 			const g = props.grant || {};
-			const dbs = Array.isArray(g.databases) ? g.databases : [];
-			const [text, setText] = React.useState(dbs.join(", "));
+			const dbs = Array.isArray(g.databases) ? g.databases.map(String) : [];
+			const unrestricted = dbs.length === 0;
+			const sqlite = (props.conn && props.conn.kind) === "sqlite";
+			const [open, setOpen] = React.useState(false);
+			const [list, setList] = React.useState(null); // null=尚未加载（展开时才拉列表）
+			const [err, setErr] = React.useState("");
+			const [sel, setSel] = React.useState(null); // null=未编辑：按已保存值推导
 			const [saved, setSaved] = React.useState(false);
+			const busy = props.busy === "grantdb";
+
+			// 候选项＝连接返回的库 + 已授权但清单里没有的库（库被删/改名时不静默丢失）
+			const candidates = list ? list.slice() : [];
+			if (list) {
+				for (const n of dbs) {
+					if (!candidates.some((x) => x.toLowerCase() === n.toLowerCase())) candidates.push(n);
+				}
+			}
+			const allowedNow = unrestricted ? candidates : candidates.filter((n) => dbs.some((x) => x.toLowerCase() === n.toLowerCase()));
+			const selected = sel === null ? allowedNow : sel;
+			const selectedMap = {};
+			for (const n of selected) selectedMap[n] = true;
+			const changed = sel !== null && !sameNames(sel, allowedNow);
+			const warn = sel !== null && selected.length === 0;
+
+			function sameNames(a, b) {
+				if (a.length !== b.length) return false;
+				const set = {};
+				for (const n of b) set[n.toLowerCase()] = true;
+				return a.every((n) => set[n.toLowerCase()] === true);
+			}
+			function toggle(name, on) {
+				const next = selected.filter((n) => n !== name);
+				if (on) next.push(name);
+				setSel(next);
+				setSaved(false);
+			}
+			function setAll(on) {
+				setSel(on ? candidates.slice() : []);
+				setSaved(false);
+			}
+			async function load() {
+				setErr("");
+				try {
+					const data = await api("grant-databases" + qs({ projectPath: props.projectPath, connId: g.connId }));
+					setList(Array.isArray(data) ? data.map(String) : []);
+				} catch (e) {
+					setErr(String((e && e.message) || e));
+				}
+			}
 			async function commit() {
-				const list = String(text).split(/[,，]/).map((s) => s.trim()).filter(Boolean);
-				const same = list.length === dbs.length && list.every((s, i) => s.toLowerCase() === String(dbs[i]).toLowerCase());
-				if (same || !g.mode) return;
+				const chosen = candidates.filter((n) => selectedMap[n]);
+				if (chosen.length === 0) return; // 由界面提示引导：不保存「一个都不许」
 				setSaved(false);
 				await props.run("grantdb", async () => {
-					await api("grants", { method: "PUT", body: { projectPath: props.projectPath, connId: g.connId, mode: g.mode, databases: list } });
+					const payload = chosen.length === candidates.length ? [] : chosen;
+					await api("grants", { method: "PUT", body: { projectPath: props.projectPath, connId: g.connId, mode: g.mode, databases: payload } });
+					setSel(null);
 					setSaved(true);
 					await props.reload();
 				});
 			}
-			return React.createElement(
-				"div",
-				{ className: "dbt-row", style: { width: "100%", gap: 6 } },
-				React.createElement("span", { className: "dbt-muted", style: { flex: "none", fontSize: "var(--dbt-caption, 11px)" } }, t("grantDbLabel")),
-				React.createElement("input", {
-					value: text,
-					placeholder: t("grantDbPlaceholder"),
-					"aria-label": t("grantDbLabel") + ": " + t("grantDbPlaceholder"),
-					disabled: props.busy === "grantdb",
-					style: { flex: 1, minWidth: 0 },
-					onChange: (e) => { setText(e.target.value); setSaved(false); },
-					onBlur: () => { commit(); },
-					onKeyDown: (e) => { if (e.key === "Enter") commit(); },
-				}),
-				saved ? React.createElement("span", { className: "dbt-muted", style: { flex: "none" } }, t("grantDbSaved")) : null,
+			function onToggleOpen() {
+				const next = !open;
+				setOpen(next);
+				if (next && list === null && !sqlite) load();
+			}
+			const summary = unrestricted ? t("grantDbAll") : dbs.join(", ");
+			const head = React.createElement(
+				"button",
+				{
+					type: "button",
+					className: "dbt-row",
+					"aria-expanded": open,
+					"aria-label": t("grantDbToggle") + ": " + summary,
+					disabled: busy,
+					style: { width: "100%", justifyContent: "flex-start", gap: 6, padding: 0, border: "none", background: "transparent", color: "inherit", cursor: "pointer", font: "inherit", fontSize: "var(--dbt-caption, 11px)", textAlign: "left" },
+					onClick: onToggleOpen,
+				},
+				React.createElement("span", { className: "dbt-chev", "aria-hidden": "true" }, open ? "▾" : "▸"),
+				React.createElement("span", { className: "dbt-muted", style: { flex: "none" } }, t("grantDbLabel")),
+				React.createElement("span", { className: "dbt-treename", style: unrestricted ? { color: "var(--dbt-text-secondary)" } : null }, summary),
+				saved && !open ? React.createElement("span", { className: "dbt-muted", style: { flex: "none" } }, t("grantDbSaved")) : null,
 			);
+			let body = null;
+			if (open) {
+				if (sqlite) {
+					body = React.createElement("div", { className: "dbt-muted", style: { paddingLeft: 18 } }, t("grantDbSqlite"));
+				} else if (err) {
+					body = React.createElement(
+						"div",
+						{ className: "dbt-browse-errorbox", style: { paddingLeft: 18 } },
+						React.createElement("div", { className: "dbt-err" }, t("grantDbLoadErr") + ": " + err),
+						React.createElement("button", { className: "dbt-btn", type: "button", onClick: () => load() }, t("grantDbRetry")),
+					);
+				} else if (list === null) {
+					body = React.createElement("div", { className: "dbt-muted", style: { paddingLeft: 18 } }, t("grantDbLoading"));
+				} else if (candidates.length === 0) {
+					body = React.createElement("div", { className: "dbt-muted", style: { paddingLeft: 18 } }, t("grantDbNone"));
+				} else {
+					body = React.createElement(
+						"div",
+						{ style: { display: "flex", flexDirection: "column", gap: 6, paddingLeft: 18 } },
+						React.createElement("div", { className: "dbt-row", role: "group", "aria-label": t("grantDbLabel") },
+							React.createElement("button", { className: "dbt-btn", type: "button", disabled: busy, onClick: () => setAll(true) }, t("grantDbSelectAll")),
+							React.createElement("button", { className: "dbt-btn", type: "button", disabled: busy, onClick: () => setAll(false) }, t("grantDbClearAll")),
+							changed ? React.createElement("button", { className: "dbt-btn", type: "button", disabled: busy || warn, onClick: () => commit() }, busy ? t("saving") : t("grantDbSaveBtn")) : null,
+							!changed && saved ? React.createElement("span", { className: "dbt-muted" }, t("grantDbSaved")) : null,
+						),
+						warn ? React.createElement("div", { className: "dbt-muted" }, t("grantDbEmptySel")) : null,
+						React.createElement(
+							"div",
+							{ style: { maxHeight: 200, overflowY: "auto", display: "flex", flexDirection: "column", gap: 2, border: "1px solid var(--dbt-separator)", borderRadius: "var(--dbt-radius-ctrl)", padding: "4px 8px" } },
+							candidates.map((name) => React.createElement(
+								"label",
+								{ key: name, className: "dbt-row", style: { gap: 6, cursor: "pointer", minHeight: 22, flexWrap: "nowrap" } },
+								React.createElement("input", {
+									type: "checkbox",
+									checked: selectedMap[name] === true,
+									disabled: busy,
+									onChange: (e) => toggle(name, e.target.checked),
+								}),
+								React.createElement("span", { style: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, name),
+							)),
+						),
+					);
+				}
+			}
+			return React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 4 } }, head, body);
 		}
-
 		function GrantsView(props) {
 			const { conns, grants, projectPath } = props;
 			const grantedCount = (grants || []).length;
@@ -2236,9 +2366,10 @@ window.__ModuleLoader__.load({
 										),
 									),
 								),
-								m ? React.createElement(GrantDbRow, {
-									key: c.id + "|" + JSON.stringify((grants.find((x) => x.connId === c.id) || {}).databases),
+								m ? React.createElement(GrantDbPicker, {
+									key: c.id,
 									grant: grants.find((x) => x.connId === c.id),
+									conn: c,
 									projectPath: projectPath,
 									run: props.run,
 									reload: props.reload,

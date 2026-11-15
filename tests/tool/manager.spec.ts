@@ -303,4 +303,37 @@ describe('DbToolService: 数据库级授权白名单', () => {
       await fx.dispose();
     }
   });
+
+  it('库清单入口不被白名单收窄：默认库被排除时仍可打开清单（grantDatabases 给全集）', async () => {
+    const fx = await makeFixture('rw');
+    try {
+      // 连接默认库 app 被白名单排除：databases() 只回授权库，但不得因此报 DATABASE_NOT_GRANTED，
+      // 否则授权面板里既看不到 app 也无法把它勾回来（白名单编辑死锁）。
+      fx.store.connections.create({
+        id: 'c2',
+        kind: 'mysql',
+        name: 'with-default-db',
+        fields: { host: '127.0.0.1', port: 3306, user: 'root', password: 's3cret', database: 'app' },
+      });
+      fx.store.grants.grant(fx.projectA, 'c2', 'rw', ['test']);
+
+      await expect(fx.service.databases(fx.projectA, 'c2')).resolves.toEqual(['test']);
+      await expect(fx.service.grantDatabases(fx.projectA, 'c2')).resolves.toEqual(['app', 'test']);
+
+      // 具体库操作仍按白名单裁决（不带 database 时回退连接默认库 app）
+      await expect(fx.service.query(fx.projectA, 'c2', 'SELECT 1')).rejects.toMatchObject({
+        code: 'DATABASE_NOT_GRANTED',
+      });
+      await expect(
+        fx.service.query(fx.projectA, 'c2', 'SELECT 1', undefined, undefined, 'test'),
+      ).resolves.toMatchObject({ rowCount: 1 });
+
+      // 列出全集同样要求项目授权，不能当连接探测口子
+      await expect(fx.service.grantDatabases(fx.projectB, 'c2')).rejects.toMatchObject({
+        code: 'UNAUTHORIZED_PROJECT',
+      });
+    } finally {
+      await fx.dispose();
+    }
+  });
 });

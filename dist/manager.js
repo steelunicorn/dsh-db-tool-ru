@@ -261,15 +261,35 @@ export class DbToolService {
         this.audit(key, connId, 'revoke', connId, 'none', false, true);
     }
     /* -- 浏览（ro 即可） -- */
+    /**
+     * 列出连接可见的库（按库白名单过滤）。
+     * 不做「目标库」校验：清单本身没有目标库，过滤结果就是白名单的体现；
+     * 若先按连接默认库判定，收窄到不含默认库时会连清单都打不开。
+     */
     async databases(projectPath, connId) {
-        const { key, adapter, databases: allowed } = await this.authorize(projectPath, connId, false);
+        const access = this.accessFor(projectPath, connId, false);
+        const adapter = await this.adapterFor(connId, access.mode);
         try {
             const result = await adapter.listDatabases();
-            this.audit(key, connId, 'databases', 'listDatabases', 'none', false, true);
-            return filterDatabaseList(result, allowed);
+            this.audit(access.key, connId, 'databases', 'listDatabases', 'none', false, true);
+            return filterDatabaseList(result, access.databases);
         }
         catch (e) {
-            this.audit(key, connId, 'databases', 'listDatabases', 'none', false, false, this.errText(e));
+            this.audit(access.key, connId, 'databases', 'listDatabases', 'none', false, false, this.errText(e));
+            throw this.toDriverError(e);
+        }
+    }
+    /** 授权面板用：库清单不收窄（白名单的编辑入口，否则收窄后无法再放开） */
+    async grantDatabases(projectPath, connId) {
+        const access = this.accessFor(projectPath, connId, false);
+        const adapter = await this.adapterFor(connId, access.mode);
+        try {
+            const result = await adapter.listDatabases();
+            this.audit(access.key, connId, 'grant_databases', 'listDatabases', 'none', false, true);
+            return result;
+        }
+        catch (e) {
+            this.audit(access.key, connId, 'grant_databases', 'listDatabases', 'none', false, false, this.errText(e));
             throw this.toDriverError(e);
         }
     }
@@ -627,8 +647,12 @@ export class DbToolService {
             throw new DbToolError('NOT_FOUND', `Connection not found: ${connId}`);
         }
     }
-    /** 授权校验（模式 + 可选库白名单）+ 取（缓存的）适配器 */
-    async authorize(projectPath, connId, needWrite, database) {
+    /**
+     * 授权基础校验（项目密钥 + 授权存在 + 写权限），不取适配器、不判库白名单。
+     * 供「列出库清单」这类没有具体目标库的入口复用：库清单本身要用来编辑白名单，
+     * 若先按默认库判白名单，收窄后连清单都打不开（无法再放开）。
+     */
+    accessFor(projectPath, connId, needWrite) {
         if (this.disposed)
             throw new DbToolError('INVALID_ARGUMENT', 'Service is shut down');
         if (!projectPath || projectPath.trim() === '') {
@@ -641,10 +665,15 @@ export class DbToolService {
         if (needWrite && grant.mode === 'ro') {
             throw new DbToolError('READ_ONLY', 'This connection is read-only (ro) for the current project; write operations are refused');
         }
+        return { key, mode: grant.mode, databases: grant.databases };
+    }
+    /** 授权校验（模式 + 可选库白名单）+ 取（缓存的）适配器 */
+    async authorize(projectPath, connId, needWrite, database) {
+        const access = this.accessFor(projectPath, connId, needWrite);
         // 库白名单判定放在 ro 判定之后：只读连接上的写操作仍以 READ_ONLY 优先报出
-        this.assertDatabaseAllowed(grant.databases, connId, database);
-        const adapter = await this.adapterFor(connId, grant.mode);
-        return { key, mode: grant.mode, adapter, databases: grant.databases };
+        this.assertDatabaseAllowed(access.databases, connId, database);
+        const adapter = await this.adapterFor(connId, access.mode);
+        return { key: access.key, mode: access.mode, adapter, databases: access.databases };
     }
     /**
      * 目标库名解析：显式入参 > 连接保存的默认库；"db.schema" 形式取点前一段。

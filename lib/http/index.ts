@@ -294,6 +294,10 @@ async function route(
   if (path === '/api/databases' && req.method === 'GET') {
     return sendOk(res, await service.databases(projectOf(q), required(q, 'connId')));
   }
+  // 授权面板：库清单不收窄，供白名单下拉勾选（否则收窄后无法再放开）
+  if (path === '/api/grant-databases' && req.method === 'GET') {
+    return sendOk(res, await service.grantDatabases(projectOf(q), required(q, 'connId')));
+  }
   if (path === '/api/tables' && req.method === 'GET') {
     return sendOk(res, await service.tables(projectOf(q), required(q, 'connId'), q.get('database') ?? undefined));
   }

@@ -59,9 +59,9 @@ An unauthorized project is rejected for every connection. Changing a grant mode 
 
 On Windows, paths are normalized with NTFS semantics (case-insensitive), so `E:\GitHub\MyApp` and `e:\github\myapp` are the same project.
 
-**Database-level allowlist**: each grant may carry a `databases` field (the "Databases" field in the "Project grants" panel) that narrows the visible databases within that connection. Empty means every database of the connection is allowed; otherwise list names separated by commas — exact names, compared case-insensitively. For PostgreSQL / GaussDB a target written as `db.schema` is judged by the `db` part; SQLite is exempt (its "database" is a file path).
+**Database-level allowlist**: each grant may carry a `databases` field (the "Databases" field in the "Project grants" panel) that narrows the visible databases within that connection. Empty means every database of the connection is allowed; otherwise tick the names in an expandable checkbox list (with «Select all» / «Clear all») — exact names, compared case-insensitively, and ticking every database is stored as empty again. For PostgreSQL / GaussDB a target written as `db.schema` is judged by the `db` part; SQLite is exempt (its "database" is a file path).
 
-The allowlist is checked on `query`, `execute`, `schema`, `preview`, the console transaction session and both ends of a data transfer; a mismatch is rejected before any connection to that database is made. Listing databases (`databases`) returns only the allowed ones, and a global table-name search only covers allowed databases.
+The allowlist is checked on `query`, `execute`, `schema`, `preview`, the console transaction session and both ends of a data transfer; a mismatch is rejected before any connection to that database is made. Listing databases (`databases`) returns only the allowed ones, and a global table-name search only covers allowed databases. The checkbox list in the grants panel is the exception: it is fed by an ungated listing (`GET /api/grant-databases`) that ignores the allowlist — otherwise a narrowed grant could not be widened again.
 
 ### Dangerous-operation confirmation
 

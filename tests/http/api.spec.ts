@@ -368,6 +368,32 @@ describe('连接管理与授权路由', () => {
     });
   });
 
+  it('GET /api/grant-databases 给未收窄的库全集（白名单编辑入口，仍要求项目授权）', async () => {
+    const { fx } = await ensureStarted();
+    const put = await fetch(`${(await ensureStarted()).base}/api/grants`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ projectPath: fx.projectA, connId: CONN_ID, mode: 'rw', databases: ['app'] }),
+    });
+    expect(((await put.json()) as any).ok).toBe(true);
+
+    const q = `project=${encodeURIComponent(fx.projectA)}&connId=${CONN_ID}`;
+    // 浏览用清单按白名单收窄；授权面板用的全集不收窄（否则收窄后无法再勾回来）
+    expect((await get(`/api/databases?${q}`)).json.data).toEqual(['app']);
+    expect((await get(`/api/grant-databases?${q}`)).json.data).toEqual(['app', 'test']);
+    // 未授权项目不能借这个入口枚举库
+    expect(
+      (await get(`/api/grant-databases?project=${encodeURIComponent(fx.projectB)}&connId=${CONN_ID}`)).json.code,
+    ).toBe('UNAUTHORIZED_PROJECT');
+
+    const restore = await fetch(`${(await ensureStarted()).base}/api/grants`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ projectPath: fx.projectA, connId: CONN_ID, mode: 'rw', databases: [] }),
+    });
+    expect(((await restore.json()) as any).ok).toBe(true);
+  });
+
   it('mode 非法 → INVALID_ARGUMENT', async () => {
     const { fx } = await ensureStarted();
     const res = await fetch(`${(await ensureStarted()).base}/api/grants`, {
