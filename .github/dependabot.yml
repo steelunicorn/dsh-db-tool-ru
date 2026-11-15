@@ -55,3 +55,10 @@ updates:
       # 精确锁 qs 6.15.1；typed-rest-client 要到 3.x 才声明 ^6.16.0，但 core 只声明 ~2.3.0。
       # overrides 已钉 ^6.17.1。解除：core 用上 typed-rest-client >= 3 后删本条 + 去掉 overrides.qs。
       - dependency-name: "qs"
+
+      # typescript：只拦 major。TypeScript 7 是原生编译器（tsgo），它拒绝当前的
+      # tsconfig.build.json：error TS5011（源目录 ./lib，需要显式 rootDir）；
+      # 5.x 的 minor/patch 更新照常进 PR。解除：完成 TS7 迁移后删本条。
+      - dependency-name: "typescript"
+        update-types:
+          - "version-update:semver-major"
