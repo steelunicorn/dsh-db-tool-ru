@@ -40,3 +40,4 @@ PRODUCT.md
 
 # 本地打包产物（发布走 GitHub Release）
 *.tgz
+.git-msg.txt

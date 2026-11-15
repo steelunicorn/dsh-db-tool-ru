@@ -2219,21 +2219,21 @@ window.__ModuleLoader__.load({
 									"div",
 									{ className: "dbt-row", style: { width: "100%", minWidth: 0 } },
 									React.createElement("span", { className: "dbt-kindchip", style: { fontFamily: MONO_FONT } }, c.kind),
-									React.createElement("strong", { style: { fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, c.name || c.id),
+									React.createElement("strong", { style: { fontSize: 13, fontWeight: 600, flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, c.name || c.id),
 									modeBadge(m),
-								),
-								React.createElement(
-									"div",
-									{ className: "dbt-seg", role: "radiogroup", "aria-label": t("grantModeGroup", { name: c.name || c.id }) },
-									["", "ro", "rw"].map((mode) =>
-										React.createElement("button", {
-											key: mode || "none",
-											className: mode === m ? "active" : "",
-											role: "radio",
-											"aria-checked": mode === m,
-											disabled: props.busy === "grant",
-											onClick: () => setGrant(c.id, mode),
-										}, mode === "" ? t("modeNone") : mode === "ro" ? t("modeRo") : t("modeRw")),
+									React.createElement(
+										"div",
+										{ className: "dbt-seg", role: "radiogroup", "aria-label": t("grantModeGroup", { name: c.name || c.id }) },
+										["", "ro", "rw"].map((mode) =>
+											React.createElement("button", {
+												key: mode || "none",
+												className: mode === m ? "active" : "",
+												role: "radio",
+												"aria-checked": mode === m,
+												disabled: props.busy === "grant",
+												onClick: () => setGrant(c.id, mode),
+											}, mode === "" ? t("modeNone") : mode === "ro" ? t("modeRo") : t("modeRw")),
+										),
 									),
 								),
 								m ? React.createElement(GrantDbRow, {
