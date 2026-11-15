@@ -1,11 +1,11 @@
 ---
 name: db-admin
-description: 通过 dsh-db-tool 插件操作 9 种数据库（MySQL、PostgreSQL、GaussDB、SQLite、Redis、MongoDB、Oracle、达梦、SQL Server）。调用 DatabaseManager 工具完成连接查询、SQL/命令执行、库表浏览、数据预览；处理 NEEDS_CONFIRMATION 危险操作确认流程，遵守 ro/rw 项目授权与安全规范。
+description: 通过 dsh-db-tool-ru 插件操作 9 种数据库（MySQL、PostgreSQL、GaussDB、SQLite、Redis、MongoDB、Oracle、达梦、SQL Server）。调用 DatabaseManager 工具完成连接查询、SQL/命令执行、库表浏览、数据预览；处理 NEEDS_CONFIRMATION 危险操作确认流程，遵守 ro/rw 项目授权与安全规范。
 ---
 
 # db-admin：数据库管理与查询
 
-本项目装有 dsh-db-tool 插件，通过 **DatabaseManager** 工具让模型以受控方式操作数据库。所有操作受「项目路径 → 连接 → ro/rw」授权模型约束：当前项目未被授权的连接一律不可用，只读授权下任何写操作都会被拒绝。
+本项目装有 dsh-db-tool-ru 插件，通过 **DatabaseManager** 工具让模型以受控方式操作数据库。所有操作受「项目路径 → 连接 → ro/rw」授权模型约束：当前项目未被授权的连接一律不可用，只读授权下任何写操作都会被拒绝。
 
 ## 工具调用总则
 

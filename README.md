@@ -1,6 +1,8 @@
-# dsh-db-tool
+# dsh-db-tool-ru
 
-[English](README_EN.md) | 简体中文
+[Русский](README_RU.md) | [English](README_EN.md) | 简体中文
+
+本仓库是 [dsh-db-tool](https://github.com/mengqi1436/dsh-db-tool)（作者 mengqi1436）的 fork：在原有能力之上新增了两项能力——授权内按数据库收窄的允许清单，以及俄语界面本地化；上游版权与 Apache-2.0 许可一并保留。本 fork 仅通过 GitHub 分发，不发布到 npm；仓库地址为 [steelunicorn/dsh-db-tool-ru](https://github.com/steelunicorn/dsh-db-tool-ru)。
 
 DSH 宿主插件。在聊天中安全地操作数据库：九种数据库、项目级细粒度授权、危险操作确认、全量审计，配套右侧栏管理台与 SQL 控制台。
 
@@ -12,7 +14,7 @@ DSH 宿主插件。在聊天中安全地操作数据库：九种数据库、项�
 
 [打开交互式版本](assets/feature-flow.html) —— 支持缩放、拖动、路径高亮，可点节点查看源码证据。
 
-> 有问题或建议？[提 Issue](https://github.com/mengqi1436/dsh-db-tool/issues/new/choose)。
+> 有问题或建议？[提 Issue](https://github.com/steelunicorn/dsh-db-tool-ru/issues/new/choose)。
 
 ---
 
@@ -57,6 +59,10 @@ DSH 宿主插件。在聊天中安全地操作数据库：九种数据库、项�
 
 Windows 下路径按 NTFS 语义归一（大小写不敏感），`E:\GitHub\MyApp` 与 `e:\github\myapp` 视为同一项目。
 
+**库级允许清单**：每条授权可附带 `databases` 字段（面板「项目授权」中的「库范围」），在该连接内收窄可见的库。留空表示该连接的全部库都可用；填写时以逗号分隔库名，名称精确匹配、大小写不敏感。PostgreSQL / GaussDB 的目标写成 `db.schema` 时按 `db` 部分判定；SQLite 不参与校验（其「库」是文件路径）。
+
+允许清单在 `query`、`execute`、`schema`、`preview`、控制台事务会话与数据传输两端都会校验；目标库不在清单内时，在建立到该库的连接之前即拒绝。库列表（`databases`）只返回允许的库，全局表名搜索也只覆盖允许的库。
+
 ### 危险操作确认
 
 DDL、`FLUSHALL`、`dropDatabase` 等语句先返回 `NEEDS_CONFIRMATION`，不会直接执行：
@@ -100,6 +106,7 @@ Navicat 风格的右侧栏多标签编辑器（CodeMirror 6）：
 - **进度与历史**：实时进度推送 + 按项目隔离的传输历史
 - **传输配置**：按项目保存，自动保存、重启后回填、失效连接自动清空
 - **中间类型模型**：异构列先归一化到统一中间类型再映射目标列，避免九库点对点转换
+- **两端授权校验**：源与目标分别校验连接授权及其库级允许清单
 - **Redis envelope 降级**：Redis 以固定表 `__redis_keys` 参与，六列语义如下
 
 | 列 | 语义 |
@@ -123,15 +130,17 @@ Navicat 风格的右侧栏多标签编辑器（CodeMirror 6）：
 
 ## 右侧栏
 
-通过 DSH 官方右侧栏（`@deepseek-ai/dsh-client-ui-sidebar-right`）注册一个页签，不依赖任何第三方侧边栏。页签内含五个面板（中英双语）：
+通过 DSH 官方右侧栏（`@deepseek-ai/dsh-client-ui-sidebar-right`）注册一个页签，不依赖任何第三方侧边栏。页签内含五个面板（中、英、俄三套词典，跟随宿主语言）：
 
 | 面板 | 用途 |
 | --- | --- |
 | 连接管理 | 新增 / 编辑 / 删除连接，测试连通性，导出导入 |
-| 项目授权 | 为当前项目勾选各连接的 ro / rw |
+| 项目授权 | 为当前项目勾选各连接的 ro / rw，并维护授权内的库级允许清单 |
 | 数据浏览 | 树形浏览库表、搜索、预览数据 |
 | SQL 控制台 | 多标签编辑器、事务、历史、结果网格 |
 | 数据传输 | 库表级数据迁移，批量 / 并行与写入模式可选，附传输日志 |
+
+服务端错误消息为英文，界面原样显示，不做翻译。
 
 ### 使用须知
 
@@ -147,12 +156,14 @@ Navicat 风格的右侧栏多标签编辑器（CodeMirror 6）：
 | 层次 | 机制 |
 | --- | --- |
 | 存储 | 密码与完整 URL 存 `secrets.json`（0600），永不返回给模型，返回给界面的连接信息密码一律脱敏为 `***` |
-| 授权 | 项目级 ro / rw 白名单，未授权即拒绝 |
+| 授权 | 项目级 ro / rw 白名单，可在授权内附带库级允许清单；未授权即拒绝 |
 | 语句级 | 风险分级（danger / warning / none）+ 一次性确认 |
 | 只读强制 | MySQL / PostgreSQL 走会话级 `SET TRANSACTION READ ONLY`；SQL Server 退化为应用层五道闸门 |
 | 传输加密 | 默认优先明文建连，仅当服务器强制加密时升级；详见「传输加密」 |
 | 错误脱敏 | 连接串解析失败时，错误文案中的 userinfo 已脱敏，不回显明文密码 |
 | 脚本隔离 | 独立子进程 + vm 沙箱 + 60 秒强杀 + 仅注入 db 句柄 |
+
+**库级允许清单是又一道闸门，顺序在项目授权与只读校验之后**：ro 授权上的写操作仍以只读拒绝，而不是「库未授权」；清单未命中时不会建立到该库的连接。
 
 **SQL Server 的 ro 强度弱于 MySQL / PostgreSQL**：SQL Server 没有等价的会话级只读语句，ro 授权下由应用层五道拦截兜底——首词白名单、拒绝多语句、拒绝 `SELECT ... INTO`、拒绝 `WITH ... (INSERT|UPDATE|DELETE|MERGE)`、拒绝 `OPENQUERY` / `OPENROWSET` / `OPENDATASOURCE`。这仍是应用层拦截，需要数据库侧强隔离时请为连接配置只读账号。
 
@@ -169,17 +180,18 @@ Navicat 风格的右侧栏多标签编辑器（CodeMirror 6）：
 **运行环境**：Node.js ≥ 22（部分数据库驱动要求）；DSH 宿主需提供官方右侧栏。
 
 ```bash
-# npm（推荐，请钉当前版本号，@latest 会因 release-age 校验回落旧版）
-dsh plugin --profile desktop add dsh-db-tool@<版本号> --registry=https://registry.npmjs.org/
-
-# GitHub 源码
-dsh plugin --profile web add "dsh-db-tool@github:mengqi1436/dsh-db-tool"
+# 从 GitHub 安装（唯一分发渠道）
+dsh plugin --profile desktop add "github:steelunicorn/dsh-db-tool-ru"
 
 # 本地开发
-dsh plugin --profile web add "link:/path/to/dsh-db-tool"
+dsh plugin --profile desktop add "link:D:\Projects\dsh-db-tool"
 ```
 
 桌面端若 `dsh` 命令不在 PATH：打开菜单栏点 **Manage dsh command** 注册。安装完成后重启 DSH 桌面端加载插件。
+
+**不要在同一 profile 中同时启用上游插件**：两者注册同一个工具名 `DatabaseManager`，并共用同一个数据目录（`<我的文档>/DSH/db-tool`），因此连接与授权是共享的，但工具会被注册两次——先移除或禁用上游插件，再安装本包。
+
+**替换时数据保留**：连接、授权与审计仍位于原来的 `<我的文档>/DSH/db-tool/` 目录，用本 fork 替换上游插件后无需重新配置。
 
 **关于 oracledb**：其安装脚本会被 pnpm 默认拦截，首次安装会报告失败。在 DSH 插件安装界面点 **Allow these scripts and retry** 即可完成——该脚本仅做 Node 版本检查与横幅打印，批准会持久化到 profile。
 
@@ -195,7 +207,7 @@ dsh plugin --profile web add "link:/path/to/dsh-db-tool"
 | --- | --- |
 | `connections.json` | 连接定义（`urlSafe` 中密码脱敏为 `***`） |
 | `secrets.json` | 0600，密码与完整 URL，永不返回给模型 |
-| `grants.json` | 项目授权（归一化路径 → connId → ro / rw） |
+| `grants.json` | 项目授权（归一化路径 → connId → ro / rw，可附带库级允许清单） |
 | `transfer-config.json` | 0600，数据传输页按项目的连接与选项配置 |
 | `audit.jsonl` | 追加式审计日志，每行一条 JSON |
 
@@ -206,7 +218,7 @@ dsh plugin --profile web add "link:/path/to/dsh-db-tool"
 ## 开发
 
 ```bash
-npm install
+npm ci
 npm run build        # 编译 + 生成 vendor bundle（mongodb / sqlserver / codemirror）
 npm test             # vitest 全量
 npm run typecheck    # tsc --noEmit
@@ -248,6 +260,8 @@ vendor/       驱动与编辑器 bundle（构建产物，发布时收录）
 
 - [a19920714liou](https://github.com/a19920714liou) — [PR #1](https://github.com/mengqi1436/dsh-db-tool/pull/1)：ro 连接钩子卡死 + Windows 路径大小写授权错位
 - [weicy98](https://github.com/weicy98) — [PR #12](https://github.com/mengqi1436/dsh-db-tool/pull/12)：达梦 DM 通信加密为 DES_CFB 时的连接失败
+- 上游作者：[mengqi1436](https://github.com/mengqi1436) — [dsh-db-tool](https://github.com/mengqi1436/dsh-db-tool)
+- 俄语本地化 fork：[steelunicorn/dsh-db-tool-ru](https://github.com/steelunicorn/dsh-db-tool-ru) — [issues](https://github.com/steelunicorn/dsh-db-tool-ru/issues)
 
 欢迎提交缺陷修复与适配器支持，提交约定见 [CONTRIBUTORS.md](CONTRIBUTORS.md#贡献方式)。
 
@@ -258,3 +272,5 @@ vendor/       驱动与编辑器 bundle（构建产物，发布时收录）
 [Apache License 2.0](LICENSE) © 2026 mengqi1436
 
 可自由商用、修改、分发与再许可，需保留版权与许可声明，修改过的文件需标注改动；附带的专利授权不可撤回，但对本作品发起专利诉讼时终止。
+
+本 fork 以同一许可分发；上游项目见 [mengqi1436/dsh-db-tool](https://github.com/mengqi1436/dsh-db-tool)。

@@ -1,5 +1,4 @@
 node_modules/
-vendor/
 *.log
 
 # 本项目用 npm（package-lock.json）；pnpm 的 lock 属误产生，不入库
@@ -8,7 +7,8 @@ pnpm-lock.yaml
 .env
 .env.*
 !.env.example
-dist/
+# 本 fork 通过 GitHub 分发（不走 npm 发布），安装端不会执行 prepack 构建，
+# 因此 dist/ 与 vendor/ 的构建产物随仓库提交，保证 git 安装即可运行。
 coverage/
 .vitest/
 .stryker-tmp/
@@ -17,6 +17,11 @@ stryker_out*.txt
 
 .playwright-cli/
 dsh-boot-diag*.txt
+
+# 本地工作目录（沙箱内 npm 缓存、一次性迁移脚本与其映射）
+.npm-cache/
+.fork-i18n-map/
+tools/
 
 .planning/
 .tmp-verify/

@@ -41,7 +41,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # vendor/*.cjs 是构建产物（.gitignore 已忽略），但大量测试直接依赖它们：
+      # vendor/*.cjs 是构建产物（本 fork 随仓库提交，便于 git 安装），但本地改动后
+      # 必须重新构建：大量测试直接依赖它们的当前内容，
       #   - mongodb 适配器靠 vendor 里的 ObjectId/Decimal128 做 instanceof 判断，
       #     产物缺失时这些值会落进普通对象分支被 JSON 序列化，测试以「格式不对」失败
       #   - client/console-tools 校验 vendor/codemirror-sql.cjs 含 sqlserver 接线

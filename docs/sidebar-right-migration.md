@@ -142,7 +142,7 @@ const inject = ["slots", "sidebarRightTabs", "locale"];
 
 ```js
 if (!ctx.sidebarRightTabs || !ctx.slots) {
-  console.warn("[dsh-db-tool] 宿主未提供 sidebarRightTabs / slots 服务，右侧栏面板不会挂载");
+  console.warn("[dsh-db-tool-ru] 宿主未提供 sidebarRightTabs / slots 服务，右侧栏面板不会挂载");
   return;
 }
 ```
@@ -169,7 +169,7 @@ ctx.effect(function () {
       icon: DbIcon,
     }],
   });
-}, "dsh-db-tool: register tab type");
+}, "dsh-db-tool-ru: register tab type");
 ```
 
 三处「为什么」：
@@ -186,7 +186,7 @@ ctx.effect(function () {
   return ctx.slots.inject("sidebar.right.pane.tab", function () {
     return ctx.slots.register({ name: "sidebar.right.pane.tab", key: TAB_ID }, DbToolBody);
   });
-}, "dsh-db-tool: register tab body");
+}, "dsh-db-tool-ru: register tab body");
 ```
 
 `ctx.slots.inject(key, cb)` 的作用是**等目标席位被声明**：它监听 `declarationEpoch`（`ui-slots/src/index.ts:1474-1475`），目标声明后才执行 `cb` 并把结果作为嵌套 effect 管理。直接 `register` 在席位尚未声明时会失败或静默丢失 —— 而插件与官方包谁先 `apply`，不由 `dsh.client.inject` 保证。
@@ -212,7 +212,7 @@ ctx.effect(function () {
   const offZh = ctx.locale.register(LOCALE_NS, "zh", zh);
   const offEn = ctx.locale.register(LOCALE_NS, "en", en);
   return function () { try { offZh(); } catch (e) {} try { offEn(); } catch (e) {} };
-}, "dsh-db-tool: dictionaries");
+}, "dsh-db-tool-ru: dictionaries");
 ```
 
 字典只注册一次，**切语言不重新 apply**，因此 `t()` 必须每次现读 locale 快照（`client/client.js:481-497` 的 `localeService` / `currentLocale()`），不能缓存成渲染期常量。
@@ -431,7 +431,7 @@ if (layout === undefined || tab === undefined || navigation === undefined) {
 按序查四项：
 
 1. **`dsh.client.inject` 是否含官方包** —— `package.json:43-45` 必须有它。缺 → `ctx.sidebarRightTabs` 为 `undefined`。
-2. **控制台是否有本插件的 warn** —— 服务缺失时打印 `[dsh-db-tool] 宿主未提供 sidebarRightTabs / slots 服务`（`client/client.js:3831`）。看到这行就是加载顺序问题，不是注册问题。
+2. **控制台是否有本插件的 warn** —— 服务缺失时打印 `[dsh-db-tool-ru] 宿主未提供 sidebarRightTabs / slots 服务`（`client/client.js:3831`）。看到这行就是加载顺序问题，不是注册问题。
 3. **是否选中了会话** —— 没有会话就没有停靠面（L2，`README.zh.md:152`），此时右侧栏整块不存在，不是插件问题。
 4. **`id` 是否与别的插件冲突** —— 同 `id` 二次注册抛 `tab type id "<id>" is already registered`（`SR/tab-registry.ts:258`）。`id` 是**注册表进程内全局**唯一。
 

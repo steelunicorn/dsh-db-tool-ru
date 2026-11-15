@@ -1,6 +1,8 @@
-# dsh-db-tool
+# dsh-db-tool-ru
 
-English | [简体中文](README.md)
+[Русский](README_RU.md) | English | [简体中文](README.md)
+
+This repository is a fork of [dsh-db-tool](https://github.com/mengqi1436/dsh-db-tool) by mengqi1436. It adds two capabilities on top: per-grant database allowlists inside a connection grant, and Russian UI localization; upstream copyright and the Apache-2.0 license are preserved. The fork is distributed through GitHub only and is not published to npm; the repository is [steelunicorn/dsh-db-tool-ru](https://github.com/steelunicorn/dsh-db-tool-ru).
 
 A DSH host plugin. Operate databases safely from chat: nine databases, project-scoped fine-grained grants, dangerous-operation confirmation, full audit logging, plus a right-sidebar admin console and SQL console.
 
@@ -12,7 +14,7 @@ The full path of one database operation, from entry point to audit record — bo
 
 [Open the interactive version](assets/feature-flow.html) — supports zoom, pan, path highlighting, and source-evidence inspection per node.
 
-> Questions or suggestions? [Open an issue](https://github.com/mengqi1436/dsh-db-tool/issues/new/choose).
+> Questions or suggestions? [Open an issue](https://github.com/steelunicorn/dsh-db-tool-ru/issues/new/choose).
 
 ---
 
@@ -57,6 +59,10 @@ An unauthorized project is rejected for every connection. Changing a grant mode 
 
 On Windows, paths are normalized with NTFS semantics (case-insensitive), so `E:\GitHub\MyApp` and `e:\github\myapp` are the same project.
 
+**Database-level allowlist**: each grant may carry a `databases` field (the "Databases" field in the "Project grants" panel) that narrows the visible databases within that connection. Empty means every database of the connection is allowed; otherwise list names separated by commas — exact names, compared case-insensitively. For PostgreSQL / GaussDB a target written as `db.schema` is judged by the `db` part; SQLite is exempt (its "database" is a file path).
+
+The allowlist is checked on `query`, `execute`, `schema`, `preview`, the console transaction session and both ends of a data transfer; a mismatch is rejected before any connection to that database is made. Listing databases (`databases`) returns only the allowed ones, and a global table-name search only covers allowed databases.
+
 ### Dangerous-operation confirmation
 
 DDL, `FLUSHALL`, `dropDatabase` and similar statements return `NEEDS_CONFIRMATION` first instead of executing:
@@ -100,6 +106,7 @@ Moving table data between databases of the same or different kinds:
 - **Progress and history**: live progress push plus per-project transfer history
 - **Transfer configuration**: saved per project, auto-saved, restored after restart, cleared when a connection becomes invalid
 - **Intermediate type model**: heterogeneous columns are normalized to a common intermediate type before mapping to the target column, avoiding point-to-point conversion across nine databases
+- **Authorization at both ends**: the source and the target each check the connection grant and its database-level allowlist
 - **Redis envelope fallback**: Redis participates through the fixed table `__redis_keys` with these six columns
 
 | Column | Meaning |
@@ -123,15 +130,17 @@ Export every connection (including passwords) into a passphrase-encrypted file f
 
 ## Right sidebar
 
-Registers one tab through the official DSH right sidebar (`@deepseek-ai/dsh-client-ui-sidebar-right`), with no third-party sidebar dependency. The tab contains five panels (bilingual):
+Registers one tab through the official DSH right sidebar (`@deepseek-ai/dsh-client-ui-sidebar-right`), with no third-party sidebar dependency. The tab contains five panels (Chinese, English and Russian dictionaries, following the host locale):
 
 | Panel | Purpose |
 | --- | --- |
 | Connections | Create / edit / delete connections, test connectivity, export and import |
-| Project grants | Tick ro / rw per connection for the current project |
+| Project grants | Tick ro / rw per connection for the current project and maintain the database-level allowlist inside the grant |
 | Data browsing | Tree browsing, search, data preview |
 | SQL console | Multi-tab editor, transactions, history, result grid |
 | Data transfer | Table-level migration with batch / parallel options and a transfer log |
+
+Server error messages are in English and are shown in the UI as-is; they are not translated.
 
 ### Notes
 
@@ -147,12 +156,14 @@ Both are contracts of the official right sidebar and are easily mistaken for plu
 | Layer | Mechanism |
 | --- | --- |
 | Storage | Passwords and full URLs live in `secrets.json` (0600) and are never returned to the model; connection info returned to the UI is always masked as `***` |
-| Authorization | Project-scoped ro / rw allowlist; no grant means rejection |
+| Authorization | Project-scoped ro / rw allowlist with an optional database-level allowlist inside the grant; no grant means rejection |
 | Statement level | Risk classification (danger / warning / none) plus one-time confirmation |
 | Read-only enforcement | MySQL / PostgreSQL use session-level `SET TRANSACTION READ ONLY`; SQL Server degrades to five application-level gates |
 | Transport encryption | Plaintext first, upgrading only when the server insists; see "Transport encryption" |
 | Error redaction | When connection-string parsing fails, userinfo in the error text is redacted; plaintext passwords are never echoed |
 | Script isolation | Separate child process + vm sandbox + 60-second hard kill + only the db handle injected |
+
+**The database-level allowlist is one more gate, ordered after the project grant and after the read-only check**: a write on an ro grant still fails as read-only, not as "database not granted", and a mismatch is rejected without opening a connection to that database.
 
 **SQL Server's ro enforcement is weaker than MySQL / PostgreSQL**: SQL Server has no equivalent session-level read-only statement, so under an ro grant five application-level gates apply — first-word allowlist, multi-statement rejection, `SELECT ... INTO` rejection, `WITH ... (INSERT|UPDATE|DELETE|MERGE)` rejection, and `OPENQUERY` / `OPENROWSET` / `OPENDATASOURCE` rejection. This remains application-level interception; for hard isolation, configure a database-side read-only account for the connection.
 
@@ -169,17 +180,18 @@ Both are contracts of the official right sidebar and are easily mistaken for plu
 **Runtime requirements**: Node.js ≥ 22 (required by some database drivers); the DSH host must provide the official right sidebar.
 
 ```bash
-# npm (recommended — pin the current version; @latest falls back to an older release due to release-age checks)
-dsh plugin --profile desktop add dsh-db-tool@<version> --registry=https://registry.npmjs.org/
-
-# From GitHub source
-dsh plugin --profile web add "dsh-db-tool@github:mengqi1436/dsh-db-tool"
+# From GitHub (the only distribution channel)
+dsh plugin --profile desktop add "github:steelunicorn/dsh-db-tool-ru"
 
 # Local development
-dsh plugin --profile web add "link:/path/to/dsh-db-tool"
+dsh plugin --profile desktop add "link:D:\Projects\dsh-db-tool"
 ```
 
 If the `dsh` command is not on PATH in the desktop app, open the menu bar and click **Manage dsh command** to register it. Restart the DSH desktop app after installing.
+
+**Do not enable it together with the upstream plugin in the same profile**: both register the same tool name (`DatabaseManager`) and share the same data directory (`<My Documents>/DSH/db-tool`), so connections and grants are shared but the tool would be registered twice — remove or disable the upstream plugin before installing this package.
+
+**Data survives the switch**: connections, grants and audit records stay in the existing `<My Documents>/DSH/db-tool/` directory, so replacing the upstream plugin with this fork needs no reconfiguration.
 
 **About oracledb**: its install script is blocked by pnpm by default, so the first install reports a failure. Click **Allow these scripts and retry** in the DSH plugin installation UI — the script only checks the Node version and prints a banner, and the approval persists in the profile.
 
@@ -195,7 +207,7 @@ If the `dsh` command is not on PATH in the desktop app, open the menu bar and cl
 | --- | --- |
 | `connections.json` | Connection definitions (`urlSafe` masks passwords as `***`) |
 | `secrets.json` | 0600, passwords and full URLs, never returned to the model |
-| `grants.json` | Project grants (normalized path → connId → ro / rw) |
+| `grants.json` | Project grants (normalized path → connId → ro / rw, optionally with a database-level allowlist) |
 | `transfer-config.json` | 0600, per-project connection and option config for the transfer page |
 | `audit.jsonl` | Append-only audit log, one JSON object per line |
 
@@ -206,7 +218,7 @@ If the `dsh` command is not on PATH in the desktop app, open the menu bar and cl
 ## Development
 
 ```bash
-npm install
+npm ci
 npm run build        # compile + build vendor bundles (mongodb / sqlserver / codemirror)
 npm test             # full vitest run
 npm run typecheck    # tsc --noEmit
@@ -248,6 +260,8 @@ Thanks to every external contributor whose work landed on `master`; per-item det
 
 - [a19920714liou](https://github.com/a19920714liou) — [PR #1](https://github.com/mengqi1436/dsh-db-tool/pull/1): ro connection hook hang + Windows path case mismatch in grants
 - [weicy98](https://github.com/weicy98) — [PR #12](https://github.com/mengqi1436/dsh-db-tool/pull/12): Dameng DM connection failure when communication encryption is DES_CFB
+- Upstream author: [mengqi1436](https://github.com/mengqi1436) — [dsh-db-tool](https://github.com/mengqi1436/dsh-db-tool)
+- Russian-localized fork: [steelunicorn/dsh-db-tool-ru](https://github.com/steelunicorn/dsh-db-tool-ru) — [issues](https://github.com/steelunicorn/dsh-db-tool-ru/issues)
 
 Bug fixes and adapter support are welcome; contribution conventions are in [CONTRIBUTORS.md](CONTRIBUTORS.md#贡献方式).
 
@@ -258,3 +272,5 @@ Bug fixes and adapter support are welcome; contribution conventions are in [CONT
 [Apache License 2.0](LICENSE) © 2026 mengqi1436
 
 Free to use commercially, modify, distribute and sublicense, provided copyright and license notices are retained and modified files are marked. The included patent grant is irrevocable, but terminates if you bring a patent suit over this work.
+
+This fork is distributed under the same license; the upstream project is [mengqi1436/dsh-db-tool](https://github.com/mengqi1436/dsh-db-tool).

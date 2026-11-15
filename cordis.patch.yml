@@ -1,6 +1,7 @@
-# dsh-db-tool bundle patch（dsh.bundle.patch：顶层数组 loader patch entries）
-# 本地开发安装：dsh plugin --profile web add "link:E:\Code\dsh\dsh-db-tool"
-# 发布安装（用户侧）：dsh plugin --profile web add "dsh-db-tool@github:<user>/dsh-db-tool"
+# dsh-db-tool-ru bundle patch（dsh.bundle.patch：顶层数组 loader patch entries）
+# 本地开发安装：dsh plugin --profile desktop add "link:D:\Projects\dsh-db-tool"
+# 发布安装（用户侧）：dsh plugin --profile desktop add "github:steelunicorn/dsh-db-tool-ru"
+# 注意：与上游 dsh-db-tool 不要同时启用（两者共用数据目录与工具名 DatabaseManager）。
 - insert:
-    - id: db-tool
-      name: dsh-db-tool
+    - id: db-tool-ru
+      name: dsh-db-tool-ru

@@ -79,7 +79,7 @@ body:
   - type: input
     id: plugin-version
     attributes:
-      label: dsh-db-tool 版本
+      label: dsh-db-tool-ru 版本
       description: 见 `package.json` 的 version，或右侧栏/日志中的版本号
       placeholder: 1.9.0
     validations:
