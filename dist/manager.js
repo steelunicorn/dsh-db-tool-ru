@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { getAdapter } from './adapters/index.js';
+import { friendlyConnectError } from './adapters/connect-feedback.js';
 import { ChallengeStore, classifyStatement, sqlHead, SQL_READ_HEADS, } from './guard/index.js';
 import { mergeUrlCredentials, normalizeProjectKey, DECRYPT_FAIL_MESSAGE, DEFAULT_TRANSFER_CONFIG, } from './store/index.js';
 import { runScriptInChild } from './script/runner.js';
@@ -116,15 +117,30 @@ export class DbToolService {
             const factory = await this.resolver(rc.meta.kind);
             const adapter = await factory(rc);
             try {
-                return await adapter.testConnect();
+                return this.friendlyTestResult(rc.meta.kind, await adapter.testConnect());
             }
             finally {
                 await adapter.close().catch(() => { });
             }
         }
         catch (e) {
-            throw this.toDriverError(e);
+            throw this.toConnectTestError(rc.meta.kind, e);
         }
+    }
+    /** 连接测试失败结果：错误文案过一遍错误码翻译（认识的特征换成准确提示，不认识保留原文） */
+    friendlyTestResult(kind, r) {
+        if (r && !r.ok && r.error) {
+            const mapped = friendlyConnectError(kind, r.error);
+            return mapped ? { ...r, error: mapped } : r;
+        }
+        return r;
+    }
+    /** 连接测试抛错：认识的特征换成准确提示，不认识走 toDriverError 保留原文 */
+    toConnectTestError(kind, e) {
+        const mapped = friendlyConnectError(kind, e);
+        if (mapped)
+            return new DbToolError('DRIVER_ERROR', mapped);
+        return this.toDriverError(e);
     }
     /**
      * 测试未保存的连接草稿（侧边栏「保存前测试」）。不落库、不写审计，
@@ -166,14 +182,14 @@ export class DbToolService {
             const factory = await this.resolver(input.kind);
             const adapter = await factory(rc);
             try {
-                return await adapter.testConnect();
+                return this.friendlyTestResult(input.kind, await adapter.testConnect());
             }
             finally {
                 await adapter.close().catch(() => { });
             }
         }
         catch (e) {
-            throw this.toDriverError(e);
+            throw this.toConnectTestError(input.kind, e);
         }
     }
     /* -- 连接导出/导入（口令加密，无需授权；口令不落审计） -- */

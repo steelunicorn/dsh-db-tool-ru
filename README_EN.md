@@ -135,7 +135,7 @@ Registers one tab through the official DSH right sidebar (`@deepseek-ai/dsh-clie
 
 | Panel | Purpose |
 | --- | --- |
-| Connections | Create / edit / delete connections, test connectivity, export and import |
+| Connections | Create / edit / delete connections, adaptive card layout, per-connection or one-click connectivity test, export and import |
 | Project grants | Tick ro / rw per connection for the current project and maintain the database-level allowlist inside the grant |
 | Data browsing | Tree browsing, search, data preview |
 | SQL console | Multi-tab editor, transactions, history, result grid |

@@ -1,4 +1,5 @@
 import { assertIdent, clampLimit, clampOffset, humanize, normalizeCell, quoteIdent, validPort } from './common.js';
+import { conciseServerInfo } from '../connect-feedback.js';
 /** 多主机 authority 逐台重组段（host[:port]） */
 function joinHostSeg(h) {
     return `${h.host}${h.port != null ? ':' + h.port : ''}`;
@@ -345,7 +346,8 @@ export async function createPgLikeAdapter(kind, Driver, conn, opts) {
         testConnect: () => humanize(`${kind} connection test`, async () => {
             const res = await pool.query('SELECT version() AS v');
             const v = res.rows[0]?.v;
-            return { ok: true, serverInfo: v == null ? kind : String(v) };
+            // version() 是完整编译信息（110+ 字符），一键测试提示里只展示「产品 + 短版本」
+            return { ok: true, serverInfo: v == null ? kind : conciseServerInfo(kind, String(v)) };
         }),
         query: (sql, params, database) => humanize(`${kind} query failed`, async () => {
             // 跨库操控（Navicat 式）：指定目标库 → 路由到该库的池（主池事务不跨库，忽略事务路由）

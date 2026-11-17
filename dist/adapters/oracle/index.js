@@ -26,6 +26,7 @@ import * as path from 'node:path';
 import oracledb from 'oracledb';
 import { sqlHead, SQL_READ_HEADS } from '../../guard/index.js';
 import { validPort } from '../sql-shared/common.js';
+import { conciseServerInfo } from '../connect-feedback.js';
 // CLOB 统一按字符串返回；BLOB 统一按 Buffer 返回。均为官方全局按类型转换
 // （fetchInfo 的键是列名而非类型名，`{ BLOB: … }` 只会匹配恰好名为 "BLOB" 的列，
 // 按类型统一转换须用全局 fetchAsString/fetchAsBuffer——官方 connection.rst
@@ -369,7 +370,7 @@ export async function createOracleAdapter(conn, opts) {
                 const r = await withConn((c) => c.execute('SELECT banner FROM v$version WHERE ROWNUM = 1', [], execOpts));
                 const row = r.rows?.[0];
                 const banner = row ? String(Object.values(row)[0] ?? '') : '';
-                return { ok: true, serverInfo: banner };
+                return { ok: true, serverInfo: conciseServerInfo('oracle', banner) };
             }
             catch {
                 // v$version 在部分受限环境对普通用户不可读（ORA-00942/ORA-01031）：
