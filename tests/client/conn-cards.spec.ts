@@ -198,6 +198,20 @@ describe('1 卡片网格样式（源码断言）', () => {
 		expect(src).toContain('@keyframes dbt-pulse{');
 	});
 
+	it('动作行收在卡片内：允许换行 + 按钮可收缩省略，卡片最小宽度容得下三个按钮', () => {
+		const actions = /\.dbt-conncard-actions\{([^}]*)\}/.exec(src);
+		expect(actions, '缺少 .dbt-conncard-actions 样式').toBeTruthy();
+		expect(actions![1]).toContain('flex-wrap:wrap');
+		const btn = /\.dbt-conncard-actions \.dbt-btn\{([^}]*)\}/.exec(src);
+		expect(btn, '缺少卡片内按钮收敛规则').toBeTruthy();
+		expect(btn![1]).toContain('min-width:0');
+		expect(btn![1]).toContain('text-overflow:ellipsis');
+		expect(btn![1]).toContain('overflow:hidden');
+		// 200px 的卡片装不下三个 nowrap 按钮（会顶出边框），最小宽度必须放大
+		const grid = /\.dbt-conncards\{([^}]*)\}/.exec(src);
+		expect(grid![1]).toContain('minmax(var(--dbt-card-min,280px),1fr)');
+	});
+
 	it('连接管理改用卡片网格，不再渲染 inset grouped 行（dbt-group/listrow 留给授权等其他视图）', () => {
 		// 网格容器与卡片本体各出现一次（容器在 ManageView 分组 map 内，卡片在 list.map 回调内）
 		expect((src.match(/className: "dbt-conncards"/g) ?? []).length).toBe(1);

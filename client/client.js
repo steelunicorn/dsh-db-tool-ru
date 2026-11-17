@@ -1054,13 +1054,15 @@ window.__ModuleLoader__.load({
 				// 深/浅主题由 token 媒体查询统一反转。卡片带 hairline 描边 + 独立表面，
 				// 让每张连接读作一个离散卡片对象而非表单行。
 				"/* ===== 连接管理：卡片网格（auto-fill 随侧栏宽度自适应列数与卡片大小） ===== */",
-				".dbt-conncards{display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--dbt-card-min,200px),1fr));gap:8px;}",
+				".dbt-conncards{display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--dbt-card-min,280px),1fr));gap:8px;}",
 				".dbt-conncard{background:var(--dbt-surface);border:1px solid var(--dbt-separator);border-radius:var(--dbt-radius-card);padding:12px;display:flex;flex-direction:column;gap:6px;min-width:0;box-sizing:border-box;}",
 				".dbt-conncard-head{display:flex;gap:6px;align-items:center;min-width:0;}",
 				".dbt-conncard-name{flex:1;min-width:0;font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}",
 				// 地址副行单行省略 + title 全文（对齐表注释 treecomment 的展示语言）：多行 break-all 会读作表单字段
 				".dbt-conncard-sub{color:var(--dbt-text-secondary);font-family:var(--dbt-mono);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}",
-				".dbt-conncard-actions{display:flex;gap:8px;margin-top:auto;}",
+				".dbt-conncard-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:auto;}",
+				// 动作按钮收在卡片内：允许收缩 + 省略号，卡片再窄也不会顶出边框（no-wrap 的 .dbt-btn 默认不收缩）
+				".dbt-conncard-actions .dbt-btn{flex:0 1 auto;min-width:0;padding:0 8px;overflow:hidden;text-overflow:ellipsis;}",
 				"/* ===== 按数据库类型分组的小节 ===== */",
 				".dbt-kindgroup{display:flex;flex-direction:column;gap:8px;}",
 				".dbt-kindgroup-head{display:flex;gap:6px;align-items:center;}",
