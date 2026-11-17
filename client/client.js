@@ -282,6 +282,12 @@ window.__ModuleLoader__.load({
 			// 通用
 			error: "错误",
 			ok: "操作完成",
+			okSaved: "连接已保存",
+			okDeleted: "连接已删除",
+			okExported: "连接已导出",
+			okImported: "连接已导入",
+			okGrant: "授权已更新",
+			okGrantDb: "库范围已保存",
 			// 授权库范围与行数单位
 			grantDbLabel: "库范围",
 			grantDbAll: "全部库",
@@ -554,6 +560,12 @@ window.__ModuleLoader__.load({
 			cancelled: "Cancelled",
 			error: "Error",
 			ok: "Done",
+			okSaved: "Connection saved",
+			okDeleted: "Connection deleted",
+			okExported: "Connections exported",
+			okImported: "Connections imported",
+			okGrant: "Grant updated",
+			okGrantDb: "Database scope saved",
 			// Database scope per grant + row-count unit
 			grantDbLabel: "Databases",
 			grantDbAll: "All databases",
@@ -823,6 +835,12 @@ window.__ModuleLoader__.load({
 			cancelled: "Отменено",
 			error: "Ошибка",
 			ok: "Готово",
+			okSaved: "Подключение сохранено",
+			okDeleted: "Подключение удалено",
+			okExported: "Подключения экспортированы",
+			okImported: "Подключения импортированы",
+			okGrant: "Доступ обновлён",
+			okGrantDb: "Список баз сохранён",
 			// 授权库范围与行数单位
 			grantDbLabel: "Базы данных",
 			grantDbAll: "Все базы",
@@ -876,6 +894,16 @@ window.__ModuleLoader__.load({
 		const TAB_ID = "dsh-db-tool-ru";
 		const API = "/dsh-db-tool-ru/api";
 		const DB_KINDS = ["mysql", "postgresql", "gaussdb", "sqlite", "redis", "mongodb", "oracle", "dmdb", "sqlserver"];
+		// 动作 → 成功提示的词典键：「保存 / 删除 / 导出 / 导入 / 授权 / 库范围」各说各的完成事项，
+		// 面板顶部那条绿字才有主语；未登记的动作回落到通用 ok
+		const RUN_DONE = {
+			save: "okSaved",
+			del: "okDeleted",
+			export: "okExported",
+			import: "okImported",
+			grant: "okGrant",
+			grantdb: "okGrantDb",
+		};
 		// kind 展示名：PostgreSQL 全称在窄侧栏里挤压卡片名与下拉宽度，展示统一用简称 PG；
 		// 数据层 kind 值不变，仅展示层映射（未列出的 kind 原样展示，本就足够短）
 		const KIND_SHORT = { postgresql: "PG" };
@@ -4616,11 +4644,23 @@ window.__ModuleLoader__.load({
 			function run(name, fn) {
 				setBusy(name); setError(""); setMessage("");
 				return fn()
-					.then(() => setMessage(t("ok")))
+					// 成功提示带主语：绿条说的是「做了什么」，而不是孤零零的「完成」
+					.then(() => setMessage(t(RUN_DONE[name] || "ok")))
 					.catch((e) => setError(String(e && e.message ? e.message : e)))
 					.finally(() => setBusy(""));
 			}
 			function onError(e) { setError(String(e && e.message ? e.message : e)); }
+
+			// 成功提示是一次性回执：3 秒后自动收起，切页签时立即清空，
+			// 免得「Подключение сохранено」跟着用户跑到无关的面板里当装饰
+			React.useEffect(() => {
+				if (!message) return undefined;
+				const id = setTimeout(() => setMessage(""), 3000);
+				return () => clearTimeout(id);
+			}, [message]);
+			React.useEffect(() => {
+				setMessage("");
+			}, [view]);
 
 			const shared = { conns, grants, projectPath, busy, run, reload, onError, askConfirm };
 			// 版本号胶囊：钉在项目行最右侧。抽成局部变量让「只读态」与「编辑态」两种行都能复用，
