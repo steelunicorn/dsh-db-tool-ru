@@ -312,8 +312,8 @@ export function createMongoTransferWriter(raw, writeMode = 'insert') {
             await db.dropCollection(name).catch(() => false);
         },
         // truncate 模式前置清空：deleteMany({}) 全集合删除（mongo 无 TRUNCATE 等价物）
-        beforeLoad: async (t) => {
-            await db.collection(t.name).deleteMany({});
+        beforeLoad: async (name) => {
+            await db.collection(name).deleteMany({});
         },
         createTable: async (t) => {
             // $jsonSchema 承载结构与字段属性：required = 非 nullable 列；NULL 语义 = 字段缺失

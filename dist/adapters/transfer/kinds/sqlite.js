@@ -101,6 +101,70 @@ export function createSqliteTransferReader(db) {
             return raw.map((r) => String(r.name));
         },
         describe,
+        // 结构随迁：二级索引（仅 origin='c' 的 CREATE INDEX；主键/唯一约束的自动索引
+        // origin='u'/'pk' 不进清单；partial 索引不随迁）
+        describeIndexes: async (table) => {
+            const tbl = assertIdent(table, 'table name');
+            const list = db
+                .prepare(`PRAGMA index_list(${quoteIdent(tbl)})`)
+                .all();
+            const out = [];
+            for (const r of list) {
+                if (String(r.origin ?? '') !== 'c')
+                    continue;
+                if (Number(r.partial ?? 0) !== 0)
+                    continue;
+                const name = String(r.name ?? '');
+                if (name === '')
+                    continue;
+                const cols = db
+                    .prepare(`PRAGMA index_info(${quoteIdent(name)})`)
+                    .all();
+                const columns = [];
+                let hasExpr = false;
+                for (const c of cols.slice().sort((a, b) => Number(a.seqno ?? 0) - Number(b.seqno ?? 0))) {
+                    const col = c.name == null ? null : String(c.name);
+                    if (col === null) {
+                        hasExpr = true; // 表达式索引成分
+                        break;
+                    }
+                    columns.push(col);
+                }
+                if (hasExpr || columns.length === 0)
+                    continue;
+                out.push({ name, columns, unique: Number(r.unique ?? 0) === 1, sourceType: 'btree' });
+            }
+            return out;
+        },
+        // 结构随迁：出向外键（PRAGMA foreign_key_list；复合外键按 id 分组，from/to 对齐）
+        describeForeignKeys: async (table) => {
+            const tbl = assertIdent(table, 'table name');
+            const rows = db
+                .prepare(`PRAGMA foreign_key_list(${quoteIdent(tbl)})`)
+                .all();
+            const byId = new Map();
+            for (const r of rows) {
+                const id = String(r.id ?? '');
+                let fk = byId.get(id);
+                if (fk === undefined) {
+                    fk = {
+                        // SQLite 外键约束无名：以「表名_fkn」形态命名（目标端 ALTER 不可用，
+                        // 该名仅供建表内联时占位与去重展示）
+                        name: `${tbl}_fk${id}`,
+                        columns: [],
+                        referencedTable: String(r.table ?? ''),
+                        referencedColumns: [],
+                        onDelete: r.on_delete == null || String(r.on_delete) === 'NO ACTION' ? undefined : String(r.on_delete),
+                        onUpdate: r.on_update == null || String(r.on_update) === 'NO ACTION' ? undefined : String(r.on_update),
+                    };
+                    byId.set(id, fk);
+                }
+                fk.columns.push(String(r.from ?? ''));
+                // 'to' 为 NULL 表示引用被引用表的隐式主键：置空串，内联 DDL 省略列清单
+                fk.referencedColumns.push(r.to == null ? '' : String(r.to));
+            }
+            return [...byId.values()].filter((fk) => fk.referencedTable !== '' && fk.columns.every((c) => c !== ''));
+        },
         count: async (table) => {
             const r = db.prepare(`SELECT COUNT(*) AS n FROM ${quoteIdent(assertIdent(table, 'table name'))}`).get();
             return Number(r?.n ?? 0);
@@ -176,11 +240,32 @@ export function createSqliteTransferWriter(db, writeMode = 'insert') {
         dropTable: async (name) => {
             db.exec(`DROP TABLE ${quoteIdent(assertIdent(name, 'table name'))}`);
         },
-        // truncate 模式前置清空：SQLite 官方无 TRUNCATE 语句，DELETE FROM 即全表清空
-        beforeLoad: async (table) => {
-            db.exec(`DELETE FROM ${quoteIdent(table.name)}`);
+        // 循环外键表组整组删除：SQLite 官方批量重建流程——PRAGMA foreign_keys=OFF 期间
+        // 删除/装载不被外键拦截（https://sqlite.org/lang_altertable.html 步骤一：
+        // "If foreign key constraints are enabled, disable them using PRAGMA foreign_keys=OFF"；
+        // 该 PRAGMA 必须在事务外设置，事务内为 no-op，本写端语句均自动提交无悬挂事务）。
+        // 结束前按打开时的原值复位：node:sqlite 的 enableForeignKeyConstraints 默认 true
+        //（实测新连接 PRAGMA foreign_keys=1）、better-sqlite3 默认不启用——回读原值，
+        // 不把 OFF 会话误置成 ON、也不把 ON 会话误置成 OFF
+        dropTables: async (names) => {
+            const before = Number(db.prepare('PRAGMA foreign_keys').get()?.foreign_keys ?? 0);
+            db.exec('PRAGMA foreign_keys = OFF');
+            try {
+                for (const n of names) {
+                    db.exec(`DROP TABLE ${quoteIdent(assertIdent(n, 'table name'))}`);
+                }
+            }
+            finally {
+                db.exec(`PRAGMA foreign_keys = ${before === 0 ? 'OFF' : 'ON'}`);
+            }
         },
-        createTable: async (table) => {
+        // truncate 模式前置清空：SQLite 官方无 TRUNCATE 语句，DELETE FROM 即全表清空
+        beforeLoad: async (name) => {
+            db.exec(`DELETE FROM ${quoteIdent(assertIdent(name, 'table name'))}`);
+        },
+        // 建表：结构随迁时内联源端外键定义（SQLite 无 ALTER TABLE ADD CONSTRAINT，
+        // 外键只能在 CREATE TABLE 声明；被引用列清单为空 = 引用隐式主键，省略列清单）
+        createTable: async (table, foreignKeys) => {
             const defs = table.columns.map((c) => {
                 let d = `${quoteIdent(c.name)} ${SQLITE_TYPE_BY_MID[c.midType]}`;
                 if (!c.nullable)
@@ -195,7 +280,72 @@ export function createSqliteTransferWriter(db, writeMode = 'insert') {
             // 主键用表级约束（支持复合主键；内联每列 PK 会在复合主键时报 Multiple primary key）
             const pkCols = table.columns.filter((c) => c.primaryKey).map((c) => quoteIdent(c.name));
             const pk = pkCols.length > 0 ? `, PRIMARY KEY (${pkCols.join(', ')})` : '';
-            db.exec(`CREATE TABLE ${quoteIdent(table.name)} (${defs.join(', ')}${pk})`);
+            const fks = (foreignKeys ?? [])
+                .filter((fk) => fk.referencedTable !== '')
+                .map((fk) => {
+                const cols = fk.columns.map((c) => quoteIdent(c)).join(', ');
+                const refs = fk.referencedColumns.every((c) => c === '')
+                    ? ''
+                    : ` (${fk.referencedColumns.map((c) => quoteIdent(c)).join(', ')})`;
+                let sql = `, FOREIGN KEY (${cols}) REFERENCES ${quoteIdent(fk.referencedTable)}${refs}`;
+                if (fk.onDelete != null && fk.onDelete !== 'NO ACTION')
+                    sql += ` ON DELETE ${fk.onDelete}`;
+                if (fk.onUpdate != null && fk.onUpdate !== 'NO ACTION')
+                    sql += ` ON UPDATE ${fk.onUpdate}`;
+                return sql;
+            })
+                .join('');
+            db.exec(`CREATE TABLE ${quoteIdent(table.name)} (${defs.join(', ')}${pk}${fks})`);
+        },
+        // 结构随迁：数据装载完成后建索引（先装数据后建索引为官方批量装载实践）
+        createIndex: async (table, index) => {
+            const unique = index.unique ? 'UNIQUE ' : '';
+            const cols = index.columns.map((c) => quoteIdent(assertIdent(c, 'index column')));
+            await db.exec(`CREATE ${unique}INDEX ${quoteIdent(assertIdent(index.name, 'index name'))} ON ${quoteIdent(assertIdent(table, 'table name'))} (${cols.join(', ')})`);
+        },
+        // 结构随迁：目标端已有索引名清单（统一「表名.索引名」形态，与 mysql/sqlserver 一致，
+        // 编排层同名去重用；sqlite 索引名全局唯一但保持同一键格式）
+        listIndexes: async () => {
+            const rows = db
+                .prepare(`SELECT tbl_name, name FROM sqlite_master WHERE type = 'index' AND name IS NOT NULL`)
+                .all();
+            return rows
+                .map((r) => (r.tbl_name == null || r.name == null ? '' : `${String(r.tbl_name)}.${String(r.name)}`))
+                .filter((n) => n !== '');
+        },
+        // 目标端外键依赖边：PRAGMA foreign_key_list 官方接口（table 列为被引用表名）；
+        // 编排层据此做删除/清空/装载依赖排序（连接默认不开外键时排序同样成立——
+        // 外键约束一旦存在，排序就是唯一不依赖会话开关的官方做法）；列清单供结构随迁去重
+        // （SQLite 外键无名，按列对匹配）
+        listForeignKeys: async () => {
+            const edges = [];
+            const tables = db
+                .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
+                .all();
+            for (const t of tables) {
+                const name = String(t.name ?? '');
+                if (name === '')
+                    continue;
+                const fks = db
+                    .prepare(`PRAGMA foreign_key_list(${quoteIdent(assertIdent(name, 'table name'))})`)
+                    .all();
+                const byId = new Map();
+                for (const fk of fks) {
+                    const id = String(fk.id ?? '');
+                    const ref = fk.table == null ? '' : String(fk.table);
+                    if (ref === '')
+                        continue;
+                    let edge = byId.get(id);
+                    if (edge === undefined) {
+                        edge = { table: name, referencedTable: ref, columns: [], referencedColumns: [] };
+                        byId.set(id, edge);
+                    }
+                    edge.columns.push(String(fk.from ?? ''));
+                    edge.referencedColumns.push(fk.to == null ? '' : String(fk.to));
+                }
+                edges.push(...byId.values());
+            }
+            return edges;
         },
         writeBatch: async (table, rows) => {
             if (rows.length === 0)

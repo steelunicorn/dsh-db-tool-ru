@@ -392,7 +392,7 @@ export class ConnectionStore {
                     try {
                         this.remove(rec.id);
                     }
-                    catch { /* 尽力而为 */ }
+                    catch { /* best effort */ }
                     throw secErr;
                 }
                 result.imported += 1;

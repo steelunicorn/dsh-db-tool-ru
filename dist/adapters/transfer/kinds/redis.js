@@ -267,9 +267,9 @@ export function createRedisTransferWriter(raw, writeMode = 'insert') {
             await clear(name, true);
             wroteAny.delete(name);
         },
-        beforeLoad: async (table) => {
-            await clear(table.name, false);
-            wroteAny.delete(table.name);
+        beforeLoad: async (name) => {
+            await clear(name, false);
+            wroteAny.delete(name);
         },
         createTable: async (table) => {
             await raw.sendCommand(['SET', markerOf(table.name), '1']);

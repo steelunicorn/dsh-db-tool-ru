@@ -433,7 +433,7 @@ export class ConnectionStore {
           if (sec !== undefined) this.secrets.set(rec.id, sec);
         } catch (secErr) {
           // 写回机密失败：连接行已落盘，回滚避免「errors 里却已存在」的半导入门状态
-          try { this.remove(rec.id); } catch { /* 尽力而为 */ }
+          try { this.remove(rec.id); } catch { /* best effort */ }
           throw secErr;
         }
         result.imported += 1;
