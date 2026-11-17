@@ -163,7 +163,7 @@ function toMeta(rec, hasPassword = false) {
     if (hasPassword)
         meta.hasPassword = true;
     if (rec.fields) {
-        const { host, port, user, database, tlsMinVersion, encrypt, trustServerCertificate, serverName, caCert } = rec.fields;
+        const { host, port, user, database, tlsMinVersion, encrypt, trustServerCertificate, serverName, caCert, serviceType, ociLibDir } = rec.fields;
         if (typeof host === 'string')
             meta.host = host;
         if (typeof port === 'number')
@@ -183,6 +183,11 @@ function toMeta(rec, hasPassword = false) {
             meta.serverName = serverName;
         if (typeof caCert === 'string')
             meta.caCert = caCert;
+        // Oracle 服务名/SID 与 OCI 库目录（编辑回填用；serviceType 仅 'service'/'sid' 合法）
+        if (serviceType === 'service' || serviceType === 'sid')
+            meta.serviceType = serviceType;
+        if (typeof ociLibDir === 'string')
+            meta.ociLibDir = ociLibDir;
     }
     return meta;
 }

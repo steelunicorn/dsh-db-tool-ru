@@ -97,17 +97,17 @@ describe('resolveOracleConn：SID 模式（对齐 Navicat）', () => {
 
   it('fields：SID 含描述符破坏字符（括号）→ fail-closed', () => {
     expect(() => resolveOracleConn(fieldsConn('a', { host: 'db', user: 'u', database: 'X)ORCL', serviceType: 'sid' })))
-      .toThrow('SID 取值非法');
+      .toThrow('SID is invalid');
   });
 
   it('fields：SID 模式主机名含括号（IPv6 等）→ fail-closed 并引导服务名模式', () => {
     expect(() => resolveOracleConn(fieldsConn('a', { host: '[::1]', user: 'u', database: 'XE', serviceType: 'sid' })))
-      .toThrow('主机名');
+      .toThrow('has an invalid host');
   });
 
   it('fields：serviceType 非法取值 → fail-closed', () => {
     expect(() => resolveOracleConn(fieldsConn('a', { host: 'db', user: 'u', database: 'XE', serviceType: 'foo' })))
-      .toThrow('serviceType 取值非法');
+      .toThrow('has an invalid serviceType');
   });
 
   it('assertOraSid：合法 SID 原样返回', () => {
@@ -131,10 +131,41 @@ describe('resolveOracleConn：ociLibDir（Thick/OCI 模式入口）', () => {
   });
 
   it('URL：?serviceType=foo → fail-closed；缺 query → 行为不变', () => {
-    expect(() => resolveOracleConn(mkConn('a', { url: 'oracle://u:p@db:1521/XE?serviceType=foo' }))).toThrow('serviceType 取值非法');
+    expect(() => resolveOracleConn(mkConn('a', { url: 'oracle://u:p@db:1521/XE?serviceType=foo' }))).toThrow('has an invalid serviceType');
     const r = resolveOracleConn(mkConn('a', { url: 'oracle://u:p@db:1521/ORCLPDB1' }));
     expect(r.connectString).toBe('db:1521/ORCLPDB1');
     expect(r.serviceType).toBe('service');
+  });
+
+  it('fields：包裹引号剥离（Windows 复制文件地址给出带引号路径）', () => {
+    const r = resolveOracleConn(fieldsConn('a', { host: 'db', user: 'u', database: 'ORCL', ociLibDir: '"C:\\oracle\\instantclient_19_19"' }));
+    expect(r.ociLibDir).toBe('C:\\oracle\\instantclient_19_19');
+  });
+
+  it('fields：指向 oci.dll 文件路径 → 取所在目录（libDir 语义是目录）', () => {
+    const win = resolveOracleConn(fieldsConn('a', { host: 'db', user: 'u', database: 'ORCL', ociLibDir: 'C:\\oracle\\instantclient_19_19\\oci.dll' }));
+    expect(win.ociLibDir).toBe('C:\\oracle\\instantclient_19_19');
+    const posix = resolveOracleConn(fieldsConn('a', { host: 'db', user: 'u', database: 'ORCL', ociLibDir: '/opt/oracle/instantclient_19_19/libclntsh.so' }));
+    expect(posix.ociLibDir).toBe('/opt/oracle/instantclient_19_19');
+    const soname = resolveOracleConn(fieldsConn('a', { host: 'db', user: 'u', database: 'ORCL', ociLibDir: '/opt/ic/libclntsh.so.19.1' }));
+    expect(soname.ociLibDir).toBe('/opt/ic');
+  });
+
+  it('fields：引号 + 库文件组合（引号剥离后再取目录）；目录带点号扩展名误判不触发', () => {
+    const combo = resolveOracleConn(fieldsConn('a', { host: 'db', user: 'u', database: 'ORCL', ociLibDir: ' "C:\\ic\\oci.dll" ' }));
+    expect(combo.ociLibDir).toBe('C:\\ic');
+    const dotted = resolveOracleConn(fieldsConn('a', { host: 'db', user: 'u', database: 'ORCL', ociLibDir: '/opt/ic.19.3' }));
+    expect(dotted.ociLibDir).toBe('/opt/ic.19.3');
+  });
+
+  it('fields：裸 oci.dll 文件名（无法定位目录）原样保留交给驱动报 DPI-1047', () => {
+    const r = resolveOracleConn(fieldsConn('a', { host: 'db', user: 'u', database: 'ORCL', ociLibDir: 'oci.dll' }));
+    expect(r.ociLibDir).toBe('oci.dll');
+  });
+
+  it('URL：?ociLibDir= 带引号/库文件路径与 fields 同口径', () => {
+    const r = resolveOracleConn(mkConn('a', { url: 'oracle://u:p@db:1521/XE?ociLibDir=%22C%3A%5Coracle%5Cic%5Coci.dll%22' }));
+    expect(r.ociLibDir).toBe('C:\\oracle\\ic');
   });
 });
 
@@ -149,7 +180,7 @@ describe('ensureOracleClient：进程级守卫（thick 一次性、不可逆）'
 
   it('不同 libDir 再启用 → 拒绝且不再触碰驱动（NJS-090 语义的可操作版）', () => {
     ensureOracleClient('/opt/ic');
-    expect(() => ensureOracleClient('/other/ic')).toThrow('不同的 OCI 库路径');
+    expect(() => ensureOracleClient('/other/ic')).toThrow('with a different OCI library path');
     expect(initClientMock).toHaveBeenCalledTimes(1);
   });
 
@@ -157,7 +188,7 @@ describe('ensureOracleClient：进程级守卫（thick 一次性、不可逆）'
     const a = await createOracleAdapter(mkConn('thin-a', { fields: { host: 'db', user: 'u', database: 'ORCL' } }));
     await a.close();
     expect(createPoolMock).toHaveBeenCalledTimes(1);
-    expect(() => ensureOracleClient('/opt/ic')).toThrow('已创建过 Thin 模式连接');
+    expect(() => ensureOracleClient('/opt/ic')).toThrow('has already created a Thin mode connection');
     expect(initClientMock).not.toHaveBeenCalled();
   });
 
@@ -165,7 +196,7 @@ describe('ensureOracleClient：进程级守卫（thick 一次性、不可逆）'
     createPoolMock.mockRejectedValueOnce(new Error('ORA-01017: invalid username/password'));
     await expect(createOracleAdapter(mkConn('thin-b', { fields: { host: 'db', user: 'u', database: 'ORCL' } })))
       .rejects.toThrow();
-    expect(() => ensureOracleClient('/opt/ic')).toThrow('已创建过 Thin 模式连接');
+    expect(() => ensureOracleClient('/opt/ic')).toThrow('has already created a Thin mode connection');
   });
 
   it('thick 路径不设置 thin 标记：thick 池建完仍允许同路径幂等', async () => {

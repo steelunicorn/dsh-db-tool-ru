@@ -22,6 +22,7 @@
  *  - 标识符默认大写存储：listTables/describeTable 内部统一 toUpperCase 匹配。
  *  - 锁号/密码验证器等常见连接错误转人类可读提示（见 ORA_HINTS）。
  */
+import * as path from 'node:path';
 import oracledb from 'oracledb';
 import { sqlHead, SQL_READ_HEADS } from '../../guard/index.js';
 import { validPort } from '../sql-shared/common.js';
@@ -143,12 +144,40 @@ function optStr(v: unknown): string | undefined {
   return s === '' ? undefined : s;
 }
 
+/**
+ * OCI 库路径归一化（纯字符串处理，不碰文件系统）：
+ *  - 去掉成对包裹引号：Windows 资源管理器「复制文件地址」给出 `"C:\instantclient_19_19"`，
+ *    带引号路径传给 initOracleClient 会 DPI-1047；
+ *  - 指向库文件（oci.dll / libclntsh.so 等）时改取其所在目录：initOracleClient 的
+ *    libDir 语义是目录，直接粘 oci.dll 文件路径是常见误解。
+ * 纯串判定文件：文件名以 .dll/.dylib 结尾或形如 *.so(.N)（版本化 soname），含 `\` 用 win32 规则解析、否则 posix。
+ */
+export function normalizeOciLibDir(raw: string): string {
+  let s = raw.trim();
+  const head = s[0] ?? '';
+  const q = s.length >= 2 && (head === '"' || head === "'") && s.endsWith(head) ? head : '';
+  if (q !== '') s = s.slice(1, -1).trim();
+  if (s === '') return raw.trim();
+  const p = s.includes('\\') ? path.win32 : path.posix;
+  const base = p.basename(s).toLowerCase();
+  const isLibFile = base.endsWith('.dll') || base.endsWith('.dylib') || /\.so(\.\d+)*$/.test(base);
+  if (!isLibFile) return s;
+  const dir = p.dirname(s);
+  return dir === '' || dir === '.' ? s : dir;
+}
+
+/** OCI 库路径入口：optStr 之后过 normalizeOciLibDir（fields 与 URL 同口径） */
+function ociLibDirOf(v: unknown): string | undefined {
+  const s = optStr(v);
+  return s === undefined ? undefined : normalizeOciLibDir(s);
+}
+
 /** SID 校验（fail-closed）：SID 会被拼进 TNS 描述符 CONNECT_DATA=(SID=…)，
  *  `()` `=` 引号与空白会破坏描述符结构，白名单字符集覆盖合法 SID（字母/数字/_ $ # -）。
  *  服务名走 EZConnect 拼接不受此限（现状行为不变）。 */
 export function assertOraSid(sid: string): string {
   if (!/^[A-Za-z0-9_$#-]{1,64}$/.test(sid)) {
-    throw new Error(`Oracle 连接的 SID 取值非法：「${sid}」（应为 1-64 位字母/数字/_/$/#/-，不含空白与括号；老实例的 SID 形如 XE/ORCL）`);
+    throw new Error(`Oracle connection SID is invalid: "${sid}" (1-64 characters of letters/digits/_/$/#/-; no whitespace or parentheses; old instances use SIDs like XE/ORCL)`);
   }
   return sid;
 }
@@ -157,7 +186,7 @@ export function assertOraSid(sid: string): string {
  *  host 仅允许主机名/IP 常规字符（IPv6 字面量含 []，描述符里不合法，报错引导改用服务名模式）。 */
 function sidConnectString(host: string, port: number, sid: string): string {
   if (!/^[A-Za-z0-9._-]+$/.test(host)) {
-    throw new Error(`Oracle SID 连接的主机名「${host}」非法（SID 模式下主机仅支持 主机名/IPv4/域名；IPv6 请使用服务名模式或完整 TNS 描述符 URL）`);
+    throw new Error(`Oracle SID connection has an invalid host: "${host}" (in SID mode the host supports only hostname/IPv4/domain; for IPv6 use the service-name mode or a full TNS descriptor URL)`);
   }
   return `(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=${host})(PORT=${port}))(CONNECT_DATA=(SID=${sid})))`;
 }
@@ -166,7 +195,8 @@ function sidConnectString(host: string, port: number, sid: string): string {
 function parseServiceType(v: unknown, source: string): OraServiceType {
   if (v === undefined || v === null || v === '') return 'service';
   if (v === 'service' || v === 'sid') return v;
-  throw new Error(`Oracle 连接${source}的 serviceType 取值非法：${JSON.stringify(String(v))}（可选 service/sid，缺省 service）`);
+  const where = source ? ` (${source})` : '';
+  throw new Error(`Oracle connection${where} has an invalid serviceType: ${JSON.stringify(String(v))} (allowed: service/sid; default: service)`);
 }
 
 /** 连接参数解析：url（oracle://user:pass@host:1521/service[?serviceType=sid&ociLibDir=…]）或 fields */
@@ -183,7 +213,7 @@ export function resolveOracleConn(conn: ResolvedConnection): ResolvedOraConn {
     }
     const port = u.port ? validPort(u.port, 1521, 'oracle') : 1521;
     const serviceType = parseServiceType(u.searchParams.get('serviceType'), 'URL');
-    const ociLibDir = optStr(u.searchParams.get('ociLibDir'));
+    const ociLibDir = ociLibDirOf(u.searchParams.get('ociLibDir'));
     const host = u.hostname;
     const ident = serviceType === 'sid' ? assertOraSid(service) : service;
     return {
@@ -211,7 +241,7 @@ export function resolveOracleConn(conn: ResolvedConnection): ResolvedOraConn {
   }
   const serviceType = parseServiceType(f.serviceType, '');
   const ident = serviceType === 'sid' ? assertOraSid(service.trim()) : service;
-  const ociLibDir = optStr(f.ociLibDir);
+  const ociLibDir = ociLibDirOf(f.ociLibDir);
   return {
     user,
     password: typeof f.password === 'string' ? f.password : '',
@@ -249,10 +279,10 @@ export function resetOraClientStateForTest(): void {
 export function ensureOracleClient(libDir: string, driver: OraClientDriverLike = oracledb): void {
   if (oraClientState.thickLibDir !== null) {
     if (libDir === oraClientState.thickLibDir) return;
-    throw new Error(`Oracle Thick（OCI）模式已启用且使用了不同的 OCI 库路径（已启用：${oraClientState.thickLibDir === '' ? '默认搜索路径' : oraClientState.thickLibDir}）；同一进程只能启用一次，请改用一致的路径或重启宿主`);
+    throw new Error(`Oracle Thick (OCI) mode is already enabled with a different OCI library path (enabled: ${oraClientState.thickLibDir === '' ? 'default search path' : oraClientState.thickLibDir}); it can be enabled only once per process — use the same path or restart the host`);
   }
   if (oraClientState.thinPoolCreated) {
-    throw new Error('当前进程已创建过 Thin 模式连接，无法再启用 Thick（OCI）模式（驱动限制 NJS-118）；请重启宿主后，在建立其它 Oracle 连接前先使用带 OCI 库路径的连接');
+    throw new Error('This process has already created a Thin mode connection, so Thick (OCI) mode can no longer be enabled (driver limitation NJS-118); restart the host and use the connection with an OCI library path before any other Oracle connection');
   }
   try {
     driver.initOracleClient({ libDir });
