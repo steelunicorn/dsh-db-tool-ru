@@ -159,6 +159,17 @@ git ls-remote --tags origin | grep "v<版本>"
 
 标签与资产就绪后再在本机升级 profile 内的插件包。
 
+**市场条目的归档用固定名**：`awesome-dsh-plugin` 列表的 tarball 指向 `…/releases/latest/download/dsh-db-tool-ru.tgz`，所以每个新版本的 Release 都必须同时带一个固定名归档——`latest` 只解析到最新一版，缺了这个资产的版本会让市场卡片立刻变 404。目前工作流只上传带版本号的归档；想让它顺带传固定名副本，需要 token 具备 `workflow` 权限（当前 `gh` token 只有 `gist` / `read:org` / `repo`），暂时手工补：
+
+```bash
+curl.exe -sSL -o .rel-tmp/dsh-db-tool-ru.tgz \
+  "https://github.com/steelunicorn/dsh-db-tool-ru/releases/download/v<版本>/dsh-db-tool-ru-<版本>.tgz"
+gh release upload v<版本> .rel-tmp/dsh-db-tool-ru.tgz \
+  --repo steelunicorn/dsh-db-tool-ru --clobber
+```
+
+另注：本仓库里 `gh release view` / `download` / `edit` 会报 `release not found`，读发布信息用 `gh api repos/steelunicorn/dsh-db-tool-ru/releases/tags/v<版本>`，上传时显式带 `--repo`。
+
 ### 发布内容
 
 `package.json` 的 `files` 白名单决定发布内容。**元数据文件必须逐条显式列出**（`LICENSE`、`README.md`、`README_EN.md`、`README.zh.md`、`CHANGELOG.md`、`CONTRIBUTORS.md`、`docs/...`），不依赖 npm 默认收录；目录会连 `.gitignore` 的草稿一起发布，所以路由类路径写精确文件而非目录。
