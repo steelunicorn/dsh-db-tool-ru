@@ -63,7 +63,7 @@ function migrateLegacyDir(target: string, legacy: string): void {
 export { normalizeProjectKey } from './normalize.js';
 export { mergeUrlCredentials, redactUrl, DuplicateConnectionError } from './connections.js';
 export { encryptPayload, decryptPayload, DECRYPT_FAIL_MESSAGE } from './export-crypto.js';
-export type { DangerLevel, AuditEntry, AuditEntryInput } from './audit.js';
+export type { DangerLevel, AuditEntry, AuditEntryInput, AuditFileMeta } from './audit.js';
 export type {
   ConnectionCreateInput,
   ConnectionUpdateInput,

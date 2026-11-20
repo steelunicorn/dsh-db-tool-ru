@@ -38,34 +38,33 @@ import {
   DECRYPT_FAIL_MESSAGE,
   DEFAULT_TRANSFER_CONFIG,
   type AuditEntry,
+  type AuditFileMeta,
   type DangerLevel,
   type TransferConfig,
 } from './store/index.js';
 import { runScriptInChild } from './script/runner.js';
 import { decryptPayload, encryptPayload } from './store/export-crypto.js';
 import { startTransferTask, type TransferSnapshot, type TransferTask } from './transfer.js';
+import { DbToolError, type DbToolErrorCode } from './errors.js';
+import {
+  DEFAULT_FILE_IO,
+  normalizeExportFormat,
+  normalizeFileIoOptions,
+  preflightWrite,
+  readProjectFile,
+  scalarOf,
+  toCsv,
+  toJson,
+  writeProjectFile,
+  type ExportFormat,
+  type FileIoOptions,
+} from './fileio.js';
 
 /* ---------------- 错误与结果类型 ---------------- */
 
-/** 携带机器可读 code 的业务错误（HTTP 层直接映射 {ok:false,error,code}） */
-export class DbToolError extends Error {
-  constructor(
-    readonly code:
-      | 'UNAUTHORIZED_PROJECT'
-      | 'READ_ONLY'
-      | 'DATABASE_NOT_GRANTED'
-      | 'NEEDS_CONFIRMATION'
-      | 'INVALID_CHALLENGE'
-      | 'NOT_FOUND'
-      | 'INVALID_ARGUMENT'
-      | 'DRIVER_ERROR'
-      | 'SCRIPT_TIMEOUT',
-    message: string,
-  ) {
-    super(message);
-    this.name = 'DbToolError';
-  }
-}
+// 错误类本体在 lib/errors.ts（fileio 也要抛同类错误，避免循环导入）；此处保持导出兼容。
+export { DbToolError };
+export type { DbToolErrorCode };
 
 /** 危险操作待确认（HTTP → {ok:false, code:'NEEDS_CONFIRMATION', ...}） */
 export interface NeedConfirm {
@@ -74,6 +73,104 @@ export interface NeedConfirm {
   statement: string;
   danger: 'danger';
   reason: string;
+}
+
+/** export_to_file 的入参（已由工具层归一） */
+export interface ExportFileInput {
+  path: string;
+  format?: ExportFormat;
+  params?: unknown[];
+  challengeId?: string;
+  database?: string;
+  overwrite?: boolean;
+  createDirs?: boolean;
+  allowEmpty?: boolean;
+}
+
+/** export_to_file 的结果：path 为相对项目目录的路径，md5/bytes 针对实际写入的字节 */
+export interface ExportFileResult {
+  path: string;
+  bytes: number;
+  md5: string;
+  rows: number;
+  format: ExportFormat;
+}
+
+/**
+ * execute_file 的入参。
+ * searchPath：仅在需要时显式给出（PostgreSQL 系）——文件内容原样下发，search_path 由会话前置。
+ * 迁移老库（dbo.* + sys.citext 之类）时，函数体里的非限定类型名要靠它才能解析。
+ */
+export interface ExecuteFileInput {
+  path: string;
+  params?: unknown[];
+  database?: string;
+  challengeId?: string;
+  searchPath?: string;
+}
+
+/** execute_file 的结果：commandtag 仅在适配器提供真实回执时出现（PostgreSQL 系） */
+export interface ExecuteFileResult {
+  path: string;
+  bytes: number;
+  md5: string;
+  commandtag?: string;
+}
+
+/**
+ * 审计覆盖：文件交换时语句可能很大（函数体 50–150 KB），审计只留 200 字符前缀，
+ * 并把方向/路径/字节数/md5 落进独立字段（见 AuditFileMeta）。
+ */
+interface AuditOverride {
+  statement?: string;
+  file?: AuditFileMeta;
+}
+
+/** 审计里保留的语句前缀长度（与 run_script 的 auditStmt 一致） */
+const AUDIT_STMT_MAX = 200;
+
+/** 超长语句 → 审计用前缀（不参与执行，执行永远用全文） */
+function auditPrefix(text: string): string {
+  return text.length > AUDIT_STMT_MAX ? text.slice(0, AUDIT_STMT_MAX) + '…' : text;
+}
+
+/** search_path 里的单个名字：只允许普通标识符（引号/逗号/分号一律拒绝，避免拼接注入） */
+const SEARCH_PATH_NAME = /^[A-Za-z_][A-Za-z0-9_$]*$/;
+
+/**
+ * 归一化 execute_file 的 search_path：
+ *  - 逗号分隔，去空白，最多 16 个；
+ *  - 每段必须是普通标识符（不支持引号形式，也不支持 "$user" 之外的保留名）；
+ *  - 空串 → undefined（不下发 SET）。
+ */
+export function normalizeSearchPath(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const parts = value
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s !== '');
+  if (parts.length === 0) return undefined;
+  if (parts.length > 16) {
+    throw new DbToolError('INVALID_ARGUMENT', 'search_path accepts at most 16 names');
+  }
+  for (const part of parts) {
+    if (!SEARCH_PATH_NAME.test(part)) {
+      throw new DbToolError(
+        'INVALID_ARGUMENT',
+        `search_path accepts plain identifiers only (got "${part}"); quote-wrapped names are not supported`,
+      );
+    }
+  }
+  // 去重（大小写不敏感，保留首次出现的写法）
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const part of parts) {
+    const key = part.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(part);
+  }
+  return out.join(', ');
 }
 
 /**
@@ -115,6 +212,10 @@ export interface DbToolServiceOptions {
   challenges?: ChallengeStore;
   /** 控制台事务会话参数：空闲 TTL（默认 5 分钟）与回收扫描周期（默认 30s，0 禁用定时器） */
   consoleTx?: { ttlMs?: number; sweepIntervalMs?: number };
+  /** 文件交换限制（读写上限、扩展名白名单）；缺省见 DEFAULT_FILE_IO */
+  fileIo?: Partial<FileIoOptions>;
+  /** run_script 的 file.save 桥（默认关闭；开启后 vm 里多一个只能写项目内文件的 file 对象） */
+  scriptFileBridge?: boolean;
 }
 
 function assertNonEmpty(v: string | undefined, label: string): string {
@@ -176,12 +277,18 @@ export class DbToolService {
   private consoleSweepTimer: NodeJS.Timeout | undefined;
   readonly challenges: ChallengeStore;
   private readonly resolver: (kind: DbKind) => Promise<ServiceAdapterFactory>;
+  /** 文件交换限制（export_to_file / execute_file / file.save 共用） */
+  readonly fileIo: FileIoOptions;
+  /** run_script 的 file.save 桥开关 */
+  private readonly scriptFileBridge: boolean;
   private disposed = false;
 
   constructor(readonly store: DbToolStore, opts?: DbToolServiceOptions) {
     this.resolver = opts?.adapterResolver ?? getAdapter;
     this.challenges = opts?.challenges ?? new ChallengeStore();
     this.consoleTtlMs = opts?.consoleTx?.ttlMs ?? 5 * 60 * 1000;
+    this.fileIo = normalizeFileIoOptions(opts?.fileIo ?? DEFAULT_FILE_IO);
+    this.scriptFileBridge = opts?.scriptFileBridge === true;
     const sweep = opts?.consoleTx?.sweepIntervalMs ?? 30 * 1000;
     if (sweep > 0) {
       this.consoleSweepTimer = setInterval(() => this.consoleSweep(), sweep);
@@ -471,8 +578,9 @@ export class DbToolService {
     try {
       let hits: TableSearchHit[];
       if (adapter.searchTables) {
-        if (!database && allowed && allowed.length > 0) {
-          // 库白名单下不允许「不指定库」的全局搜索：逐授权库调用，避免泄漏未授权库的表
+        if (!database && allowed !== undefined) {
+          // 库白名单生效时不允许「不指定库」的全局搜索：逐授权库调用，避免泄漏未授权库的表；
+          // 空数组（一个库都没授权）时循环不执行，结果就是空列表
           hits = [];
           for (const db of allowed) {
             if (hits.length >= cap) break;
@@ -598,18 +706,149 @@ export class DbToolService {
     params?: unknown[],
     challengeId?: string,
     database?: string,
+    audit?: AuditOverride,
   ): Promise<ExecResult | NeedConfirm> {
-    const stmt = assertNonEmpty(statement, 'statement');
+    // 只做非空校验，执行用原文：文件→数据库方向要求字节级保真（见 execute_file），
+    // 这里的 trim 会让「行尾有意义的空白」被静默吞掉。
+    if (typeof statement !== 'string' || statement.trim() === '') {
+      throw new DbToolError('INVALID_ARGUMENT', 'Missing required parameter: statement');
+    }
     return this.runGuarded({
       projectPath,
       connId,
       op: 'execute',
-      statement: stmt,
+      statement,
       challengeId,
       database,
-      run: (adapter) => adapter.execute(stmt, params, database),
+      auditStatement: audit?.statement,
+      auditFile: audit?.file,
+      run: (adapter) => adapter.execute(statement, params, database),
       rowsAffected: (r) => r.affectedRows,
     });
+  }
+
+  /* -- 文件交换（export_to_file / execute_file / run_script 的 file.save 桥） -- */
+
+  /**
+   * export_to_file：查询结果写进项目内文件。
+   *  - 路径/目标文件先预检（不合格立刻失败，不为必然失败的写入白跑一次查询）；
+   *  - 查询走 query()，因此 guard、ro 限制、challenge、审计一个都不少；
+   *  - 写文件按 format 生成字节，md5 取自实际写入的 bytes（不是查询结果的内存表示）。
+   */
+  async exportToFile(
+    projectPath: string | undefined,
+    connId: string,
+    sql: string,
+    input: ExportFileInput,
+  ): Promise<ExportFileResult | NeedConfirm> {
+    const format = normalizeExportFormat(input.format);
+    const relPath = assertNonEmpty(input.path, 'path');
+    preflightWrite(projectPath ?? '', relPath, {
+      overwrite: input.overwrite === true,
+      createDirs: input.createDirs === true,
+      options: this.fileIo,
+    });
+
+    const r = await this.query(projectPath, connId, sql, input.params, input.challengeId, input.database);
+    if (isNeedConfirm(r)) return r;
+
+    const allowEmpty = input.allowEmpty === true;
+    let payload: string;
+    if (format === 'text') payload = scalarOf(r.columns, r.rows, allowEmpty);
+    else if (format === 'csv') payload = toCsv(r.columns, r.rows);
+    else payload = toJson(r.rows);
+
+    const fileMeta = (path: string, bytes: number, md5: string): AuditFileMeta => ({ direction: 'export', path, bytes, md5 });
+    let written;
+    try {
+      written = writeProjectFile(projectPath ?? '', relPath, payload, {
+        overwrite: input.overwrite === true,
+        createDirs: input.createDirs === true,
+        options: this.fileIo,
+      });
+    } catch (e) {
+      this.audit(
+        normalizeProjectKey(projectPath ?? ''), connId, 'export_file',
+        `Export [${format}] to ${relPath} failed`, 'none', false, false, this.errText(e),
+        undefined, { direction: 'export', path: relPath, bytes: 0, md5: '' },
+      );
+      throw e instanceof DbToolError ? e : this.toDriverError(e);
+    }
+    this.audit(
+      normalizeProjectKey(projectPath ?? ''), connId, 'export_file',
+      `Export [${format}] to ${written.rel} (${written.bytes} bytes, md5 ${written.md5}, ${r.rows.length} row(s))`,
+      'none', false, true, undefined, r.rows.length, fileMeta(written.rel, written.bytes, written.md5),
+    );
+    return { path: written.rel, bytes: written.bytes, md5: written.md5, rows: r.rows.length, format };
+  }
+
+  /**
+   * execute_file：项目内文件 → 数据库。
+   * 文件内容原样交给 execute()（guard/challenge/审计不变），审计语句只留 200 字符前缀，
+   * 方向/路径/字节数/md5 落 file 字段。
+   */
+  async executeFile(
+    projectPath: string | undefined,
+    connId: string,
+    input: ExecuteFileInput,
+  ): Promise<ExecuteFileResult | NeedConfirm> {
+    const relPath = assertNonEmpty(input.path, 'path');
+    const file = readProjectFile(projectPath ?? '', relPath, this.fileIo);
+    if (file.text.trim() === '') {
+      throw new DbToolError('INVALID_ARGUMENT', `File is empty: ${file.rel}`);
+    }
+    const searchPath = normalizeSearchPath(input.searchPath);
+    if (searchPath !== undefined && input.params !== undefined && input.params.length > 0) {
+      // 多语句批次走简单查询协议，无法绑定参数：两者只能二选一
+      throw new DbToolError(
+        'INVALID_ARGUMENT',
+        'search_path cannot be combined with bound params: send the file without params, or set search_path on the connection',
+      );
+    }
+    const body =
+      searchPath === undefined
+        ? file.text
+        : // set_config(..., is_local=true) 在本批次的隐式事务里生效，事务结束即失效：
+          // 连接池里的会话不会被残留的 search_path 污染（否则后续 pg_get_functiondef 的
+          // 类型限定会跟着变，导出的 md5 也会漂移）。
+          `select pg_catalog.set_config('search_path', '${searchPath}', true);\n${file.text}`;
+    const res = await this.execute(projectPath, connId, body, input.params, input.challengeId, input.database, {
+      statement:
+        searchPath === undefined
+          ? auditPrefix(file.text)
+          : auditPrefix(`[search_path=${searchPath}] ${file.text}`),
+      file: { direction: 'import', path: file.rel, bytes: file.bytes, md5: file.md5 },
+    });
+    if (isNeedConfirm(res)) return res;
+    return {
+      path: file.rel,
+      bytes: file.bytes,
+      md5: file.md5,
+      ...(res.commandTag !== undefined ? { commandtag: res.commandTag } : {}),
+    };
+  }
+
+  /**
+   * run_script 的 file.save 桥：写盘的是父进程，子进程仍无 fs 权限。
+   * 覆盖写（脚本常重建同一份报告）；不建目录（项目内路径必须已存在，避免「静默造目录」）。
+   */
+  async saveScriptFile(
+    projectPath: string | undefined,
+    relPath: string,
+    text: unknown,
+  ): Promise<{ path: string; bytes: number; md5: string }> {
+    const written = writeProjectFile(projectPath ?? '', String(relPath ?? ''), String(text ?? ''), {
+      overwrite: true,
+      createDirs: false,
+      options: this.fileIo,
+    });
+    this.audit(
+      normalizeProjectKey(projectPath ?? ''), '', 'script_file_save',
+      `Script wrote ${written.rel} (${written.bytes} bytes, md5 ${written.md5})`,
+      'none', false, true, undefined, undefined,
+      { direction: 'save', path: written.rel, bytes: written.bytes, md5: written.md5 },
+    );
+    return { path: written.rel, bytes: written.bytes, md5: written.md5 };
   }
 
   /**
@@ -644,6 +883,10 @@ export class DbToolService {
           this.unwrapForScript(await this.query(key, connId, sql, params, challengeId, database)),
         dbExecute: async (statement, params, database) =>
           this.unwrapForScript(await this.execute(key, connId, statement, params, challengeId, database)),
+        // file.save 桥（配置开启时）：写盘在父进程，子进程依旧没有 fs 权限
+        fileSave: this.scriptFileBridge
+          ? (relPath, text) => this.saveScriptFile(projectPath, relPath, text)
+          : undefined,
         onLog: (level, text) =>
           level === 'error' ? console.error('[db-script]', text) : console.log('[db-script]', text),
         onTimeout: () => {
@@ -898,11 +1141,20 @@ export class DbToolService {
     return def === '' ? undefined : def;
   }
 
-  /** 库白名单校验：清单为空 = 不限；目标库不可判定时放行 */
+  /**
+   * 库白名单校验：字段缺省（undefined）= 不限；空数组 = 一个库都不允许；
+   * 目标库不可判定时放行（单文件库与未指定库的连接）。
+   */
   private assertDatabaseAllowed(allowed: string[] | undefined, connId: string, database?: string): void {
-    if (!allowed || allowed.length === 0) return;
+    if (allowed === undefined) return;
     const target = this.targetDatabaseName(connId, database);
     if (!target) return;
+    if (allowed.length === 0) {
+      throw new DbToolError(
+        'DATABASE_NOT_GRANTED',
+        `No database is granted for connection ${connId}: tick the required databases in the "Project grants" panel (changes are saved automatically)`,
+      );
+    }
     if (allowed.some((db) => db.toLowerCase() === target.toLowerCase())) return;
     throw new DbToolError(
       'DATABASE_NOT_GRANTED',
@@ -1373,10 +1625,15 @@ export class DbToolService {
     params?: unknown[];
     challengeId?: string;
     database?: string;
+    /** 审计里展示的语句（缺省用 statement；文件交换传前缀，见 AuditOverride） */
+    auditStatement?: string;
+    /** 文件交换元数据（方向/路径/字节数/md5） */
+    auditFile?: AuditFileMeta;
     run: (adapter: DatabaseAdapter) => Promise<T>;
     rowsAffected?: (r: T) => number | undefined;
   }): Promise<T | NeedConfirm> {
     const { projectPath, connId, op, statement, challengeId, database } = args;
+    const auditStatement = args.auditStatement ?? statement;
     if (args.params !== undefined && !Array.isArray(args.params)) {
       throw new DbToolError('INVALID_ARGUMENT', 'params must be an array (bound parameters)');
     }
@@ -1388,21 +1645,21 @@ export class DbToolService {
       const scope: ChallengeScope = { connId, projectKey: key };
       if (!challengeId) {
         const { id: cid } = this.challenges.create(statement, scope);
-        this.audit(key, connId, op, statement, 'danger', false, false, 'NEEDS_CONFIRMATION');
+        this.audit(key, connId, op, auditStatement, 'danger', false, false, 'NEEDS_CONFIRMATION', undefined, args.auditFile);
         return { needConfirmation: true, challengeId: cid, statement, danger: 'danger', reason: verdict.reason ?? 'Dangerous operation; user confirmation required' };
       }
       if (!this.challenges.consume(challengeId, statement, scope)) {
-        this.audit(key, connId, op, statement, 'danger', false, false, 'INVALID_CHALLENGE');
+        this.audit(key, connId, op, auditStatement, 'danger', false, false, 'INVALID_CHALLENGE', undefined, args.auditFile);
         throw new DbToolError('INVALID_CHALLENGE', 'Confirmation token is invalid (missing, already used, expired, or the statement changed); start over');
       }
     }
 
     try {
       const result = await args.run(adapter);
-      this.audit(key, connId, op, statement, verdict.level as DangerLevel, verdict.level === 'danger', true, undefined, args.rowsAffected?.(result));
+      this.audit(key, connId, op, auditStatement, verdict.level as DangerLevel, verdict.level === 'danger', true, undefined, args.rowsAffected?.(result), args.auditFile);
       return result;
     } catch (e) {
-      this.audit(key, connId, op, statement, verdict.level as DangerLevel, verdict.level === 'danger', false, this.errText(e));
+      this.audit(key, connId, op, auditStatement, verdict.level as DangerLevel, verdict.level === 'danger', false, this.errText(e), undefined, args.auditFile);
       throw this.toDriverError(e);
     }
   }
@@ -1426,12 +1683,14 @@ export class DbToolService {
     ok: boolean,
     error?: string,
     rowsAffected?: number,
+    file?: AuditFileMeta,
   ): void {
     try {
       this.store.audit.append({
         projectPathKey, connId, action, statement, danger, confirmed, ok,
         ...(error !== undefined ? { error } : {}),
         ...(rowsAffected !== undefined ? { rowsAffected } : {}),
+        ...(file !== undefined ? { file } : {}),
       });
     } catch {
       // 审计失败不阻塞业务（best-effort）
@@ -1460,11 +1719,16 @@ function filterTables(list: TableInfo[], keyword: string, database: string): Tab
     .map((t) => ({ database, name: t.name, type: t.type, comment: t.comment }));
 }
 
-/** 库白名单过滤（清单为空 = 不限；大小写不敏感） */
+/** 库白名单过滤（字段缺省 = 不限；空数组 = 一个库都不显示；大小写不敏感） */
 function filterDatabaseList(list: string[], allowed?: string[]): string[] {
-  if (!allowed || allowed.length === 0) return list;
+  if (allowed === undefined) return list;
   const set = new Set(allowed.map((db) => db.toLowerCase()));
   return list.filter((db) => set.has(db.toLowerCase()));
+}
+
+/** query/execute 结果二选一：危险待确认时按 NeedConfirm 收窄 */
+function isNeedConfirm<T>(r: T | NeedConfirm): r is NeedConfirm {
+  return !!r && typeof r === 'object' && (r as NeedConfirm).needConfirmation === true;
 }
 
 /** guard 判定（导出供 HTTP 层/script 入口识别） */
@@ -1487,6 +1751,16 @@ export interface ToolActionArgs {
   code?: string;
   challenge_id?: string;
   challengeId?: string;
+  /* 文件交换（export_to_file / execute_file） */
+  path?: string;
+  format?: string;
+  overwrite?: boolean;
+  create_dirs?: boolean;
+  createDirs?: boolean;
+  allow_empty?: boolean;
+  allowEmpty?: boolean;
+  search_path?: string;
+  searchPath?: string;
 }
 
 function pick(args: ToolActionArgs, snake: 'conn_id' | 'challenge_id'): string | undefined {
@@ -1543,8 +1817,33 @@ export async function handleToolAction(
         return ok(needConfirmText(r) ?? j(r));
       }
 
+      case 'export_to_file': {
+        const r = await service.exportToFile(projectPath, requireConn(connId), assertArg(args.sql, 'sql'), {
+          path: assertArg(args.path, 'path'),
+          format: args.format === undefined ? undefined : normalizeExportFormat(args.format),
+          params: args.params,
+          challengeId,
+          database: args.database,
+          overwrite: args.overwrite === true,
+          createDirs: args.create_dirs === true || args.createDirs === true,
+          allowEmpty: args.allow_empty === true || args.allowEmpty === true,
+        });
+        return ok(needConfirmText(r) ?? j(r));
+      }
+
+      case 'execute_file': {
+        const r = await service.executeFile(projectPath, requireConn(connId), {
+          path: assertArg(args.path, 'path'),
+          params: args.params,
+          database: args.database,
+          challengeId,
+          searchPath: typeof args.search_path === 'string' ? args.search_path : undefined,
+        });
+        return ok(needConfirmText(r) ?? j(r));
+      }
+
       default:
-        throw new DbToolError('INVALID_ARGUMENT', `Unknown action: ${action} (available: list_connections/query/execute/schema/preview/run_script)`);
+        throw new DbToolError('INVALID_ARGUMENT', `Unknown action: ${action} (available: list_connections/query/execute/schema/preview/run_script/export_to_file/execute_file)`);
     }
   } catch (e) {
     const code = e instanceof DbToolError ? e.code : 'DRIVER_ERROR';

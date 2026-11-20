@@ -45,8 +45,31 @@ One tool with several actions, reducing ambiguity in tool selection:
 | `schema` | Inspect database / table / column structure |
 | `preview` | Preview table data (paged, up to 50 rows per page) |
 | `run_script` | Run a script in the sandbox, calling `db.query` / `db.execute` repeatedly |
+| `export_to_file` | Write a query result to a file inside the project folder (text / JSON / CSV) |
+| `execute_file` | Execute a statement read from a file inside the project folder (guard, confirmation and audit as for `execute`) |
 
-`run_script` isolation boundary: a separate child process plus a `node:vm` sandbox, killed at 60 seconds, with only a restricted `db.{query,execute}` handle injected — no filesystem, no network, no `require`.
+`run_script` isolation boundary: a separate child process plus a `node:vm` sandbox, killed at 60 seconds, with only a restricted `db.{query,execute}` handle injected — no filesystem, no network, no `require`. With the plugin setting `scriptFileBridge` enabled the sandbox gains one extra method, `file.save(path, text)`: the host process performs the write under the same rules as `export_to_file`, so the script itself still has no filesystem access.
+
+### File exchange: results and function bodies
+
+`export_to_file` writes a query result straight to a file and `execute_file` reads a statement from a file, so the agent never re-types text through its own context: function bodies, view definitions and large exports move byte-for-byte.
+
+- The path is always relative; the project folder (also the grant key) is the root. Absolute paths, `..`, drive letters, NTFS streams, reserved device names (`CON`, `NUL`, …) and symbolic links are refused, so neither reads nor writes can leave the project folder.
+- `format=text` requires exactly one row and one column and writes the value as is — no newline normalization, no added trailing `\n`. A file produced from `pg_get_functiondef(...)` runs through `execute_file` unchanged.
+- `format=json` writes the rows array with two-space indentation and a trailing newline; `format=csv` writes a header of column names with RFC 4180 quoting, `,` separator and CRLF line endings. Files are always UTF-8 without BOM.
+- An empty result is `EMPTY_RESULT` (no rows, or `NULL` in text mode) unless `allow_empty` is passed. An existing file is not replaced without `overwrite`, and the parent folder is not created without `create_dirs`.
+- Default limits: read ≤ 8 MB, write ≤ 64 MB, extensions `.sql`, `.txt`, `.json`, `.csv`, `.tsv`, `.md`, `.log`; all configurable through the plugin settings (`fileIo`).
+- `execute_file` passes the whole content through, without trimming spaces or line endings: dangerous statements still return `NEEDS_CONFIRMATION` with a single-use `challenge_id`, and the audit records direction, path, size, `md5` and the first 200 characters of the text.
+- `search_path` (optional, PostgreSQL): a function body often names types and routines without a schema (`citext`, `varlist`), and `pg_get_functiondef` returns the text verbatim. Pass `search_path="sys, dbo, public"` and the plugin runs the file in one batch with `set_config('search_path', …, true)`, so the visibility path lasts for that run only and does not linger on the pooled session. It cannot be combined with `params` (a batch goes through the simple query protocol).
+
+Typical function-body transfer:
+
+```text
+export_to_file(conn_id="<source>", sql="select pg_get_functiondef(27896227) as d",
+               path="fn/pdt_income_storageobject_t.sql", create_dirs=true)
+edit the file in your editor
+execute_file(conn_id="<target>", path="fn/pdt_income_storageobject_t.sql")   → commandtag = CREATE FUNCTION
+```
 
 ### Project-scoped grants (ro / rw)
 
@@ -59,7 +82,7 @@ An unauthorized project is rejected for every connection. Changing a grant mode 
 
 On Windows, paths are normalized with NTFS semantics (case-insensitive), so `E:\GitHub\MyApp` and `e:\github\myapp` are the same project.
 
-**Database-level allowlist**: each grant may carry a `databases` field (the "Databases" field in the "Project grants" panel) that narrows the visible databases within that connection. Empty means every database of the connection is allowed; otherwise tick the names in an expandable checkbox list (with «Select all» / «Clear all») — exact names, compared case-insensitively, and ticking every database is stored as empty again. For PostgreSQL / GaussDB a target written as `db.schema` is judged by the `db` part; SQLite is exempt (its "database" is a file path).
+**Database-level allowlist**: each grant may carry a `databases` field (the "Databases" field in the "Project grants" panel) that narrows the visible databases within that connection. Ticks are saved immediately — there is no separate save button — and access opens only for the databases the user deliberately ticked: a freshly granted connection starts with an empty list, so no database is reachable until something is ticked. The field is absent only on grants created before it existed (and on programmatic grants without a list); such records still mean "every database", while an empty array `[]` means "no database". Names are matched case-insensitively; the panel offers an expandable checkbox list with a name filter and «Select all» / «Clear all» (the filter narrows only the visible list, while «select all» / «clear all» apply to the visible databases and the stored value still covers the full set). For PostgreSQL / GaussDB a target written as `db.schema` is judged by the `db` part; SQLite is exempt (its "database" is a file path).
 
 The allowlist is checked on `query`, `execute`, `schema`, `preview`, the console transaction session and both ends of a data transfer; a mismatch is rejected before any connection to that database is made. Listing databases (`databases`) returns only the allowed ones, and a global table-name search only covers allowed databases. The checkbox list in the grants panel is the exception: it is fed by an ungated listing (`GET /api/grant-databases`) that ignores the allowlist — otherwise a narrowed grant could not be widened again.
 

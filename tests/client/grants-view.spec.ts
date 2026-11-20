@@ -90,14 +90,59 @@ describe('库白名单选择器：折叠列表 + 勾选', () => {
 		expect(text).toContain('onClick: () => setAll(false)');
 	});
 
-	it('勾满全部库时保存为空数组（＝不限库），否则保存勾选的库名', () => {
-		expect(text).toContain('const payload = chosen.length === candidates.length ? [] : chosen;');
-		expect(text).toContain('databases: payload');
-		expect(text).toContain('if (chosen.length === 0) return;');
+	it('勾选即保存：防抖后 PUT 显式库清单，不再有「保存」按钮', () => {
+		expect(text).toContain('async function flush() {');
+		expect(text).toContain('body: { projectPath: props.projectPath, connId: g.connId, mode: g.mode, databases: next }');
+		expect(text).toContain('}, 250);');
+		expect(text).toContain('setSaveErr(String((e && e.message) || e));');
+		expect(text).not.toContain('grantDbSaveBtn');
+		expect(text).not.toContain('commit()');
+	});
+
+	it('空清单＝一个库都不允许（不再是「全部库」）', () => {
+		expect(text).toContain('const savedList = Array.isArray(g.databases) ? g.databases.map(String) : null;');
+		expect(text).toContain('schedule(on ? candidates.slice() : []);');
+		expect(text).toContain('t("grantDbNoneSelected")');
+		expect(text).toContain('t("grantDbEmptySel")');
+		expect(text).not.toContain('chosen.length === candidates.length ? [] : chosen');
 	});
 
 	it('sqlite 单文件库不显示库级限制', () => {
 		expect(text).toContain('(props.conn && props.conn.kind) === "sqlite"');
 		expect(text).toContain('t("grantDbSqlite")');
+	});
+});
+
+describe('库白名单选择器：按库名过滤', () => {
+	const picker = functionBody('GrantDbPicker');
+	const text = picker.join('\n');
+	const inputIdx = picker.findIndex((l) => l.includes('placeholder: t("grantDbFilter")'));
+	const typeIdx = picker.findIndex((l) => l.includes('type: "search"'));
+	const allIdx = picker.findIndex((l) => l.includes('onClick: () => setAll(true)'));
+
+	it('过滤框排在「全选/全不选」左侧，并带无障碍标签', () => {
+		expect(inputIdx).toBeGreaterThan(-1);
+		expect(typeIdx).toBeGreaterThan(-1);
+		expect(allIdx).toBeGreaterThan(-1);
+		expect(typeIdx).toBeLessThan(allIdx);
+		expect(picker[typeIdx + 1]).toContain('className: "dbt-dbfilter"');
+		expect(text).toContain('"aria-label": t("grantDbFilter")');
+	});
+
+	it('过滤只收窄可见列表，候选集不变（保存语义不受影响）', () => {
+		expect(text).toContain('const visible = needle === "" ? candidates : candidates.filter((n) => n.toLowerCase().includes(needle));');
+		expect(text).toContain('visible.map((name) => React.createElement(');
+		expect(text).toContain('schedule(on ? candidates.slice() : []);');
+	});
+
+	it('有过滤词时全选/全不选只作用于可见子集', () => {
+		expect(text).toContain('if (needle === "") {');
+		expect(text).toContain('shown.has(n.toLowerCase()) || keep.has(n.toLowerCase())');
+		expect(text).toContain('keep.has(n.toLowerCase()) && !shown.has(n.toLowerCase())');
+	});
+
+	it('无匹配与命中计数都有提示，避免看起来像空列表', () => {
+		expect(text).toContain('t("grantDbFilterNone")');
+		expect(text).toContain('t("grantDbFilterCount", { shown: visible.length, total: candidates.length })');
 	});
 });

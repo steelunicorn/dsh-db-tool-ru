@@ -9,9 +9,10 @@
  *  - 超时由父进程 SIGKILL 强杀（vm timeout 管不到异步，进程级才是真强杀）。
  *
  * IPC 协议：
- *  父→worker {type:'run', code}
+ *  父→worker {type:'run', code, allowFile}
  *  worker→父 {type:'db', reqId, method, args}   // args=[statement, params, database?]，database 即跨库路由目标
  *  父→worker {type:'dbResult', reqId, ok, result, error}
+ *  worker→父 {type:'fileSave', reqId, path, text}  // 仅 allowFile=true（插件配置 scriptFileBridge）
  *  worker→父 {type:'done', ok, result, error}
  */
 'use strict';
@@ -20,10 +21,10 @@ const vm = require('node:vm');
 
 process.on('message', (msg) => {
   if (!msg || msg.type !== 'run') return;
-  runScript(String(msg.code ?? ''));
+  runScript(String(msg.code ?? ''), msg.allowFile === true);
 });
 
-async function runScript(code) {
+async function runScript(code, allowFile) {
   /** db 请求队列：reqId → resolve */
   const pending = new Map();
   let reqSeq = 0;
@@ -39,6 +40,16 @@ async function runScript(code) {
     query: dbCall('query'),
     execute: dbCall('execute'),
   };
+
+  // file.save 桥：worker 自身没有 fs 权限，请求经 IPC 交给父进程写盘
+  // （父进程走与 export_to_file 相同的项目内路径校验）。未开启时 vm 里没有 file。
+  const fileCall = (relPath, text) =>
+    new Promise((resolve, reject) => {
+      const reqId = ++reqSeq;
+      pending.set(reqId, { resolve, reject });
+      process.send({ type: 'fileSave', reqId, path: String(relPath ?? ''), text: String(text ?? '') });
+    });
+  const file = { save: (relPath, text) => fileCall(relPath, text) };
 
   const consoleBridge = {
     log: (...a) => process.send({ type: 'log', level: 'log', text: a.map(fmt).join(' ') }),
@@ -74,7 +85,9 @@ async function runScript(code) {
 
   let sandbox;
   try {
-    sandbox = vm.createContext({ db, console: consoleBridge });
+    // file 只在 allowFile=true 时注入：默认的 run_script 环境与之前完全一致
+    const globals = allowFile ? { db, console: consoleBridge, file } : { db, console: consoleBridge };
+    sandbox = vm.createContext(globals);
     const script = new vm.Script(`(async () => {\n${code}\n})()`, { filename: 'db-script.js' });
     const result = await script.runInContext(sandbox, { timeout: 60000 });
     process.send({ type: 'done', ok: true, result: safeClone(result) });

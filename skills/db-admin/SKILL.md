@@ -13,21 +13,33 @@ description: 通过 dsh-db-tool-ru 插件操作 9 种数据库（MySQL、Postgre
 - 参数以 snake_case 为主，兼容 camelCase（`conn_id`/`connId` 均可）。
 - 工具整体超时 **90 秒**；慢查询/大脚本超时按失败处理，需拆小重试。
 - 工具返回 `{text, isError}`：`text` 是 JSON 文本——成功时是结果对象；失败时形如 `{"ok":false,"error":"...","code":"..."}`。`isError=true` 仅用于被拒/失败；`NEEDS_CONFIRMATION` 不是失败（`isError=false`），但 `text` 中 `code` 为该值，见下文确认流程。
-- `query`/`execute`/`run_script` 都接受可选 `challenge_id`，用于危险操作确认后的重试。
-- 工具只有 6 个 action。**表名搜索、连接导出/导入、数据传输、事务控制都没有对应 action**，它们是侧边栏（HTTP API）能力，见「侧边栏五个面板与辅助能力」。
+- `query`/`execute`/`run_script`/`execute_file` 都接受可选 `challenge_id`，用于危险操作确认后的重试。
+- 工具只有 8 个 action。**表名搜索、连接导出/导入、数据传输、事务控制都没有对应 action**，它们是侧边栏（HTTP API）能力，见「侧边栏五个面板与辅助能力」。
+- 授权是「项目 → 连接 → ro/rw → 库清单」四级：新授权的库清单为空，用户必须在侧边栏「项目授权」中勾选库（勾选即保存），未勾选时任何库都不可达。
 
-### 错误码与处置（共 8 个）
+### 错误码与处置（数据侧 8 个 + 文件侧 10 个）
 
 | code | 含义 | 正确处置 |
 |---|---|---|
 | `UNAUTHORIZED_PROJECT` | 项目路径为空，或当前项目未授权该连接 | 引导用户在侧边栏「项目授权」面板为当前项目勾选 ro/rw；不要重试原调用 |
-| `READ_ONLY` | ro 授权下收到写操作（含 `run_script`、控制台事务） | 告知需升级为 rw；**不要反复重试** |
+| `READ_ONLY` | ro 授权下收到写操作（含 `run_script`、`execute_file`、控制台事务） | 告知需升级为 rw；**不要反复重试** |
+| `DATABASE_NOT_GRANTED` | 目标库不在该连接的库级允许清单内；清单为空表示「一个库都不允许」 | 让用户在侧边栏「项目授权」里勾选需要的库（改动即时保存）；**不要换库名反复试探，也不要试图绕过** |
 | `NEEDS_CONFIRMATION` | 危险操作待确认，返回含 `challengeId` | 向用户说明后带同一 `challenge_id` 重试该语句 |
 | `INVALID_CHALLENGE` | challenge 不存在、已用过、已过期（5 分钟）或语句已变更 | 重新原样发起调用取得新 challenge，再走完整确认流程 |
 | `NOT_FOUND` | 连接不存在、事务会话已失效、传输任务不存在 | 重新 `list_connections` / 重新 `begin` / 查历史 |
 | `INVALID_ARGUMENT` | 参数缺失或非法：超上限、`writeMode` 非法、口令不足 8 位、sqlite 开事务、事务指定库等 | 按错误消息改参数后重试；原样重试无意义 |
 | `DRIVER_ERROR` | 数据库/驱动侧失败；ro 模式 query 闸门拒绝也用它（消息以 `DRIVER_ERROR:` 开头） | 按消息修 SQL、连接串或权限；**这不是需要确认的操作** |
 | `SCRIPT_TIMEOUT` | `run_script` 超时被强杀（脚本 60s / 工具 90s 两层） | 缩小脚本工作量或分批；同样脚本重试必然再超时 |
+| `INVALID_PATH` | 路径为空、指向项目目录本身、不是普通文件，或含 Windows 设备/ADS 形态 | 改传项目内的相对文件路径 |
+| `PATH_OUTSIDE_PROJECT` | 路径含 `..` 或解析后越出项目目录 | 只能用项目目录内的相对路径；不要试图绕开 |
+| `SYMLINK_DENIED` | 目标是符号链接，或父目录经 realpath 后落在项目外 | 换真实文件路径，或先让用户在项目内重建 |
+| `PARENT_MISSING` | 父目录不存在且没传 `create_dirs` | 补 `create_dirs: true`，或改用已存在的子目录 |
+| `EXTENSION_DENIED` | 扩展名不在白名单（`.sql/.txt/.json/.csv/.tsv/.md/.log`） | 换合规扩展名；白名单可由插件配置 `fileIo.extensions` 调整 |
+| `FILE_EXISTS` | 目标文件已存在且没传 `overwrite` | 需要替换就传 `overwrite: true`，否则换文件名 |
+| `FILE_TOO_LARGE` | 读超过 8 MB 或写超过 64 MB | 分批导出，或让用户在插件配置 `fileIo` 中提高上限 |
+| `FILE_NOT_FOUND` | `execute_file`/`export_to_file` 的目标文件不存在 | 先导出/确认路径；不要猜文件名 |
+| `NOT_SCALAR` | `format=text` 下结果不是 1 行 × 1 列 | 用 `json`/`csv`，或在 SQL 里聚合成单值 |
+| `EMPTY_RESULT` | 0 行，或文本模式下值为 `NULL`（未传 `allow_empty`） | 确认查询条件；确实允许空就传 `allow_empty: true` |
 
 ### 硬性上限与配额
 
@@ -57,8 +69,12 @@ description: 通过 dsh-db-tool-ru 插件操作 9 种数据库（MySQL、Postgre
 | 传输 `tableConcurrency` | ≤16，默认 4 | |
 | 传输 `shardConcurrency` | ≤32，默认 4 | 单表单片数 ≤32 |
 | 事务空闲回收 | 5 分钟 | 扫描周期 30s，回收即回滚并审计 |
+| 文件读取 | ≤8 MB | 配置 `fileIo.maxReadBytes` |
+| 文件写入 | ≤64 MB | 配置 `fileIo.maxWriteBytes` |
+| 文件扩展名 | `.sql .txt .json .csv .tsv .md .log` | 配置 `fileIo.extensions` |
+| 审计里的 SQL 文本 | 200 字符 | 超出截断并以 `…` 结尾 |
 
-## 六个 action
+## 八个 action
 
 ### 1. list_connections
 
@@ -142,6 +158,39 @@ DatabaseManager({ action: "run_script", conn_id: "mongo1", code: '{"find":"users
 ```
 
 这两种库的 `query` 与 `execute` 也直接接受命令 JSON（读命令走 `query`、写命令走 `execute`），是按语言区分的两条通道；`run_script` 则是唯一能做「多步组合」的入口。
+
+### 7. export_to_file — 查询结果落盘（推荐用于长文本）
+
+```
+DatabaseManager({ action: "export_to_file", conn_id: "c1",
+                  sql: "SELECT pg_get_functiondef(27896227) AS d",
+                  path: "fn/pdt_income_storageobject_t.sql", create_dirs: true })
+```
+
+- `sql`、`path` 必填；`path` 必须是**项目目录内的相对路径**（项目目录即授权键），绝对路径、`..`、盘符、`CON` 之类一律拒绝。
+- `format`：`text`（默认，要求 1 行 × 1 列，值原样写入，不归一化换行、不追加 `\n`）、`json`（`JSON.stringify(rows, null, 2)` + 结尾换行）、`csv`（列名表头 + RFC 4180，`\r\n`）。编码 UTF-8 无 BOM。
+- `overwrite`（默认 false，已存在则 `FILE_EXISTS`）、`create_dirs`（默认 false，父目录缺失则 `PARENT_MISSING`）、`allow_empty`（默认 false，0 行或 `NULL` 则 `EMPTY_RESULT`）。
+- 返回 `{path, bytes, md5, rows, format}` —— `md5` 由写入的字节算出，可与数据库侧 `md5(convert_to(..., 'UTF8'))` 核对。
+- **长文本（函数体、视图定义、大 JSON）必须走这条通道**，不要用 `query` 取回再誊写：模型每约 8 KB 文本就会引入一处偏差，base64 里丢一个字符还会错位后续全部片段。
+
+### 8. execute_file — 从文件执行语句（需 rw）
+
+```
+DatabaseManager({ action: "execute_file", conn_id: "dev1", path: "fn/pdt_income_storageobject_t.sql" })
+```
+
+- `path` 必填，相对项目目录；文件按**原样**提交，不裁剪行尾空格与换行——这正是 `export_to_file` 输出的文件能直接执行的原因。
+- 走的是与 `execute` 完全相同的链路：guard 分类、危险语句 `NEEDS_CONFIRMATION` + 一次性 `challenge_id`、ro 授权 `READ_ONLY`、审计（记方向、路径、字节数、`md5` 与文本前 200 字符）。
+- 返回 `{path, bytes, md5, commandtag?}`；PostgreSQL 下 `commandtag` 例如 `CREATE FUNCTION`。
+- 文件为空或只有空白字符时报 `INVALID_ARGUMENT`；不要用它执行多语句脚本，多步请用 `run_script` 或侧边栏控制台事务。
+- `search_path`（可选，PostgreSQL）：函数体里常有不带 schema 的类型与例程（`citext`、`varlist`），而 `pg_get_functiondef` 原样返回文本，于是在「干净」会话上会报「类型 … 不存在」。此时传 `search_path: "sys, dbo, public"`——插件把文件与 `set_config('search_path', …, true)` 放在同一批里执行，路径只对本次运行生效、不残留在连接池会话上。只接受普通标识符（逗号分隔，最多 16 个），不能与 `params` 同用。
+
+**典型场景：把函数体从一台库搬到另一台**
+
+1. `export_to_file`（源连接）：`sql: "SELECT pg_get_functiondef(<oid>) AS d"`，`path: "fn/<函数名>.sql"`；
+2. 在编辑器里改文件（改名、改 owner、调注释）；
+3. `execute_file`（目标连接，rw）：同一 `path`，返回 `commandtag = CREATE FUNCTION`；
+4. 收尾核对：目标端 `SELECT md5(prosrc) FROM pg_proc WHERE oid = '<oid>'::regproc` 与预期一致再收工。
 
 ## 九库方言速查
 

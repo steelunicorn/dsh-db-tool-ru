@@ -161,16 +161,16 @@ describe('GrantStore', () => {
       expect(store.grants.grantsFor(p1)).toEqual([{ connId: 'conn-a', mode: 'ro', databases: ['sales', 'hr'] }]);
     });
 
-    it('omitting databases keeps the stored list; an empty array clears it', () => {
+    it('omitting databases keeps the stored list; an empty array forbids every database', () => {
       store.grants.grant(p1, 'conn-a', 'rw', ['sales']);
       store.grants.grant(p1, 'conn-a', 'rw'); // undefined = keep
       expect(store.grants.resolve(p1, 'conn-a')).toEqual({ mode: 'rw', databases: ['sales'] });
-      store.grants.grant(p1, 'conn-a', 'rw', []);
-      expect(store.grants.resolve(p1, 'conn-a')).toEqual({ mode: 'rw' });
-      expect(store.grants.grantsFor(p1)).toEqual([{ connId: 'conn-a', mode: 'rw' }]);
+      store.grants.grant(p1, 'conn-a', 'rw', []); // [] = 一个库都不允许
+      expect(store.grants.resolve(p1, 'conn-a')).toEqual({ mode: 'rw', databases: [] });
+      expect(store.grants.grantsFor(p1)).toEqual([{ connId: 'conn-a', mode: 'rw', databases: [] }]);
     });
 
-    it('resolve ignores blank-only lists and merges duplicate entries: rw wins, first non-empty list wins', () => {
+    it('resolve keeps an explicit empty list and lets a missing field fall through', () => {
       const file = path.join(home, 'db-tool', 'grants.json');
       fs.mkdirSync(path.dirname(file), { recursive: true });
       fs.writeFileSync(
@@ -186,8 +186,24 @@ describe('GrantStore', () => {
         'utf8',
       );
       store = new DbToolStore(home);
-      expect(store.grants.resolve(p1, 'conn-a')).toEqual({ mode: 'rw', databases: ['HR'] });
+      // 全空白清单归一成 []，按「显式禁止全部」处理，不被后一条覆盖
+      expect(store.grants.resolve(p1, 'conn-a')).toEqual({ mode: 'rw', databases: [] });
       expect(store.grants.check(p1, 'conn-a')).toBe('rw');
+      // 字段缺省（历史授权）才让位给下一条的非空清单
+      fs.writeFileSync(
+        file,
+        JSON.stringify({
+          grants: {
+            [p1]: [
+              { connId: 'conn-a', mode: 'ro', grantedAt: '2026-01-01T00:00:00.000Z' },
+              { connId: 'conn-a', mode: 'rw', grantedAt: '2026-01-02T00:00:00.000Z', databases: ['HR'] },
+            ],
+          },
+        }),
+        'utf8',
+      );
+      store = new DbToolStore(home);
+      expect(store.grants.resolve(p1, 'conn-a')).toEqual({ mode: 'rw', databases: ['HR'] });
     });
 
     it('persists the allowlist and reloads it; removing the connection clears it', () => {

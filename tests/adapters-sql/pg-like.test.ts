@@ -11,13 +11,21 @@ import {
 } from '../../lib/adapters/sql-shared/pg-like.js';
 import type { ResolvedConnection } from '../../lib/adapters/types.js';
 
+/** mock 结果：command 对应驱动 Result.command（CommandComplete 标签） */
+type FakeResult = {
+  rows: Record<string, unknown>[];
+  fields?: { name: string }[];
+  rowCount: number | null;
+  command?: string;
+};
+
 class FakeClient implements PgLikeClient {
   executed: { sql: string; params: unknown[] | undefined }[] = [];
   released = 0;
   releaseErr: unknown;
   constructor(
     private pool: FakePool,
-    public result: { rows: Record<string, unknown>[]; fields?: { name: string }[]; rowCount: number | null } = { rows: [], rowCount: null },
+    public result: FakeResult = { rows: [], rowCount: null },
     public failSqlPrefix?: string,
   ) {}
   async query(sql: string, params?: unknown[]) {
@@ -39,7 +47,7 @@ class FakePool implements PgLikePool {
   executed: { sql: string; params: unknown[] | undefined }[] = [];
   ended = 0;
   /** 每次 pool.query 返回的结果（按序出队） */
-  queue: { rows: Record<string, unknown>[]; fields?: { name: string }[]; rowCount: number | null }[] = [];
+  queue: FakeResult[] = [];
   /** 注入：新建 client 对匹配前缀的 SQL 抛错（模拟 ro SET 失败） */
   clientFailSqlPrefix?: string;
 
@@ -151,6 +159,26 @@ describe('createPgLikeAdapter（mock 驱动）', () => {
     const r = await a.execute('UPDATE t SET x = 1');
     expect(r.affectedRows).toBe(3);
     expect(r.message).toContain('3');
+  });
+
+  it('execute 还原 CommandComplete 标签（驱动只给首个单词）', async () => {
+    const { a, pool } = await make('postgresql');
+    pool.queue = [
+      { rows: [], rowCount: null, command: 'CREATE' },
+      { rows: [], rowCount: null, command: 'CREATE' },
+      { rows: [], rowCount: null, command: 'ALTER' },
+      { rows: [], rowCount: 4, command: 'UPDATE' },
+      { rows: [], rowCount: null, command: 'VACUUM' },
+    ];
+    expect((await a.execute('create or replace function public.f() returns int language sql as $$ select 1 $$')).commandTag).toBe(
+      'CREATE FUNCTION',
+    );
+    // 前导注释与换行不影响识别
+    expect((await a.execute('-- перенос тела\n  create table if not exists public.t(i int)')).commandTag).toBe('CREATE TABLE');
+    expect((await a.execute('ALTER TABLE public.t ADD COLUMN j int')).commandTag).toBe('ALTER TABLE');
+    expect((await a.execute('update public.t set j = 1')).commandTag).toBe('UPDATE 4');
+    // 认不出的语句回退到驱动给的标签，不臆造
+    expect((await a.execute('vacuum public.t')).commandTag).toBe('VACUUM');
   });
 
   it('listDatabases 使用官方查询', async () => {

@@ -5,7 +5,10 @@
 import * as path from 'node:path';
 import { normalizeProjectKey } from './normalize.js';
 import { readJson, writeJsonAtomic } from './io.js';
-/** 库白名单归一：去首尾空白、丢弃空项、大小写不敏感去重；无有效项返回 undefined（= 全部库） */
+/**
+ * 库白名单归一：去首尾空白、丢弃空项、大小写不敏感去重。
+ * 非数组（字段缺省）返回 undefined = 不限制；空数组原样返回 = 一个库都不允许。
+ */
 export function normalizeDatabases(value) {
     if (!Array.isArray(value))
         return undefined;
@@ -23,11 +26,14 @@ export function normalizeDatabases(value) {
         seen.add(key);
         out.push(name);
     }
-    return out.length > 0 ? out : undefined;
+    return out;
 }
-/** 两条授权的库白名单合并：非空优先（首条非空生效），都空则保持不限制 */
+/** 两条授权的库白名单合并：显式值优先（含空数组 = 禁止全部），都缺省才保持不限制 */
 function mergeDatabases(a, b) {
-    return normalizeDatabases(a) ?? normalizeDatabases(b);
+    const first = normalizeDatabases(a);
+    if (first !== undefined)
+        return first;
+    return normalizeDatabases(b);
 }
 /** 迁移合并：同键两条授权列表按连接去重，rw 胜出（rw > ro，对齐 check），grantedAt 取较新 */
 function mergeGrantLists(a, b) {
@@ -95,7 +101,7 @@ export class GrantStore {
     }
     /**
      * 授权或改授权（同连接重复授权视为更新模式）。键在入口归一化，调用方传原始路径亦可。
-     * databases 为 undefined 表示「保持既有库白名单不变」，数组表示覆盖（空数组 = 解除限制）。
+     * databases 为 undefined 表示「保持既有库白名单不变」；数组表示覆盖（空数组 = 禁止全部库）。
      */
     grant(projectKey, connId, mode, databases) {
         const key = normalizeProjectKey(projectKey);

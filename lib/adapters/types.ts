@@ -39,8 +39,13 @@ export interface QueryResult {
 export interface ExecResult {
   /** 受影响行数（无法得知时省略） */
   affectedRows?: number;
-  /** 人类可读结果说明（zh，由适配器生成） */
+  /** 人类可读结果说明（英文，由适配器生成） */
   message: string;
+  /**
+   * 服务端回执标签（PostgreSQL 的 CommandComplete tag，如 "CREATE FUNCTION"）。
+   * execute_file 原样回报给调用方；只有能提供真实标签的适配器才填。
+   */
+  commandTag?: string;
 }
 
 export interface TableInfo {

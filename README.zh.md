@@ -45,8 +45,31 @@ DSH 宿主插件。在聊天中安全地操作数据库：九种数据库、项�
 | `schema` | 查看库 / 表 / 列结构 |
 | `preview` | 预览表数据（分页，每页最多 50 行） |
 | `run_script` | 在沙箱中跑脚本，可多次调用 `db.query` / `db.execute` |
+| `export_to_file` | 把查询结果写到项目目录内的文件（text / JSON / CSV） |
+| `execute_file` | 执行项目目录内文件里的语句（guard、确认与审计同 `execute`） |
 
-`run_script` 的隔离边界：独立子进程 + `node:vm` 沙箱，60 秒超时后进程级强杀，只注入受限的 `db.{query,execute}` 句柄——不提供文件系统、网络与 `require`。
+`run_script` 的隔离边界：独立子进程 + `node:vm` 沙箱，60 秒超时后进程级强杀，只注入受限的 `db.{query,execute}` 句柄——不提供文件系统、网络与 `require`。若插件配置开启 `scriptFileBridge`，沙箱内多一个 `file.save(路径, 文本)` 方法：写盘由宿主进程按 `export_to_file` 的同一套规则完成，脚本本身依旧拿不到文件系统。
+
+### 文件交换：结果与函数体
+
+`export_to_file` 把查询结果直接写入文件，`execute_file` 从文件读取语句，模型不必把文本重新誊写进上下文，函数体、视图定义与大结果都能逐字节搬过去。
+
+- 路径一律相对项目目录（项目目录同时是授权键）。绝对路径、`..`、盘符、NTFS 数据流、保留设备名（`CON`、`NUL` 等）与符号链接都会被拒绝，读写都无法越出项目目录。
+- `format=text` 要求恰好 1 行 × 1 列，值原样写入：不归一化换行、不追加结尾 `\n`。由 `pg_get_functiondef(...)` 得到的文件可直接交给 `execute_file`。
+- `format=json` 写出行数组（两空格缩进 + 结尾换行）；`format=csv` 写出列名表头，按 RFC 4180 转义，分隔符 `,`，行尾 CRLF。编码固定 UTF-8、无 BOM。
+- 结果为空（0 行，或文本模式下 `NULL`）时报 `EMPTY_RESULT`，除非传 `allow_empty`；文件已存在且没传 `overwrite` 时报 `FILE_EXISTS`；父目录不存在且没传 `create_dirs` 时报 `PARENT_MISSING`。
+- 默认上限：读 ≤ 8 MB、写 ≤ 64 MB，扩展名 `.sql`、`.txt`、`.json`、`.csv`、`.tsv`、`.md`、`.log`，均可在插件配置 `fileIo` 中调整。
+- `execute_file` 原样传递整个文件内容（不裁剪空格与换行）：危险语句照旧返回 `NEEDS_CONFIRMATION` 与一次性 `challenge_id`，审计记录方向、路径、字节数、`md5` 与文本前 200 个字符。
+- `search_path`（可选，PostgreSQL）：函数体里常有不带 schema 的类型与例程（`citext`、`varlist`），而 `pg_get_functiondef` 原样返回文本。传入 `search_path="sys, dbo, public"` 即可让插件在同一批语句里执行 `set_config('search_path', …, true)`，可见性路径只对本次运行生效、不会留在连接池的会话上。该参数不能与 `params` 同时使用（批处理走简单查询协议）。
+
+典型函数体搬运：
+
+```text
+export_to_file(conn_id="<源>", sql="select pg_get_functiondef(27896227) as d",
+               path="fn/pdt_income_storageobject_t.sql", create_dirs=true)
+在编辑器里修改文件
+execute_file(conn_id="<目标>", path="fn/pdt_income_storageobject_t.sql")   → commandtag = CREATE FUNCTION
+```
 
 ### 项目级授权（ro / rw）
 
@@ -59,7 +82,7 @@ DSH 宿主插件。在聊天中安全地操作数据库：九种数据库、项�
 
 Windows 下路径按 NTFS 语义归一（大小写不敏感），`E:\GitHub\MyApp` 与 `e:\github\myapp` 视为同一项目。
 
-**库级允许清单**：每条授权可附带 `databases` 字段（面板「项目授权」中的「库范围」），在该连接内收窄可见的库。留空表示该连接的全部库都可用；面板里是可展开的勾选列表（带「全选」「全不选」），勾满全部库即回到留空。名称精确匹配、大小写不敏感。PostgreSQL / GaussDB 的目标写成 `db.schema` 时按 `db` 部分判定；SQLite 不参与校验（其「库」是文件路径）。
+**库级允许清单**：每条授权可附带 `databases` 字段（面板「项目授权」中的「库范围」），在该连接内收窄可见的库。勾选即保存，没有单独的保存按钮：只有用户主动勾选的库才可访问，刚建立的授权清单为空，未勾选任何库就一个库都不可用。只有在本字段出现之前建立的授权（以及不带清单的程序化授权）才会缺省该字段——这类记录仍表示「全部库」；空数组 `[]` 表示「一个库都不允许」。名称精确匹配、大小写不敏感。面板里是可展开的勾选列表（带按库名过滤的输入框和「全选」「全不选」；过滤只收窄可见列表，「全选」「全不选」作用于可见的库，保存值仍按完整集合计算）。PostgreSQL / GaussDB 的目标写成 `db.schema` 时按 `db` 部分判定；SQLite 不参与校验（其「库」是文件路径）。
 
 允许清单在 `query`、`execute`、`schema`、`preview`、控制台事务会话与数据传输两端都会校验；目标库不在清单内时，在建立到该库的连接之前即拒绝。库列表（`databases`）只返回允许的库，全局表名搜索也只覆盖允许的库。授权面板里的勾选列表例外：它取的是不按清单收窄的库全集（`GET /api/grant-databases`），否则收窄之后连未授权的库都看不到，也就无法再放开。
 

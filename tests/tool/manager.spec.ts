@@ -279,7 +279,7 @@ describe('DbToolService: searchTables 跨库表搜索', () => {
 });
 
 describe('DbToolService: 数据库级授权白名单', () => {
-  it('databases 白名单限定可用库；未列入 → DATABASE_NOT_GRANTED；空数组解除限制', async () => {
+  it('databases 白名单限定可用库；未列入 → DATABASE_NOT_GRANTED；空数组＝一个库都不允许', async () => {
     const fx = await makeFixture('rw');
     try {
       // 入口归一化项目键；undefined 表示保持既有清单，数组表示覆盖
@@ -293,9 +293,21 @@ describe('DbToolService: 数据库级授权白名单', () => {
         fx.service.query(fx.projectA, CONN_ID, 'SELECT 1', undefined, undefined, 'test'),
       ).rejects.toMatchObject({ code: 'DATABASE_NOT_GRANTED' });
 
-      // 空数组 = 解除库限制（省略参数才是保持既有清单）
+      // 空数组 = 显式关闭该连接的所有库；省略参数才是保持既有清单
       fx.store.grants.grant(fx.projectA, CONN_ID, 'rw', []);
-      expect(fx.service.grantsFor(fx.projectA)).toEqual([{ connId: CONN_ID, mode: 'rw' }]);
+      expect(fx.service.grantsFor(fx.projectA)).toEqual([{ connId: CONN_ID, mode: 'rw', databases: [] }]);
+      await expect(
+        fx.service.query(fx.projectA, CONN_ID, 'SELECT 1', undefined, undefined, 'test'),
+      ).rejects.toMatchObject({ code: 'DATABASE_NOT_GRANTED' });
+      await expect(
+        fx.service.query(fx.projectA, CONN_ID, 'SELECT 1', undefined, undefined, 'app'),
+      ).rejects.toMatchObject({ code: 'DATABASE_NOT_GRANTED' });
+      // 库清单也只返回空集
+      expect(await fx.service.databases(fx.projectA, CONN_ID)).toEqual([]);
+
+      // 撤销该连接的授权后才能回到「无限制」的旧形态（字段缺省）
+      fx.store.grants.revoke(fx.projectA, CONN_ID);
+      fx.store.grants.grant(fx.projectA, CONN_ID, 'rw');
       await expect(
         fx.service.query(fx.projectA, CONN_ID, 'SELECT 1', undefined, undefined, 'test'),
       ).resolves.toMatchObject({ rowCount: 1 });

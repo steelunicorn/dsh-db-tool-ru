@@ -70,6 +70,20 @@ export async function runScriptInChild(opts) {
                     .catch((e) => pendingDb.get(reqId)?.({ ok: false, error: errorOf(e) }));
                 return;
             }
+            if (msg.type === 'fileSave') {
+                const reqId = Number(msg.reqId);
+                pendingDb.set(reqId, (r) => {
+                    child.send({ type: 'dbResult', reqId, ...r }, () => {
+                        /* 忽略回包失败（worker 可能已死） */
+                    });
+                });
+                const filePath = typeof msg.path === 'string' ? msg.path : '';
+                const text = typeof msg.text === 'string' ? msg.text : String(msg.text ?? '');
+                void handleFileSave(filePath, text)
+                    .then((result) => pendingDb.get(reqId)?.({ ok: true, result }))
+                    .catch((e) => pendingDb.get(reqId)?.({ ok: false, error: errorOf(e) }));
+                return;
+            }
             if (msg.type === 'log') {
                 opts.onLog?.(msg.level === 'error' ? 'error' : 'log', String(msg.text ?? ''));
                 return;
@@ -94,6 +108,9 @@ export async function runScriptInChild(opts) {
                     }
                     else {
                         const e = new Error(err.message ?? 'Script execution failed');
+                        // 文件交换类错误（PATH_OUTSIDE_PROJECT 等）保留机器可读的 code
+                        if (err.code !== undefined)
+                            e.code = err.code;
                         reject(e);
                     }
                 }
@@ -113,10 +130,16 @@ export async function runScriptInChild(opts) {
             clearTimeout(timer);
             reject(new DbToolError('DRIVER_ERROR', `Failed to start the script process: ${e.message}`));
         });
-        child.send({ type: 'run', code: opts.code }, () => {
+        child.send({ type: 'run', code: opts.code, allowFile: opts.fileSave !== undefined }, () => {
             /* 入队即可 */
         });
     });
+    async function handleFileSave(relPath, text) {
+        if (!opts.fileSave) {
+            throw new DbToolError('INVALID_ARGUMENT', 'file.save is not enabled for this plugin (scriptFileBridge=false)');
+        }
+        return opts.fileSave(relPath, text);
+    }
     async function handleDbCall(method, args) {
         const [statement, params, rawDatabase] = args;
         // IPC JSON 序列化会把 undefined 变 null，归一回 undefined 保持与直连调用语义一致

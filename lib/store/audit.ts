@@ -9,6 +9,18 @@ import * as path from 'node:path';
 /** 危险等级：none / warning（需注意）/ danger（需用户显式确认） */
 export type DangerLevel = 'none' | 'warning' | 'danger';
 
+/**
+ * 文件交换的审计元数据。
+ * 方向：export = 数据库 → 文件，import = 文件 → 数据库，save = 脚本桥写入。
+ * path 一律是相对项目目录的路径（与工具入参一致），bytes/md5 针对实际读写的字节。
+ */
+export interface AuditFileMeta {
+  direction: 'export' | 'import' | 'save';
+  path: string;
+  bytes: number;
+  md5: string;
+}
+
 export interface AuditEntry {
   ts: string;
   projectPathKey: string;
@@ -20,6 +32,8 @@ export interface AuditEntry {
   ok: boolean;
   error?: string;
   rowsAffected?: number;
+  /** 文件交换方向与校验信息（仅文件类动作写入） */
+  file?: AuditFileMeta;
 }
 
 export type AuditEntryInput = Omit<AuditEntry, 'ts'> & { ts?: string };

@@ -356,16 +356,62 @@ describe('连接管理与授权路由', () => {
     const allowed = await post('/api/query', { projectPath: fx.projectA, connId: CONN_ID, sql: 'SELECT 1', database: 'app' });
     expect(allowed.json).toMatchObject({ ok: true, data: { rowCount: 1 } });
 
-    // 空数组解除库限制，恢复后续用例的无库限制基线
-    const restore = await fetch(`${(await ensureStarted()).base}/api/grants`, {
+    // 空数组＝禁止全部库：列表里显示显式空清单，查询全部被拒
+    const closed = await fetch(`${(await ensureStarted()).base}/api/grants`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ projectPath: fx.projectA, connId: CONN_ID, mode: 'rw', databases: [] }),
     });
-    expect(((await restore.json()) as any).ok).toBe(true);
+    expect(((await closed.json()) as any).ok).toBe(true);
+    expect((await get(`/api/state?project=${encodeURIComponent(fx.projectA)}`)).json.data).toMatchObject({
+      grants: [{ connId: CONN_ID, mode: 'rw', databases: [] }],
+    });
+    expect(
+      (await post('/api/query', { projectPath: fx.projectA, connId: CONN_ID, sql: 'SELECT 1', database: 'app' })).json,
+    ).toMatchObject({ ok: false, code: 'DATABASE_NOT_GRANTED' });
+
+    // 恢复「无库限制」基线：撤销后按服务层省略清单重新授权（字段缺省＝历史语义）
+    await fetch(`${(await ensureStarted()).base}/api/grants`, {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ projectPath: fx.projectA, connId: CONN_ID }),
+    });
+    fx.service.grant(fx.projectA, CONN_ID, 'rw');
     expect((await get(`/api/state?project=${encodeURIComponent(fx.projectA)}`)).json.data).toMatchObject({
       grants: [{ connId: CONN_ID, mode: 'rw' }],
     });
+  });
+
+  it('PUT /api/grants 新建授权默认没有任何库（访问权只能来自显式勾选）', async () => {
+    const { fx } = await ensureStarted();
+    const del = await fetch(`${(await ensureStarted()).base}/api/grants`, {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ projectPath: fx.projectA, connId: CONN_ID }),
+    });
+    expect(((await del.json()) as any).ok).toBe(true);
+
+    // 不传 databases 的新授权 → 显式空清单，而不是「全部库」
+    const put = await fetch(`${(await ensureStarted()).base}/api/grants`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ projectPath: fx.projectA, connId: CONN_ID, mode: 'rw' }),
+    });
+    expect(((await put.json()) as any).ok).toBe(true);
+    expect((await get(`/api/grants?project=${encodeURIComponent(fx.projectA)}`)).json.data).toEqual([
+      { connId: CONN_ID, mode: 'rw', databases: [] },
+    ]);
+    expect(
+      (await post('/api/query', { projectPath: fx.projectA, connId: CONN_ID, sql: 'SELECT 1', database: 'app' })).json,
+    ).toMatchObject({ ok: false, code: 'DATABASE_NOT_GRANTED' });
+
+    // 恢复基线：撤销后按服务层省略清单重新授权
+    await fetch(`${(await ensureStarted()).base}/api/grants`, {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ projectPath: fx.projectA, connId: CONN_ID }),
+    });
+    fx.service.grant(fx.projectA, CONN_ID, 'rw');
   });
 
   it('GET /api/grant-databases 给未收窄的库全集（白名单编辑入口，仍要求项目授权）', async () => {
@@ -387,11 +433,12 @@ describe('连接管理与授权路由', () => {
     ).toBe('UNAUTHORIZED_PROJECT');
 
     const restore = await fetch(`${(await ensureStarted()).base}/api/grants`, {
-      method: 'PUT',
+      method: 'DELETE',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ projectPath: fx.projectA, connId: CONN_ID, mode: 'rw', databases: [] }),
+      body: JSON.stringify({ projectPath: fx.projectA, connId: CONN_ID }),
     });
     expect(((await restore.json()) as any).ok).toBe(true);
+    fx.service.grant(fx.projectA, CONN_ID, 'rw');
   });
 
   it('mode 非法 → INVALID_ARGUMENT', async () => {

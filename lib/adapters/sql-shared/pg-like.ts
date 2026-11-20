@@ -23,6 +23,8 @@ export interface PgLikeResult {
   rows: Record<string, unknown>[];
   fields?: { name: string }[];
   rowCount: number | null;
+  /** CommandComplete 标签（pg 的 Result.command，如 "CREATE FUNCTION"） */
+  command?: string;
 }
 export interface PgLikeClient {
   query(text: string, values?: unknown[]): Promise<PgLikeResult>;
@@ -388,6 +390,110 @@ export async function createPgLikeAdapter(
     return { columns, rows, rowCount: rows.length };
   }
 
+  // pg 的 JS 驱动用 /^([A-Za-z]+)/ 解析 CommandComplete，只剩首个单词：
+  // CREATE FUNCTION 会变成 CREATE。这里按语句首部还原规范标签，只覆盖常见 DDL/DML，
+  // 认不出的语句原样回退到驱动给的 command。
+  const CMDTAG_OBJECTS: readonly (readonly [string, string])[] = [
+    ['materialized view', 'MATERIALIZED VIEW'],
+    ['foreign table', 'FOREIGN TABLE'],
+    ['table', 'TABLE'],
+    ['index', 'INDEX'],
+    ['view', 'VIEW'],
+    ['function', 'FUNCTION'],
+    ['procedure', 'PROCEDURE'],
+    ['trigger', 'TRIGGER'],
+    ['schema', 'SCHEMA'],
+    ['type', 'TYPE'],
+    ['domain', 'DOMAIN'],
+    ['sequence', 'SEQUENCE'],
+    ['extension', 'EXTENSION'],
+    ['database', 'DATABASE'],
+    ['role', 'ROLE'],
+    ['user', 'ROLE'],
+    ['tablespace', 'TABLESPACE'],
+    ['policy', 'POLICY'],
+    ['rule', 'RULE'],
+    ['aggregate', 'AGGREGATE'],
+    ['operator', 'OPERATOR'],
+    ['statistics', 'STATISTICS'],
+    ['publication', 'PUBLICATION'],
+    ['subscription', 'SUBSCRIPTION'],
+    ['collation', 'COLLATION'],
+  ];
+
+  /** 跳过前导空白与注释，留下从第一个关键字开始的文本。 */
+  function stripLeadingNoise(sql: string): string {
+    let s = sql;
+    for (;;) {
+      s = s.replace(/^\s+/, '');
+      if (s.startsWith('--')) {
+        const nl = s.indexOf('\n');
+        if (nl < 0) return '';
+        s = s.slice(nl + 1);
+        continue;
+      }
+      if (s.startsWith('/*')) {
+        const end = s.indexOf('*/');
+        if (end < 0) return '';
+        s = s.slice(end + 2);
+        continue;
+      }
+      return s;
+    }
+  }
+
+  /**
+   * 多语句批次：驱动返回 Result[]（每条语句一个），只有最后一条的结果有意义；
+   * 单语句仍是单个 Result。空数组（全被跳过）给一个空壳，避免解引用。
+   */
+  function lastResult(res: PgLikeResult | PgLikeResult[]): PgLikeResult {
+    if (!Array.isArray(res)) return res;
+    return res[res.length - 1] ?? { rows: [], rowCount: 0 };
+  }
+
+  /**
+   * execute_file 的 search_path 前缀是一条独立语句（select pg_catalog.set_config(…);，
+   * 事务内生效、不污染连接池里的会话）。回执标签必须按它后面的真实语句还原，
+   * 否则会退化成驱动截断后的首个单词。
+   */
+  function stripBatchPrefix(sql: string): string {
+    let s = sql;
+    for (;;) {
+      const m = /^select\s+pg_catalog\.set_config\s*\(\s*'search_path'[^;]*\)\s*;\s*/i.exec(s);
+      if (m === null) return s;
+      s = s.slice(m[0].length);
+    }
+  }
+
+  function commandTagOf(statement: string, res: PgLikeResult): string | undefined {
+    const driver = typeof res.command === 'string' && res.command !== '' ? res.command : undefined;
+    if (driver === undefined) return undefined;
+    const head = stripBatchPrefix(stripLeadingNoise(statement).toLowerCase());
+    const rows = typeof res.rowCount === 'number' ? res.rowCount : null;
+    const objectAfter = (prefix: string): string | undefined => {
+      const rest = head.slice(prefix.length).replace(/^\s+/, '');
+      const hit = CMDTAG_OBJECTS.find(([word]) => rest === word || rest.startsWith(`${word} `));
+      return hit?.[1];
+    };
+    if (head.startsWith('create ')) {
+      const tail = head.slice('create '.length).replace(/^or\s+replace\s+/, '');
+      const rest = tail.replace(/^(?:temporary|temp|unlogged|unique)\s+/, '');
+      const obj = CMDTAG_OBJECTS.find(([word]) => rest === word || rest.startsWith(`${word} `))?.[1];
+      if (obj !== undefined) return `CREATE ${obj}`;
+    }
+    for (const verb of ['alter', 'drop'] as const) {
+      if (head.startsWith(`${verb} `)) {
+        const obj = objectAfter(`${verb} `);
+        if (obj !== undefined) return `${verb.toUpperCase()} ${obj}`;
+      }
+    }
+    if (head.startsWith('insert ')) return `INSERT 0 ${rows ?? 0}`;
+    if (head.startsWith('update ')) return `UPDATE ${rows ?? 0}`;
+    if (head.startsWith('delete ')) return `DELETE ${rows ?? 0}`;
+    if (head.startsWith('merge ')) return `MERGE ${rows ?? 0}`;
+    return driver;
+  }
+
   const tx: TxHandle = {
     begin: () =>
       humanize(`${kind} transaction begin`, async () => {
@@ -449,13 +555,20 @@ export async function createPgLikeAdapter(
 
     execute: (statement, params, database) =>
       humanize(`${kind} execute failed`, async (): Promise<ExecResult> => {
-        const res = database
+        const raw = database
           ? await poolFor(assertIdent(database, 'database')).query(statement, params ?? [])
           : await run(statement, params ?? []);
+        const res = lastResult(raw as PgLikeResult | PgLikeResult[]);
         const n = res.rowCount;
         return {
           affectedRows: typeof n === 'number' ? n : undefined,
           message: typeof n === 'number' ? `Executed successfully, ${n} rows affected` : 'Executed successfully',
+          // CommandComplete 标签（CREATE FUNCTION / ALTER TABLE …）：execute_file 原样回报。
+          // 驱动会把标签截成首个单词，所以用语句首部还原（见 commandTagOf）。
+          ...(() => {
+            const tag = commandTagOf(statement, res);
+            return tag !== undefined ? { commandTag: tag } : {};
+          })(),
         };
       }),
 

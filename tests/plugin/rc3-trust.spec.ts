@@ -314,6 +314,8 @@ describe('注册契约快照（tools / inject / effect 注销）', () => {
       'schema',
       'preview',
       'run_script',
+      'export_to_file',
+      'execute_file',
     ]);
     expect(Object.keys(tool.parameters.properties ?? {})).toEqual([
       'action',
@@ -326,6 +328,12 @@ describe('注册契约快照（tools / inject / effect 注销）', () => {
       'limit',
       'offset',
       'code',
+      'path',
+      'format',
+      'overwrite',
+      'create_dirs',
+      'allow_empty',
+      'search_path',
       'challenge_id',
     ]);
     expect(tool.output?.schema?.required).toEqual(['text']);

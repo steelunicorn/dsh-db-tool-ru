@@ -74,11 +74,24 @@ interface DshContext {
  */
 export const inject = ['webServer', 'sessions', 'tools', 'connection'];
 
+/** 插件配置（cordis.patch.yml 里该行的 config 段；全部可选） */
+export interface DbToolPluginConfig {
+  /** 文件交换限制：读写上限（字节）与允许的扩展名（小写、带点） */
+  fileIo?: {
+    maxReadBytes?: number;
+    maxWriteBytes?: number;
+    extensions?: string[];
+  };
+  /** run_script 的 file.save 桥（默认 false：脚本依旧没有任何文件能力） */
+  scriptFileBridge?: boolean;
+}
+
 const TOOL_DESCRIPTION = `Database management tool (dsh-db-tool-ru): runs queries, writes and scripts against the configured database connections.
 
 Permission model (must be respected):
 - For the current project every connection is granted either ro (read-only) or rw (read/write); all business operations on a connection without a grant are rejected.
-- On an ro connection execute / run_script are rejected outright (READ_ONLY); the adapter layer additionally enforces session-level read-only.
+- A grant may also carry a database allowlist: access opens only to the databases the user ticked in the panel, so a connection with a fresh grant has no reachable database until something is ticked (DATABASE_NOT_GRANTED names the panel; the user must tick the databases themselves — never work around it).
+- On an ro connection execute / run_script / execute_file are rejected outright (READ_ONLY); the adapter layer additionally enforces session-level read-only.
 - Dangerous operations (DDL, dropping databases, FLUSHALL, …) are not executed directly: the tool returns NEEDS_CONFIRMATION with a challengeId.
   You must then explain the statement and its risk to the user, obtain explicit consent, and retry with the same challengeId and the same statement;
   a challenge is single-use, bound to the statement, and valid for 5 minutes. Never retry without the user's consent.
@@ -93,12 +106,32 @@ Actions:
   access plus a fresh vm realm as second isolation; only restricted db.query/db.execute handles are injected (they go through the full
   guard/audit chain) and only rw connections can write. Handle signature db.query(sql, params?, database?):
   the third argument routes to another database (pg/gaussdb route per database, Navicat style), so multi-database statistics
-  can be collected in one call by looping over databases inside the script.`;
+  can be collected in one call by looping over databases inside the script.
+  With the optional plugin setting scriptFileBridge a file.save(path, text) handle is added; the write itself happens in the host
+  process under the same project-folder checks as export_to_file, so the script still has no filesystem access of its own.
+- export_to_file: write a read-only query result to a file inside the project folder (conn_id, sql, path — relative to the project,
+  format=text|json|csv, params?, database?, overwrite?, create_dirs?, allow_empty?).
+  format=text requires exactly one row and one column and writes the value byte-for-byte (no newline is added or normalized);
+  json writes the rows array with 2-space indentation plus a trailing newline; csv writes a header row with RFC 4180 quoting and CRLF.
+  Files are always UTF-8 without BOM. 0 rows (or NULL in text mode) is EMPTY_RESULT unless allow_empty=true.
+  An existing file is FILE_EXISTS unless overwrite=true. Relative paths are validated: no absolute paths, no '..', no drive letters or
+  alternate data streams, no device names, no symbolic links, and the parent folder must exist unless create_dirs=true.
+  Default limits: read ≤ 8 MB, write ≤ 64 MB; extensions .sql/.txt/.json/.csv/.tsv/.md/.log.
+  Reply: {path, bytes, md5, rows, format}. Use it whenever a result must reach a file unchanged (function bodies, big exports) — do not
+  re-type large text through the model.
+- execute_file: execute a statement read from a file inside the project folder (conn_id, path, params?, database?, challenge_id?, search_path?).
+  The whole file content is passed to execute unchanged (no trailing-whitespace trimming), so the same guard, NEEDS_CONFIRMATION and
+  audit rules apply; DDL still needs the user's consent. Reply: {path, bytes, md5, commandtag?}.
+  search_path (PostgreSQL only) is prepended as a separate "set search_path = …;" statement so a body that names types or routines
+  without a schema still resolves; it cannot be combined with params.`;
 
-export function apply(ctx: DshContext): void {
+export function apply(ctx: DshContext, config?: DbToolPluginConfig): void {
   const log = ctx.logger ?? { info: () => {}, error: () => {} };
   const store = new DbToolStore();
-  const service = new DbToolService(store);
+  const service = new DbToolService(store, {
+    fileIo: config?.fileIo,
+    scriptFileBridge: config?.scriptFileBridge === true,
+  });
 
   // HTTP API：挂在 DSH webServer 的 /dsh-db-tool/api 前缀下（同源访问）
   /**
@@ -193,11 +226,11 @@ export function apply(ctx: DshContext): void {
       properties: {
         action: {
           type: 'string',
-          enum: ['list_connections', 'query', 'execute', 'schema', 'preview', 'run_script'],
+          enum: ['list_connections', 'query', 'execute', 'schema', 'preview', 'run_script', 'export_to_file', 'execute_file'],
           description: 'Operation to perform',
         },
-        conn_id: { type: 'string', description: 'Connection id (required for query/execute/schema/preview/run_script)' },
-        sql: { type: 'string', description: 'Read-only SQL/command for query' },
+        conn_id: { type: 'string', description: 'Connection id (required for query/execute/schema/preview/run_script/export_to_file/execute_file)' },
+        sql: { type: 'string', description: 'Read-only SQL/command for query and export_to_file' },
         statement: { type: 'string', description: 'Statement for execute' },
         params: { type: 'array', items: {}, description: 'Placeholder parameters' },
         database: { type: 'string', description: 'Database/schema (optional). query/execute: target another database (Navicat style; pg/gaussdb route per database); schema/preview: browse target (pg/gaussdb accept "database.schema")' },
@@ -205,6 +238,23 @@ export function apply(ctx: DshContext): void {
         limit: { type: 'number', description: 'preview row cap (≤50)' },
         offset: { type: 'number', description: 'preview row offset (paging, default 0)' },
         code: { type: 'string', description: 'Script source for run_script' },
+        path: {
+          type: 'string',
+          description: 'File path relative to the project folder (export_to_file, execute_file); absolute paths, "..", drive letters and symbolic links are refused',
+        },
+        format: {
+          type: 'string',
+          enum: ['text', 'json', 'csv'],
+          description: 'export_to_file output format (default text: exactly 1 row × 1 column, written byte-for-byte)',
+        },
+        overwrite: { type: 'boolean', description: 'export_to_file: replace an existing file (default false → FILE_EXISTS)' },
+        create_dirs: { type: 'boolean', description: 'export_to_file: create missing parent folders inside the project (default false)' },
+        allow_empty: { type: 'boolean', description: 'export_to_file: write an empty file instead of EMPTY_RESULT when there are no rows (or NULL in text mode)' },
+        search_path: {
+          type: 'string',
+          description:
+            'execute_file: optional PostgreSQL search_path for this batch (comma-separated plain identifiers, e.g. "sys, dbo, public"); needed when the file body names types or routines without a schema. Cannot be combined with params',
+        },
         challenge_id: {
           type: 'string',
           description: 'Dangerous-operation consent token: ask the user, then resend it unchanged with the retry',

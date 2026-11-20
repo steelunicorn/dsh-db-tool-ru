@@ -21,6 +21,11 @@ export interface ScriptRunOptions {
   /** 走完整 guard/challenge/审计链路的 db 句柄（由 DbToolService 提供）；database? 即跨库路由目标 */
   dbQuery: (sql: string, params?: unknown[], database?: string) => Promise<unknown>;
   dbExecute: (statement: string, params?: unknown[], database?: string) => Promise<unknown>;
+  /**
+   * file.save 桥（配置开启时才提供）：写盘发生在父进程，worker 仍无 fs 权限。
+   * 缺省 = worker 的 vm 里没有 file 对象。
+   */
+  fileSave?: (relPath: string, text: string) => Promise<unknown>;
   onLog?: (level: 'log' | 'error', text: string) => void;
   /** 超时强杀后回调（关闭会话专用适配器，中断在途 db 调用） */
   onTimeout?: () => void;
@@ -83,8 +88,9 @@ export async function runScriptInChild(opts: ScriptRunOptions): Promise<unknown>
         reqId?: unknown;
         method?: unknown;
         args?: unknown;
-        level?: unknown;
+        path?: unknown;
         text?: unknown;
+        level?: unknown;
         ok?: boolean;
         result?: unknown;
         error?: { name?: string; message?: string; code?: string; payload?: unknown };
@@ -98,6 +104,20 @@ export async function runScriptInChild(opts: ScriptRunOptions): Promise<unknown>
           });
         });
         void handleDbCall(String(msg.method ?? ''), Array.isArray(msg.args) ? msg.args : [])
+          .then((result) => pendingDb.get(reqId)?.({ ok: true, result }))
+          .catch((e) => pendingDb.get(reqId)?.({ ok: false, error: errorOf(e) }));
+        return;
+      }
+      if (msg.type === 'fileSave') {
+        const reqId = Number(msg.reqId);
+        pendingDb.set(reqId, (r) => {
+          child.send({ type: 'dbResult', reqId, ...r }, () => {
+            /* 忽略回包失败（worker 可能已死） */
+          });
+        });
+        const filePath = typeof msg.path === 'string' ? msg.path : '';
+        const text = typeof msg.text === 'string' ? msg.text : String(msg.text ?? '');
+        void handleFileSave(filePath, text)
           .then((result) => pendingDb.get(reqId)?.({ ok: true, result }))
           .catch((e) => pendingDb.get(reqId)?.({ ok: false, error: errorOf(e) }));
         return;
@@ -121,7 +141,9 @@ export async function runScriptInChild(opts: ScriptRunOptions): Promise<unknown>
           } else if (err.code === 'READ_ONLY') {
             reject(new DbToolError('READ_ONLY', err.message ?? 'This connection is read-only; write operations are refused'));
           } else {
-            const e = new Error(err.message ?? 'Script execution failed');
+            const e: Error & { code?: string } = new Error(err.message ?? 'Script execution failed');
+            // 文件交换类错误（PATH_OUTSIDE_PROJECT 等）保留机器可读的 code
+            if (err.code !== undefined) e.code = err.code;
             reject(e);
           }
         }
@@ -141,10 +163,17 @@ export async function runScriptInChild(opts: ScriptRunOptions): Promise<unknown>
       reject(new DbToolError('DRIVER_ERROR', `Failed to start the script process: ${e.message}`));
     });
 
-    child.send({ type: 'run', code: opts.code }, () => {
+    child.send({ type: 'run', code: opts.code, allowFile: opts.fileSave !== undefined }, () => {
       /* 入队即可 */
     });
   });
+
+  async function handleFileSave(relPath: string, text: string): Promise<unknown> {
+    if (!opts.fileSave) {
+      throw new DbToolError('INVALID_ARGUMENT', 'file.save is not enabled for this plugin (scriptFileBridge=false)');
+    }
+    return opts.fileSave(relPath, text);
+  }
 
   async function handleDbCall(method: string, args: unknown[]): Promise<unknown> {
     const [statement, params, rawDatabase] = args as [string, unknown[] | undefined, string | undefined];

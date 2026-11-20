@@ -294,14 +294,17 @@ window.__ModuleLoader__.load({
 			grantDbToggle: "库范围",
 			grantDbSelectAll: "全选",
 			grantDbClearAll: "全不选",
-			grantDbSaveBtn: "保存库范围",
-			grantDbEmptySel: "至少勾选一个库：要允许全部库请点「全选」并保存，或撤销该连接授权",
+			grantDbFilter: "按库名过滤",
+			grantDbFilterCount: "{shown}/{total}",
+			grantDbFilterNone: "没有名称匹配的库",
+			grantDbNoneSelected: "未选库",
+			grantDbSaveErr: "保存失败",
+			grantDbEmptySel: "没有勾选任何库：该连接的库访问已关闭，勾选需要的库即可开通（改动立即保存）",
 			grantDbLoading: "加载库列表…",
 			grantDbLoadErr: "库列表加载失败",
 			grantDbRetry: "重试",
 			grantDbNone: "连接未返回任何库",
 			grantDbSqlite: "SQLite 为单文件库，库级限制不适用",
-			grantDbSaved: "已保存",
 			rowsSuffix: "行",
 		};
 		const en = {
@@ -572,14 +575,17 @@ window.__ModuleLoader__.load({
 			grantDbToggle: "Database scope",
 			grantDbSelectAll: "Select all",
 			grantDbClearAll: "Clear all",
-			grantDbSaveBtn: "Save scope",
-			grantDbEmptySel: "Pick at least one database: to allow every database, press «Select all» and save, or revoke the grant for this connection",
+			grantDbFilter: "Filter by database name",
+			grantDbFilterCount: "{shown} of {total}",
+			grantDbFilterNone: "No databases match the filter",
+			grantDbNoneSelected: "No databases",
+			grantDbSaveErr: "Failed to save",
+			grantDbEmptySel: "No databases are ticked: access to the databases of this connection is closed. Tick the required ones — changes are saved immediately",
 			grantDbLoading: "Loading databases…",
 			grantDbLoadErr: "Failed to load the database list",
 			grantDbRetry: "Retry",
 			grantDbNone: "The connection returned no databases",
 			grantDbSqlite: "SQLite is a single-file database; the per-database restriction does not apply",
-			grantDbSaved: "Saved",
 			rowsSuffix: "rows",
 		};
 
@@ -847,14 +853,17 @@ window.__ModuleLoader__.load({
 			grantDbToggle: "Список баз",
 			grantDbSelectAll: "Выбрать все",
 			grantDbClearAll: "Снять все",
-			grantDbSaveBtn: "Сохранить список",
-			grantDbEmptySel: "Выберите хотя бы одну базу: чтобы разрешить все, нажмите «Выбрать все» и сохраните, либо отзовите грант этого подключения",
+			grantDbFilter: "Фильтр по имени базы",
+			grantDbFilterCount: "{shown} из {total}",
+			grantDbFilterNone: "Нет баз с таким именем",
+			grantDbNoneSelected: "Базы не выбраны",
+			grantDbSaveErr: "Не удалось сохранить",
+			grantDbEmptySel: "Ни одна база не отмечена: доступ к базам этого подключения закрыт. Отметьте нужные — изменения сохраняются сразу",
 			grantDbLoading: "Загрузка списка баз…",
 			grantDbLoadErr: "Не удалось загрузить список баз",
 			grantDbRetry: "Повторить",
 			grantDbNone: "Подключение не вернуло ни одной базы",
 			grantDbSqlite: "SQLite — один файл, ограничение по базам не применяется",
-			grantDbSaved: "Сохранено",
 			rowsSuffix: "строк",
 		};
 
@@ -1000,6 +1009,9 @@ window.__ModuleLoader__.load({
 				"/* ===== 根容器 ===== */",
 				".dbt-panel{font-size:13px;line-height:1.45;display:flex;flex-direction:column;gap:10px;padding:16px;height:100%;box-sizing:border-box;overflow-y:auto;}",
 				".dbt-panel input[type=\"checkbox\"]{width:16px;height:16px;flex:none;margin:0;accent-color:var(--dbt-accent);}",
+		// 库范围列表里的 checkbox 在 .dbt-row 内：全局 .dbt-row input{min-width:60px} 会把它撑成 60px，
+		// 于是复选框飘到名称左边很远的位置；这里显式收回最小宽度
+		".dbt-row input.dbt-dbcheck{width:16px;height:16px;min-width:0;flex:0 0 auto;margin:0;accent-color:var(--dbt-accent);}",
 				"/* ===== iOS segmented control（顶部 tab） ===== */",
 				".dbt-tabs{display:flex;gap:2px;background:var(--dbt-surface);border-radius:var(--dbt-radius-ctrl);padding:2px;}",
 				".dbt-tabs button{flex:1;display:inline-flex;align-items:center;justify-content:center;height:calc(var(--dbt-ctrl-h,28px) - 4px);box-sizing:border-box;border:none;background:transparent;color:inherit;border-radius:var(--dbt-radius-pill);padding:0 8px;font-size:12px;font-weight:500;line-height:1;cursor:pointer;transition:background .18s var(--dbt-ease),box-shadow .18s var(--dbt-ease);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}",
@@ -2393,51 +2405,84 @@ window.__ModuleLoader__.load({
 
 		/* ---------------- 项目授权 ---------------- */
 
-		// 连接内的库白名单：折叠列表 + 勾选（白名单为空＝不限库）。
+		// 连接内的库白名单：折叠列表 + 勾选，勾选即保存（没有「保存」按钮）。
+		// 语义：databases 字段缺省（历史授权）＝不限制；空数组＝一个库都不允许；数组＝只允许这些库。
+		// 新建授权默认落成空数组，因此访问权永远来自用户的主动勾选，而不是「自动允许全部」。
 		// 库清单来自 GET /grant-databases：该入口不按现有白名单收窄，否则收窄后无法再放开。
-		// 保存走 PUT /grants：勾满全部库＝[]（解除限制），否则＝勾选的库名数组；
-		// 一个都不勾无法表达（空数组的语义是「不限」），故只提示，不改写服务端。
 		function GrantDbPicker(props) {
 			const g = props.grant || {};
-			const dbs = Array.isArray(g.databases) ? g.databases.map(String) : [];
-			const unrestricted = dbs.length === 0;
+			const savedList = Array.isArray(g.databases) ? g.databases.map(String) : null; // null=字段缺省（历史授权，不限）
 			const sqlite = (props.conn && props.conn.kind) === "sqlite";
 			const [open, setOpen] = React.useState(false);
 			const [list, setList] = React.useState(null); // null=尚未加载（展开时才拉列表）
 			const [err, setErr] = React.useState("");
 			const [sel, setSel] = React.useState(null); // null=未编辑：按已保存值推导
-			const [saved, setSaved] = React.useState(false);
-			const busy = props.busy === "grantdb";
+			const [filter, setFilter] = React.useState(""); // 按库名过滤列表（大实例上几百个库）
+			const [saving, setSaving] = React.useState(false);
+			const [saveErr, setSaveErr] = React.useState("");
+			const timer = React.useRef(null);
+			const pending = React.useRef(null);
+			const busy = props.busy === "grantdb" || saving;
 
 			// 候选项＝连接返回的库 + 已授权但清单里没有的库（库被删/改名时不静默丢失）
 			const candidates = list ? list.slice() : [];
-			if (list) {
-				for (const n of dbs) {
+			if (list && savedList) {
+				for (const n of savedList) {
 					if (!candidates.some((x) => x.toLowerCase() === n.toLowerCase())) candidates.push(n);
 				}
 			}
-			const allowedNow = unrestricted ? candidates : candidates.filter((n) => dbs.some((x) => x.toLowerCase() === n.toLowerCase()));
+			const allowedNow = savedList === null ? candidates : candidates.filter((n) => savedList.some((x) => x.toLowerCase() === n.toLowerCase()));
+			// 过滤只影响「看得见哪些」，不改变候选集本身：否则保存时会把没显示出来的库误判为未勾选
+			const needle = filter.trim().toLowerCase();
+			const visible = needle === "" ? candidates : candidates.filter((n) => n.toLowerCase().includes(needle));
 			const selected = sel === null ? allowedNow : sel;
 			const selectedMap = {};
 			for (const n of selected) selectedMap[n] = true;
-			const changed = sel !== null && !sameNames(sel, allowedNow);
-			const warn = sel !== null && selected.length === 0;
 
-			function sameNames(a, b) {
-				if (a.length !== b.length) return false;
-				const set = {};
-				for (const n of b) set[n.toLowerCase()] = true;
-				return a.every((n) => set[n.toLowerCase()] === true);
+			// 勾选即保存：先更新界面，再防抖落库（连点几下只发一次请求）
+			function schedule(next) {
+				setSel(next);
+				pending.current = next;
+				if (timer.current !== null) clearTimeout(timer.current);
+				timer.current = setTimeout(() => {
+					timer.current = null;
+					void flush();
+				}, 250);
 			}
+			async function flush() {
+				const next = pending.current;
+				if (next === null || !props.projectPath) return;
+				setSaveErr("");
+				setSaving(true);
+				try {
+					await api("grants", { method: "PUT", body: { projectPath: props.projectPath, connId: g.connId, mode: g.mode, databases: next } });
+					if (pending.current === next) pending.current = null;
+					await props.reload();
+				} catch (e) {
+					setSaveErr(String((e && e.message) || e));
+				} finally {
+					setSaving(false);
+				}
+			}
+			React.useEffect(() => () => {
+				if (timer.current !== null) clearTimeout(timer.current);
+			}, []);
 			function toggle(name, on) {
 				const next = selected.filter((n) => n !== name);
 				if (on) next.push(name);
-				setSel(next);
-				setSaved(false);
+				schedule(next);
 			}
 			function setAll(on) {
-				setSel(on ? candidates.slice() : []);
-				setSaved(false);
+				// 有过滤词时「全选/全不选」只作用于当前可见的库：勾一个家族的库不必先清空过滤
+				if (needle === "") {
+					schedule(on ? candidates.slice() : []);
+					return;
+				}
+				const keep = new Set(selected.map((n) => n.toLowerCase()));
+				const shown = new Set(visible.map((n) => n.toLowerCase()));
+				schedule(on
+					? candidates.filter((n) => shown.has(n.toLowerCase()) || keep.has(n.toLowerCase()))
+					: candidates.filter((n) => keep.has(n.toLowerCase()) && !shown.has(n.toLowerCase())));
 			}
 			async function load() {
 				setErr("");
@@ -2450,24 +2495,17 @@ window.__ModuleLoader__.load({
 					setErr(String((e && e.message) || e));
 				}
 			}
-			async function commit() {
-				const chosen = candidates.filter((n) => selectedMap[n]);
-				if (chosen.length === 0) return; // 由界面提示引导：不保存「一个都不许」
-				setSaved(false);
-				await props.run("grantdb", async () => {
-					const payload = chosen.length === candidates.length ? [] : chosen;
-					await api("grants", { method: "PUT", body: { projectPath: props.projectPath, connId: g.connId, mode: g.mode, databases: payload } });
-					setSel(null);
-					setSaved(true);
-					await props.reload();
-				});
-			}
 			function onToggleOpen() {
 				const next = !open;
 				setOpen(next);
 				if (next && list === null && !sqlite) load();
 			}
-			const summary = unrestricted ? t("grantDbAll") : dbs.join(", ");
+			const allChosen = candidates.length > 0 && candidates.every((n) => selectedMap[n] === true);
+			const summary = savedList === null || (sel === null && allChosen)
+				? t("grantDbAll")
+				: selected.length === 0
+					? t("grantDbNoneSelected")
+					: selected.join(", ");
 			const head = React.createElement(
 				"button",
 				{
@@ -2481,8 +2519,9 @@ window.__ModuleLoader__.load({
 				},
 				React.createElement("span", { className: "dbt-chev", "aria-hidden": "true" }, open ? "▾" : "▸"),
 				React.createElement("span", { className: "dbt-muted", style: { flex: "none" } }, t("grantDbLabel")),
-				React.createElement("span", { className: "dbt-treename", style: unrestricted ? { color: "var(--dbt-text-secondary)" } : null }, summary),
-				saved && !open ? React.createElement("span", { className: "dbt-muted", style: { flex: "none" } }, t("grantDbSaved")) : null,
+				React.createElement("span", { className: "dbt-treename", style: selected.length === 0 ? { color: "var(--dbt-text-secondary)" } : null }, summary),
+				saving ? React.createElement("span", { className: "dbt-muted", style: { flex: "none" } }, t("saving")) : null,
+				!saving && saveErr ? React.createElement("span", { className: "dbt-err", style: { flex: "none" } }, t("grantDbSaveErr")) : null,
 			);
 			let body = null;
 			if (open) {
@@ -2504,19 +2543,34 @@ window.__ModuleLoader__.load({
 						"div",
 						{ style: { display: "flex", flexDirection: "column", gap: 6, paddingLeft: 18 } },
 						React.createElement("div", { className: "dbt-row", role: "group", "aria-label": t("grantDbLabel") },
+							React.createElement("input", {
+								type: "search",
+								className: "dbt-dbfilter",
+								placeholder: t("grantDbFilter"),
+								"aria-label": t("grantDbFilter"),
+								value: filter,
+								disabled: busy,
+								style: { flex: "1 1 96px", minWidth: 64 },
+								onChange: (e) => setFilter(e.target.value),
+							}),
 							React.createElement("button", { className: "dbt-btn", type: "button", disabled: busy, onClick: () => setAll(true) }, t("grantDbSelectAll")),
 							React.createElement("button", { className: "dbt-btn", type: "button", disabled: busy, onClick: () => setAll(false) }, t("grantDbClearAll")),
-							changed ? React.createElement("button", { className: "dbt-btn", type: "button", disabled: busy || warn, onClick: () => commit() }, busy ? t("saving") : t("grantDbSaveBtn")) : null,
-							!changed && saved ? React.createElement("span", { className: "dbt-muted" }, t("grantDbSaved")) : null,
+							needle === "" ? null : React.createElement("span", { className: "dbt-muted", style: { flex: "none" } }, t("grantDbFilterCount", { shown: visible.length, total: candidates.length })),
+							saveErr ? React.createElement("button", { className: "dbt-btn", type: "button", disabled: saving, onClick: () => flush() }, t("grantDbRetry")) : null,
 						),
-						warn ? React.createElement("div", { className: "dbt-muted" }, t("grantDbEmptySel")) : null,
+						saveErr ? React.createElement("div", { className: "dbt-err" }, t("grantDbSaveErr") + ": " + saveErr) : null,
+						selected.length === 0 ? React.createElement("div", { className: "dbt-muted" }, t("grantDbEmptySel")) : null,
 						React.createElement(
 							"div",
 							{ style: { maxHeight: 200, overflowY: "auto", display: "flex", flexDirection: "column", gap: 2, border: "1px solid var(--dbt-separator)", borderRadius: "var(--dbt-radius-ctrl)", padding: "4px 8px" } },
-							candidates.map((name) => React.createElement(
+							visible.length === 0
+								? React.createElement("div", { className: "dbt-muted", style: { padding: "4px 0" } }, t("grantDbFilterNone"))
+								: null,
+							visible.map((name) => React.createElement(
 								"label",
 								{ key: name, className: "dbt-row", style: { gap: 6, cursor: "pointer", minHeight: 22, flexWrap: "nowrap" } },
 								React.createElement("input", {
+									className: "dbt-dbcheck",
 									type: "checkbox",
 									checked: selectedMap[name] === true,
 									disabled: busy,
@@ -2539,8 +2593,15 @@ window.__ModuleLoader__.load({
 			}
 			async function setGrant(connId, mode) {
 				await props.run("grant", async () => {
-					if (!mode) await api("grants", { method: "DELETE", body: { projectPath, connId } });
-					else await api("grants", { method: "PUT", body: { projectPath, connId, mode } });
+					if (!mode) {
+						await api("grants", { method: "DELETE", body: { projectPath, connId } });
+					} else {
+						// 新建授权默认「一个库都不允许」：库访问只能来自用户主动勾选；
+						// 已存在的授权改模式时不动库清单
+						const existing = (grants || []).some((x) => x.connId === connId);
+						const body = existing ? { projectPath, connId, mode } : { projectPath, connId, mode, databases: [] };
+						await api("grants", { method: "PUT", body });
+					}
 					await props.reload();
 				});
 			}

@@ -349,7 +349,13 @@ async function seed(env: Env, id = 'ss1', mode: AccessMode = 'rw'): Promise<void
     url: SS_URL,
   });
   expect(r.json.ok, JSON.stringify(r.json)).toBe(true);
-  const g = await env.call('PUT', 'grants', { projectPath: env.project, connId: id, mode });
+  // 新建授权不再默认放行所有库，用例需要显式列出模拟实例上的库
+  const g = await env.call('PUT', 'grants', {
+    projectPath: env.project,
+    connId: id,
+    mode,
+    databases: ['appdb', 'reportdb'],
+  });
   expect(g.json.ok).toBe(true);
 }
 

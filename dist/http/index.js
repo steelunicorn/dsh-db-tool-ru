@@ -228,7 +228,8 @@ async function route(req, res, service, path, q, opts) {
             const mode = str(b['mode']);
             if (mode !== 'ro' && mode !== 'rw')
                 return send(res, 400, { ok: false, error: 'mode must be ro or rw', code: 'INVALID_ARGUMENT' });
-            // databases 缺省 = 保持既有库白名单不变；数组（可空）= 覆盖，空数组即解除库限制
+            // databases 缺省 = 保持既有库白名单不变（新建授权则落为「一个库都不允许」）；
+            // 数组（可空）= 覆盖，空数组即禁止全部库 —— 显式勾选才有访问权
             const rawDbs = b['databases'];
             let databases;
             if (Array.isArray(rawDbs)) {
@@ -237,7 +238,14 @@ async function route(req, res, service, path, q, opts) {
             else if (typeof rawDbs === 'string') {
                 databases = rawDbs.split(',').map((v) => v.trim()).filter((v) => v !== '');
             }
-            service.grant(str(b['projectPath'] ?? b['project'] ?? ''), str(b['connId']), mode, databases);
+            const projectPath = str(b['projectPath'] ?? b['project'] ?? '');
+            const connId = str(b['connId']);
+            // 新建授权（面板里刚打开 ro/rw）不传 databases 时，默认「没有任何库」：
+            // 访问权必须是用户主动勾选的结果，而不是「自动允许全部」
+            if (databases === undefined && !service.grantsFor(projectPath).some((g) => g.connId === connId)) {
+                databases = [];
+            }
+            service.grant(projectPath, connId, mode, databases);
             return sendOk(res, { granted: true });
         }
         if (req.method === 'DELETE') {
