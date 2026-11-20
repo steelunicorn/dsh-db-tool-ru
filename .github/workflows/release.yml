@@ -37,7 +37,12 @@ jobs:
         run: npm test
 
       - name: Pack
-        run: npm pack
+        # 版本号归档 + 固定名归档：市场条目用 latest/download/dsh-db-tool-ru.tgz，
+        # 固定名不随版本号变化，缺了它最新一版的卡片会立刻 404。
+        run: |
+          npm pack
+          V=$(node -p "require('./package.json').version")
+          cp "dsh-db-tool-ru-$V.tgz" dsh-db-tool-ru.tgz
 
       - name: Publish GitHub release
         env:
@@ -46,9 +51,9 @@ jobs:
           V=$(node -p "require('./package.json').version")
           if gh release view "v$V" >/dev/null 2>&1; then
             echo "release v$V already exists, uploading asset"
-            gh release upload "v$V" "dsh-db-tool-ru-$V.tgz" --clobber
+            gh release upload "v$V" "dsh-db-tool-ru-$V.tgz" dsh-db-tool-ru.tgz --clobber
           else
-            gh release create "v$V" "dsh-db-tool-ru-$V.tgz" \
+            gh release create "v$V" "dsh-db-tool-ru-$V.tgz" dsh-db-tool-ru.tgz \
               --title "dsh-db-tool-ru $V" \
               --notes-file .github/release-notes.md \
               --target "$GITHUB_SHA"

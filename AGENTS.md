@@ -159,7 +159,7 @@ git ls-remote --tags origin | grep "v<版本>"
 
 标签与资产就绪后再在本机升级 profile 内的插件包。
 
-**市场条目的归档用固定名**：`awesome-dsh-plugin` 列表的 tarball 指向 `…/releases/latest/download/dsh-db-tool-ru.tgz`，所以每个新版本的 Release 都必须同时带一个固定名归档——`latest` 只解析到最新一版，缺了这个资产的版本会让市场卡片立刻变 404。目前工作流只上传带版本号的归档；想让它顺带传固定名副本，需要 token 具备 `workflow` 权限（当前 `gh` token 只有 `gist` / `read:org` / `repo`），暂时手工补：
+**市场条目的归档用固定名**：`awesome-dsh-plugin` 列表的 tarball 指向 `…/releases/latest/download/dsh-db-tool-ru.tgz`，所以每个新版本的 Release 都必须同时带一个固定名归档——`latest` 只解析到最新一版，缺了这个资产的版本会让市场卡片立刻 404。`release.yml` 已经把 `npm pack` 产物复制成 `dsh-db-tool-ru.tgz` 一起上传，无需手工补；只有这一改动上线之前的旧版本才需要补一次：
 
 ```bash
 curl.exe -sSL -o .rel-tmp/dsh-db-tool-ru.tgz \
