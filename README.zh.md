@@ -269,7 +269,7 @@ lib/          插件主体
   http/       右侧栏 HTTP 路由
   script/     run_script 沙箱与子进程
 client/       右侧栏单文件产物
-skills/       db-admin skill
+skills/       db-admin skill（SKILL.md 英文、SKILL.ru.md 俄文、SKILL.zh.md 中文）
 scripts/      构建与工具脚本
 patches/      DSH 宿主热修复补丁
 tests/        vitest（离线 mock + 真机门控）

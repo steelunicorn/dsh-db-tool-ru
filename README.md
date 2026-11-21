@@ -265,7 +265,7 @@ lib/          тело плагина
   http/       HTTP-маршруты правой боковой панели
   script/     песочница run_script и дочерний процесс
 client/       однофайловый бандл правой боковой панели
-skills/       skill db-admin
+skills/       skill db-admin (SKILL.md — английский, SKILL.ru.md — русский, SKILL.zh.md — китайский)
 scripts/      скрипты сборки и инструментов
 patches/      патчи горячего исправления хоста DSH
 tests/        vitest (офлайн-моки + тесты на реальных базах под флагом)

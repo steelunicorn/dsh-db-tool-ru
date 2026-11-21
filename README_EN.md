@@ -268,7 +268,7 @@ lib/          plugin body
   http/       right-sidebar HTTP routes
   script/     run_script sandbox and child process
 client/       right-sidebar single-file bundle
-skills/       db-admin skill
+skills/       db-admin skill (SKILL.md — English, SKILL.ru.md — Russian, SKILL.zh.md — Chinese)
 scripts/      build and tooling scripts
 patches/      DSH host hotfix patches
 tests/        vitest (offline mocks + gated real-database tests)

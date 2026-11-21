@@ -1,0 +1,389 @@
+---
+name: db-admin
+description: 通过 dsh-db-tool-ru 插件操作 9 种数据库（MySQL、PostgreSQL、GaussDB、SQLite、Redis、MongoDB、Oracle、达梦、SQL Server）。调用 DatabaseManager 工具完成连接查询、SQL/命令执行、库表浏览、数据预览；处理 NEEDS_CONFIRMATION 危险操作确认流程，遵守 ro/rw 项目授权与安全规范。
+---
+
+# db-admin：数据库管理与查询
+
+> 语言：[English](SKILL.md) · [Русский](SKILL.ru.md)
+
+本项目装有 dsh-db-tool-ru 插件，通过 **DatabaseManager** 工具让模型以受控方式操作数据库。所有操作受「项目路径 → 连接 → ro/rw」授权模型约束：当前项目未被授权的连接一律不可用，只读授权下任何写操作都会被拒绝。
+
+## 工具调用总则
+
+- 每次调用必须带 `action`；除 `list_connections` 外都必须带 `conn_id`（先 `list_connections` 拿到连接 id）。
+- 参数以 snake_case 为主，兼容 camelCase（`conn_id`/`connId` 均可）。
+- 工具整体超时 **90 秒**；慢查询/大脚本超时按失败处理，需拆小重试。
+- 工具返回 `{text, isError}`：`text` 是 JSON 文本——成功时是结果对象；失败时形如 `{"ok":false,"error":"...","code":"..."}`。`isError=true` 仅用于被拒/失败；`NEEDS_CONFIRMATION` 不是失败（`isError=false`），但 `text` 中 `code` 为该值，见下文确认流程。
+- `query`/`execute`/`run_script`/`execute_file` 都接受可选 `challenge_id`，用于危险操作确认后的重试。
+- 工具只有 8 个 action。**表名搜索、连接导出/导入、数据传输、事务控制都没有对应 action**，它们是侧边栏（HTTP API）能力，见「侧边栏五个面板与辅助能力」。
+- 授权是「项目 → 连接 → ro/rw → 库清单」四级：新授权的库清单为空，用户必须在侧边栏「项目授权」中勾选库（勾选即保存），未勾选时任何库都不可达。
+
+### 错误码与处置（数据侧 8 个 + 文件侧 10 个）
+
+| code | 含义 | 正确处置 |
+|---|---|---|
+| `UNAUTHORIZED_PROJECT` | 项目路径为空，或当前项目未授权该连接 | 引导用户在侧边栏「项目授权」面板为当前项目勾选 ro/rw；不要重试原调用 |
+| `READ_ONLY` | ro 授权下收到写操作（含 `run_script`、`execute_file`、控制台事务） | 告知需升级为 rw；**不要反复重试** |
+| `DATABASE_NOT_GRANTED` | 目标库不在该连接的库级允许清单内；清单为空表示「一个库都不允许」 | 让用户在侧边栏「项目授权」里勾选需要的库（改动即时保存）；**不要换库名反复试探，也不要试图绕过** |
+| `NEEDS_CONFIRMATION` | 危险操作待确认，返回含 `challengeId` | 向用户说明后带同一 `challenge_id` 重试该语句 |
+| `INVALID_CHALLENGE` | challenge 不存在、已用过、已过期（5 分钟）或语句已变更 | 重新原样发起调用取得新 challenge，再走完整确认流程 |
+| `NOT_FOUND` | 连接不存在、事务会话已失效、传输任务不存在 | 重新 `list_connections` / 重新 `begin` / 查历史 |
+| `INVALID_ARGUMENT` | 参数缺失或非法：超上限、`writeMode` 非法、口令不足 8 位、sqlite 开事务、事务指定库等 | 按错误消息改参数后重试；原样重试无意义 |
+| `DRIVER_ERROR` | 数据库/驱动侧失败；ro 模式 query 闸门拒绝也用它（消息以 `DRIVER_ERROR:` 开头） | 按消息修 SQL、连接串或权限；**这不是需要确认的操作** |
+| `SCRIPT_TIMEOUT` | `run_script` 超时被强杀（脚本 60s / 工具 90s 两层） | 缩小脚本工作量或分批；同样脚本重试必然再超时 |
+| `INVALID_PATH` | 路径为空、指向项目目录本身、不是普通文件，或含 Windows 设备/ADS 形态 | 改传项目内的相对文件路径 |
+| `PATH_OUTSIDE_PROJECT` | 路径含 `..` 或解析后越出项目目录 | 只能用项目目录内的相对路径；不要试图绕开 |
+| `SYMLINK_DENIED` | 目标是符号链接，或父目录经 realpath 后落在项目外 | 换真实文件路径，或先让用户在项目内重建 |
+| `PARENT_MISSING` | 父目录不存在且没传 `create_dirs` | 补 `create_dirs: true`，或改用已存在的子目录 |
+| `EXTENSION_DENIED` | 扩展名不在白名单（`.sql/.txt/.json/.csv/.tsv/.md/.log`） | 换合规扩展名；白名单可由插件配置 `fileIo.extensions` 调整 |
+| `FILE_EXISTS` | 目标文件已存在且没传 `overwrite` | 需要替换就传 `overwrite: true`，否则换文件名 |
+| `FILE_TOO_LARGE` | 读超过 8 MB 或写超过 64 MB | 分批导出，或让用户在插件配置 `fileIo` 中提高上限 |
+| `FILE_NOT_FOUND` | `execute_file`/`export_to_file` 的目标文件不存在 | 先导出/确认路径；不要猜文件名 |
+| `NOT_SCALAR` | `format=text` 下结果不是 1 行 × 1 列 | 用 `json`/`csv`，或在 SQL 里聚合成单值 |
+| `EMPTY_RESULT` | 0 行，或文本模式下值为 `NULL`（未传 `allow_empty`） | 确认查询条件；确实允许空就传 `allow_empty: true` |
+
+### 硬性上限与配额
+
+| 项 | 值 | 说明 |
+|---|---|---|
+| `preview` limit | 1..50，默认 10 | 超出服务端钳制 |
+| `preview` offset | ≥0，默认 0 | 翻页 |
+| 表名搜索 limit（侧边栏） | 1..200，默认 100 | 工具无此 action |
+| 审计 limit | 1..500，默认 50 | |
+| 传输历史 limit | 1..200，默认 50 | |
+| 传输日志 limit | 1..2000，默认 200 | |
+| Redis 单次 `SCAN` 最多键 | 200 | 达上限返回 `truncated` |
+| Redis 集合类读取（hgetall/lrange/smembers/zrange） | 500 行 | |
+| Redis 键清单（表列表） | 500 | |
+| Redis `preview` | ≤50 | |
+| MongoDB `find` | limit ≤50，默认 20 | 超出自动钳制 |
+| MongoDB `aggregate` 读结果 | 500 行 | |
+| Oracle / 达梦 结果集 | 500 行 | 超限 `truncated` |
+| 脚本执行 | 60s | worker 与 vm 两层同值 |
+| 工具整体 | 90s | |
+| HTTP 请求体 | 2MB | 超限 `INVALID_ARGUMENT` |
+| 导出口令 | ≥8 位 | 服务端强制 |
+| 单连接并发事务会话 | 4 | 超限 `INVALID_ARGUMENT` |
+| 全局并发传输任务 | 8 | |
+| 单任务表数 | 1000 | 且表名不可重复 |
+| 传输 `batchSize` | ≤5000，默认 1000 | |
+| 传输 `tableConcurrency` | ≤16，默认 4 | |
+| 传输 `shardConcurrency` | ≤32，默认 4 | 单表单片数 ≤32 |
+| 事务空闲回收 | 5 分钟 | 扫描周期 30s，回收即回滚并审计 |
+| 文件读取 | ≤8 MB | 配置 `fileIo.maxReadBytes` |
+| 文件写入 | ≤64 MB | 配置 `fileIo.maxWriteBytes` |
+| 文件扩展名 | `.sql .txt .json .csv .tsv .md .log` | 配置 `fileIo.extensions` |
+| 审计里的 SQL 文本 | 200 字符 | 超出截断并以 `…` 结尾 |
+
+## 八个 action
+
+### 1. list_connections
+
+列出**当前项目已授权**的连接（含 id、kind、name、safeUrl——密码等 secrets 永不返回）。
+
+```
+DatabaseManager({ action: "list_connections" })
+```
+
+任何任务开始前先调用它确定可用连接；返回为空说明当前项目未授权任何连接，应引导用户在侧边栏「项目授权」面板为项目路径授 ro 或 rw。
+
+### 2. query — 执行查询（只读意图）
+
+```
+DatabaseManager({ action: "query", conn_id: "c1", sql: "SELECT id, name FROM users WHERE age > ?", params: [18] })
+```
+
+- `sql` 必填；`params` 为参数数组（占位符见方言速查）；可选 `challenge_id`（危险读如 Redis `KEYS *` 触发确认后重试用）。
+- 可选 `database`：跨库执行目标（Navicat 式）。pg/gaussdb 传库名（如 `gycwd`）即在该库上执行（同一凭据开独立连接，ro 授权下同样强制只读）；其余库种优先用语句内全限定名（MySQL `库名.表`、SQL Server `库名.schema.表`）。
+- 返回 `{columns, rows, rowCount, truncated?}`，所有单元格已规范化为 string/number/null。
+- ro 与 rw 授权下都可用，但只读接口收到非查询语句会被拒。
+
+### 3. execute — 执行单条写语句（需 rw）
+
+```
+DatabaseManager({ action: "execute", conn_id: "c1", statement: "UPDATE users SET age = ? WHERE id = ?", params: [20, 42] })
+```
+
+- `statement`（或 `sql`）必填，单条语句；DDL/DML/维护命令都会触发危险确认。
+- 可选 `database`：跨库执行目标，语义同 query（pg/gaussdb 支持按库路由，目标库权限由数据库侧用户权限控制）。
+- 返回 `{affectedRows?, message}`，`message` 为中文结果描述。
+- ro 授权下直接返回 `READ_ONLY` 错误。
+
+### 4. schema — 浏览库/表/结构（三级递进）
+
+一个 action 三种用途，按参数自动降级：
+
+```
+DatabaseManager({ action: "schema", conn_id: "c1" })                                            // → 数据库列表
+DatabaseManager({ action: "schema", conn_id: "c1", database: "shop" })                          // → 表列表
+DatabaseManager({ action: "schema", conn_id: "c1", database: "shop", table: "users" })          // → 列结构
+```
+
+- 表列表返回 `TableInfo[]`：`{name, type?, comment?, database?}`（Redis 的 type 为 hash|list|set|zset|string|stream）。
+- PostgreSQL/GaussDB 为「数据库 → 模式(schema) → 表」三层语义，支持跨库浏览（Navicat 行为）：`database` 参数传 `"库名.schema"` 即可浏览连接库之外的库（如 `gycwd.public`，服务端自动用同一凭据开指向该库的连接）；只传 schema 名（如 `public`）则查连接自身库。`listSchemas(database)` 的参数是**纯库名**。不确定 schema 时先执行 `SELECT nspname FROM pg_catalog.pg_namespace WHERE nspname NOT LIKE 'pg\_%' AND nspname <> 'information_schema'`。
+- 列结构返回 `ColumnInfo[]`：`{name, dataType, nullable, key?, default?, comment?}`。
+- 找不到表名时不要盲目逐库遍历：已知表名问「在哪张表」时先 `database` 逐个试，或引导用户用侧边栏的跨库表名搜索（见下文），模型侧没有等价 action。
+
+### 5. preview — 预览表数据
+
+```
+DatabaseManager({ action: "preview", conn_id: "c1", table: "users", limit: 20, offset: 0, database: "shop" })
+```
+
+- `table` 必填；`limit` 1..50（默认 10，服务端强制截断）；`offset` ≥0（翻页）；`database` 可选。
+- 返回 `{columns, rows, rowCount, truncated?}`；`truncated: true` 表示还有更多行，翻下一页请递增 `offset`。
+
+### 6. run_script — 沙箱脚本 / Redis 命令 / Mongo 文档（需 rw，危险句柄触发确认）
+
+`code` 是一段 JS 脚本，在**子进程隔离沙箱**中执行（无 require/process/fs/网络，60 秒超时）。沙箱注入两个句柄，均走完整 guard/challenge/审计链路：
+
+- `db.query(sql, params)` — 只读查询，返回结果对象；
+- `db.execute(statement, params)` — 写执行，危险语句在沙箱内以异常抛出 `NEEDS_CONFIRMATION` JSON，需按确认流程携 `challenge_id` 重试。
+
+脚本返回值即工具返回值（须可 JSON 序列化）。示例：
+
+```
+DatabaseManager({ action: "run_script", conn_id: "c1", code: "return (await db.query('SELECT count(*) AS n FROM users', [])).rows" })
+```
+
+两条硬约束：
+
+- **恒需 rw**：`run_script` 在授权校验处就要求 rw，连纯只读的 Redis/Mongo 脚本也一样——没有「只读脚本通道」。ro 连接只能用 `query`（Redis/Mongo 的 `query` 可直接传命令 JSON）。
+- **一个脚本里最多只有第一条危险语句能被确认执行**：脚本内所有 `db.query`/`db.execute` 共用同一份 `challenge_id` 入参，而 challenge 一次性——第一条危险语句消费掉它，后续危险语句必然 `INVALID_CHALLENGE`。不要把多条需要确认的写语句塞进同一个脚本；多步确认请逐条 `execute`（每条各自确认），或用侧边栏控制台事务。
+
+Redis 与 MongoDB 没有 SQL，`code` 直接传**命令数组 / BSON 命令文档**的 JSON 文本（此时脚本体即该 JSON）：
+
+```
+DatabaseManager({ action: "run_script", conn_id: "redis1", code: '["GET","user:1"]' })
+DatabaseManager({ action: "run_script", conn_id: "mongo1", code: '{"find":"users","filter":{"age":{"$gt":18}}}' })
+```
+
+这两种库的 `query` 与 `execute` 也直接接受命令 JSON（读命令走 `query`、写命令走 `execute`），是按语言区分的两条通道；`run_script` 则是唯一能做「多步组合」的入口。
+
+### 7. export_to_file — 查询结果落盘（推荐用于长文本）
+
+```
+DatabaseManager({ action: "export_to_file", conn_id: "c1",
+                  sql: "SELECT pg_get_functiondef(27896227) AS d",
+                  path: "fn/pdt_income_storageobject_t.sql", create_dirs: true })
+```
+
+- `sql`、`path` 必填；`path` 必须是**项目目录内的相对路径**（项目目录即授权键），绝对路径、`..`、盘符、`CON` 之类一律拒绝。
+- `format`：`text`（默认，要求 1 行 × 1 列，值原样写入，不归一化换行、不追加 `\n`）、`json`（`JSON.stringify(rows, null, 2)` + 结尾换行）、`csv`（列名表头 + RFC 4180，`\r\n`）。编码 UTF-8 无 BOM。
+- `overwrite`（默认 false，已存在则 `FILE_EXISTS`）、`create_dirs`（默认 false，父目录缺失则 `PARENT_MISSING`）、`allow_empty`（默认 false，0 行或 `NULL` 则 `EMPTY_RESULT`）。
+- 返回 `{path, bytes, md5, rows, format}` —— `md5` 由写入的字节算出，可与数据库侧 `md5(convert_to(..., 'UTF8'))` 核对。
+- **长文本（函数体、视图定义、大 JSON）必须走这条通道**，不要用 `query` 取回再誊写：模型每约 8 KB 文本就会引入一处偏差，base64 里丢一个字符还会错位后续全部片段。
+
+### 8. execute_file — 从文件执行语句（需 rw）
+
+```
+DatabaseManager({ action: "execute_file", conn_id: "dev1", path: "fn/pdt_income_storageobject_t.sql" })
+```
+
+- `path` 必填，相对项目目录；文件按**原样**提交，不裁剪行尾空格与换行——这正是 `export_to_file` 输出的文件能直接执行的原因。
+- 走的是与 `execute` 完全相同的链路：guard 分类、危险语句 `NEEDS_CONFIRMATION` + 一次性 `challenge_id`、ro 授权 `READ_ONLY`、审计（记方向、路径、字节数、`md5` 与文本前 200 字符）。
+- 返回 `{path, bytes, md5, commandtag?}`；PostgreSQL 下 `commandtag` 例如 `CREATE FUNCTION`。
+- 文件为空或只有空白字符时报 `INVALID_ARGUMENT`；不要用它执行多语句脚本，多步请用 `run_script` 或侧边栏控制台事务。
+- `search_path`（可选，PostgreSQL）：函数体里常有不带 schema 的类型与例程（`citext`、`varlist`），而 `pg_get_functiondef` 原样返回文本，于是在「干净」会话上会报「类型 … 不存在」。此时传 `search_path: "sys, dbo, public"`——插件把文件与 `set_config('search_path', …, true)` 放在同一批里执行，路径只对本次运行生效、不残留在连接池会话上。只接受普通标识符（逗号分隔，最多 16 个），不能与 `params` 同用。
+
+**典型场景：把函数体从一台库搬到另一台**
+
+1. `export_to_file`（源连接）：`sql: "SELECT pg_get_functiondef(<oid>) AS d"`，`path: "fn/<函数名>.sql"`；
+2. 在编辑器里改文件（改名、改 owner、调注释）；
+3. `execute_file`（目标连接，rw）：同一 `path`，返回 `commandtag = CREATE FUNCTION`；
+4. 收尾核对：目标端 `SELECT md5(prosrc) FROM pg_proc WHERE oid = '<oid>'::regproc` 与预期一致再收工。
+
+## 九库方言速查
+
+| 库 | 占位符 | 元数据入口 | 分页 | 备注 |
+|---|---|---|---|---|
+| MySQL | `?` | `information_schema` | `LIMIT n OFFSET m` | |
+| PostgreSQL | `$1, $2…` | `information_schema` / `pg_catalog` | `LIMIT n OFFSET m` | |
+| GaussDB | `$1, $2…` | `information_schema` / `pg_catalog` | `LIMIT n OFFSET m` | PG 系（默认端口 8000，见下方注记） |
+| SQLite | `?` | `sqlite_master` / `PRAGMA` | `LIMIT n OFFSET m` | 库列表固定 `['main']` |
+| Redis | 无（命令数组） | `SCAN`（禁用 `KEYS` 遍历） | `SCAN cursor` | `run_script` 传 `["SCAN","0","MATCH","user:*","COUNT","100"]`；传输走 `__redis_keys` envelope 降级 |
+| MongoDB | 无（BSON 文档） | `listCollections` | `find().skip().limit()` | `run_script` 传 `{"find":"users","filter":{},"limit":20,"skip":40}` |
+| Oracle | `:name` | `ALL_TABLES` / `USER_TABLES` | `OFFSET m ROWS FETCH NEXT n ROWS ONLY` | |
+| 达梦(DM) | `:name` | 系统视图同 Oracle 风格 | `OFFSET m ROWS FETCH NEXT n ROWS ONLY`（8a 支持 `LIMIT`） | |
+| SQL Server | `?`（适配器内部重写为 `@p1`） | `sys.*` catalog views | 2012+ `OFFSET m ROWS FETCH NEXT n ROWS ONLY`；2008/2008R2 降级 `ROW_NUMBER` | 标识符 `[x]`，名中含 `]` 双写为 `]]`；**仅 SQL 认证**（不支持 Windows 集成认证 / Azure AD）；其余边界见下方「SQL Server 覆盖范围与边界」 |
+
+**Redis 传输口径（降级，非无损表到表）**：上表 Redis 行是命令与浏览口径；数据传输中 Redis 通过固定 envelope 表 `__redis_keys` 降级参与，六列为 `key`/`type`/`ttl_ms`/`encoding`/`payload`/`dump`。其中 `ttl_ms` 无过期为 0（PTTL `-1` 落 `0n`、PTTL `-2` 读瞬间键已消失则跳过该键，正值原样毫秒），`encoding` 为 `OBJECT ENCODING` 内存编码诊断值（如 raw/hashtable/listpack/quicklist，与 `payload` 列的序列化无关），`payload` 恒为 UTF-8 JSON 字符串。`ttl_ms` 来自 [TTL](https://redis.io/docs/latest/commands/ttl/)（及 PTTL），`dump` 来自 [DUMP](https://redis.io/docs/latest/commands/dump/)，仅在同构 Redis→Redis 时经 [RESTORE](https://redis.io/docs/latest/commands/restore/) 恢复；[SCAN](https://redis.io/docs/latest/commands/scan/) 的 cursor 语义决定 keyspace 枚举不是一次性快照。【官方文档已确认】[Redis data types](https://redis.io/docs/latest/develop/data-types/) 把 Redis 定义为 data structure server；【项目推断】因此 stream consumer group、跨版本 `DUMP`、逻辑库 `dbN` 等原生键空间语义明确排除，「不能无损表到表」是依据官方命令语义的项目判断，官方未逐字声明。异构迁移使用中间类型模型的依据见【官方文档已确认】[AWS DMS built-in data types](https://docs.aws.amazon.com/dms/latest/userguide/CHAP_Reference.DataTypes.html) 与 [Airbyte supported data types](https://docs.airbyte.com/platform/understanding-airbyte/supported-data-types)；任务配置持久化的产品依据见 [DBeaver Task management](https://dbeaver.com/docs/dbeaver/Task-Management) 与 [Navicat Save Profiles](https://www.navicat.com/manual/pdf_manual/en/navicat_16/win_manual/navicat_en.pdf)（后者为【官方页面动态壳/搜索摘要已确认】的 PDF 摘要，未逐页解析）。
+
+**类型规范化**（工具返回值已自动处理，引用结果时注意）：`DECIMAL/NUMERIC` → string（避免精度丢失）；`Date/TIMESTAMP` → ISO 8601 string；`LOB/CLOB/BLOB` → string；MongoDB `ObjectId` → string。生成写语句时，DECIMAL 直接传字符串值、日期传 ISO 字符串即可。
+
+**SQL Server 类型例外（分侧口径）**：
+- **decimal/numeric**：浏览侧（`query` / `preview` / 数据浏览网格）**不保证逐位保真**——驱动在解析阶段已把它转成 JS number（>15 有效位即丢精度），转成字符串只能防后续数值化，且 >1e21 会显示为科学计数法；需要逐位保真时请在 SQL 里显式 `CONVERT(nvarchar(...), col)`。数据传输（transfer）读端已内建 `CONVERT(nvarchar(64), col)`，写端按字符串绑定，精度不经过 JS 浮点。
+- **空间/层次 UDT**：`hierarchyid` / `geometry` / `geography` 在传输中按二进制（bytes）搬运，目标端建 `VARBINARY(MAX)`——值保真但 **UDT 类型语义不保留**（目标端没有 `ST_*` / `hierarchyid` 方法），需要空间语义时目标端要自行改造列类型。
+- **sql_variant**：传输读端 `CONVERT(nvarchar(max), col)` 转文本，**原类型信息丢失**（驱动按值的实际类型返回标量，无法统一搬运）。
+- **字符列保容量**：源 `varchar` / `char` 长度 4001–8000 会映射为目标 `NVARCHAR(MAX)` 类，不做隐式收窄。
+- **日期时间保真**：`datetime2` 读端 `CONVERT(nvarchar(33), col, 126)`、`time` 用 `CONVERT(nvarchar(16), col, 126)`。
+
+## GaussDB 官方对齐注记（HCS 26.861.0，集中式/分布式）
+
+依据华为云 GaussDB 官方文档（doc.hcs.huawei.com/db/zh-cn，26.861.0 双形态）与 openGauss 官方文档源仓库对齐；未真机验证处以代码内标注为准。
+
+- **认证**：驱动实现 openGauss SHA256 / MD5-SHA256 / SM3 握手，匹配服务端默认 `password_encryption_type = 2`（sha256）。连接报 `Invalid username/password, login denied` 时依次排查：① 认证配置（gs_hba.conf）需含 `host all all 0.0.0.0/0 sha256`；② 服务端密码加密方式变更后必须重设密码或新建用户（旧口令仍是旧加密）；③ 账号锁定用 `ALTER USER ... ACCOUNT UNLOCK`。
+- **默认端口 8000**（集中式 DN / 分布式 CN，官方 gsql 示例 `-p 8000`）；SSL 默认不强制（服务端可 require_ssl 强制）。本工具 SSL 仅开/关，**不支持** sslmode（require/verify-ca/verify-full）证书校验细分。
+- **ro 只读会话**：`SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY` 为官方语法（集中式/分布式均支持，rf-dist/gaussdb-08-0400、rf-cent/gaussdb-38-0416），连接建立时执行一次即对该连接所有后续事务生效。
+- **隔离级别差异**：READ UNCOMMITTED 等价 READ COMMITTED；**SERIALIZABLE 功能不支持，等价 REPEATABLE READ**——与 PG 真 SSI 行为不同，依赖 PG 串行化语义的脚本注意。
+- **元数据**：`pg_database` / `pg_catalog.pg_namespace` 为官方系统表；`information_schema.tables/columns` 集中式有官方视图文档，分布式参考无原生视图（仅 M-Compatibility 模式有），分布式实例上浏览以真机行为为准。
+- **兼容模式**：openGauss 有 sql_compatibility（A/B/C/PG）兼容模式，部分语法语义随模式变化（如 B 模式 SET SESSION TRANSACTION 需 `b_format_behavior_compat_options` 含 set_session_transaction 才生效），本工具按 PG 语义使用。
+- 驱动/默认值差异的代码内证据与证据 URL 见 `lib/adapters/gaussdb/index.ts` 头注释与 `lib/adapters/sql-shared/pg-like.ts`。
+
+## SQL Server 覆盖范围与边界
+
+- 覆盖 SQL Server 2005（9.0）→ 2025（17.0）与 Azure SQL Database；不支持 SQL Server 2000 及更早。方言与元数据只使用 2005+ 通用写法（元数据走 `sys.*` catalog views）。
+- **TDS 版本自动协商，无需用户选择**：客户端固定声明 `7_4`，服务器按自身能力自动降级（2005→`7_2`、2008→`7_3_A`、2008 R2→`7_3_B`、2012+→`7_4`）。这是 [MS-TDS](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-tds/773a62b6-ee89-4c02-9e5e-344882630aac) 的 MUST 级规定（客户端声明高于服务器时，服务器**必须**用自己最高版本）。`tdsVersion` 仅作排障覆盖项；**不要**因「老版本」就下调它——那会把「连不上」变成「连上了但行为异常」。
+- **认证**：仅 SQL 认证（user/password）；**不支持 Windows 集成认证，也不支持 Azure AD 认证**——需要这两类认证时本工具不可用。注意：本工具**未实现** `IsIntegratedSecurityOnly` 探测，遇到「实例仅允许 Windows 认证」时只会表现为登录失败，不要声称能自动识别该状态。
+- **连接形态**：`sqlserver://user:password@host:port/db`，支持 query 参数 `encrypt` / `trustServerCertificate` / `tdsVersion` / `tlsMinVersion` / `serverName` / `caCert` / `instanceName` / `useUTC`（参数名大小写不敏感）；`instanceName` 与端口互斥（命名实例改由 SQL Server Browser 解析）。**不接受** ADO.NET 键值连接串（`Server=...;Database=...`）。**常规连接只需主机/端口/账号/密码**；除 `useUTC` / `instanceName` 外，前述加密与证书参数在界面里都收在「高级选项」折叠区（默认收起），属排障用，不要默认要求用户去填。
+- **默认与覆盖**：`encrypt=auto`（新建连接默认）+ `trustServerCertificate=false` + `tdsVersion=7_4` + `useUTC=true`。URL query 与分字段表单**同口径**，两处都能覆盖上述各项；非法取值直接报错，不静默回退。
+- **`encrypt=auto` 的语义（默认策略，勿按「必须手动开加密」描述）**：先不带加密建连；若服务器**强制加密**（`EENCRYPT` / 「服务器要求加密连接」，如 `Force Encryption=Yes` 或 Azure SQL），自动以 `encrypt=true` + `trustServerCertificate=true` **重试一次**。边界严格：**仅重试一次**；**仅针对「服务器强制加密」这一种原因**（证书类、协议版本类、登录失败等一律不重试）；**显式指定 `encrypt`（`true`/`false`/`strict`）时不做任何重试**。**`auto` 不等于「自动加密」**：在未强制加密的服务器上它等价于 `encrypt=false`，即明文传输——见下条风险说明。
+
+### TLS 握手失败：两类根因，解法互不通用
+
+| 报错特征 | 根因 | 处置（按优先级） |
+|---|---|---|
+| `self signed certificate` / `unable to verify` / `CERT_` 家族 | 证书校验阶段失败（自签、链断、主机名不符、已过期） | ① `?caCert=` 装受信 CA（PEM 路径或文本，校验照常生效，**官方推荐**）；证书签给域名而在用 IP 连接时再加 `?serverName=域名`；② 不得已才 `?trustServerCertificate=true` 或 `?encrypt=false`（后者需服务器未强制加密） |
+| `UNSUPPORTED_PROTOCOL` / `no protocols available` / `alert protocol version`（含 `SSL routines ... UNSUPPORTED`） | 协议版本协商阶段失败：客户端与服务端无共同 TLS 版本，**证书校验根本没执行** | ① 服务端启用 TLS 1.2（2008 R2 SP3 装 KB4057113、2008 SP4 装 KB4057114、2012/2014 装对应 CU/GDR 与 KB3052404，重启实例）；② 暂时不能动服务端时，客户端下探 `?tlsMinVersion=TLSv1` |
+
+**不要拿证书类参数治协议版本类**：`trustServerCertificate=true` / `encrypt=false` 只影响证书校验，对 `UNSUPPORTED_PROTOCOL` 没有任何作用，试错只会白跑一轮。两类判据互斥，报错消息里已按族给出中文根因；看到 `TCP 已连通但 TLS ...` 说明网络与端口都没问题，不要再查主机/防火墙。
+
+**默认 `auto` 不会替你兜住证书类错误**：`auto` 的自动重试只认「服务器强制加密」这一种原因，证书校验失败仍会原样报错。也就是说自签证书实例在默认值下照样可能连不上（取决于服务器是否强制加密），此时按上表证书族路径处理——把 CA 导入系统受信任根通常就能连（插件已并入系统信任库，无需填 `caCert`）。
+
+**关键事实：`encrypt=false` 与默认 `encrypt=auto` 的真实行为（已抓包实测）**。服务器**未**强制加密时，`encrypt=false` 会**完全跳过 TLS 握手并明文发送 LOGIN7（含账号密码）**——实测客户端下一个包就是 TDS `0x10`，没有 TLS 握手。这是明文传输风险，不是「只是不加密数据包」。**默认的 `auto` 第一步正是这条路径，因此在未强制加密的服务器上 `auto` 与 `encrypt=false` 行为完全相同**——`auto` 只在服务器拒绝明文时才升级到 TLS，它不是「自动帮你加密」。服务器**强制**加密时（`Force Encryption=Yes` / Azure SQL），`encrypt=false` 会被拒（提示服务器要求加密）。官方那句「登录包始终加密」仅适用于「服务器强制加密或客户端 `encrypt=true`」的场景，**不可推广成 `encrypt=false` 也总有 TLS 握手**。故：可信内网可用默认值；跨公网或不可信网段连接时**显式设 `encrypt=true`**（显式值不触发任何自动重试，行为可预期），证书问题再用 `caCert` / `serverName` 解决。另注：连 2005 或未打补丁的 2008 时服务端可能只有 TLS 1.0，需下探 `?tlsMinVersion=TLSv1`。
+
+### 版本与 TLS 1.2 支持
+
+| 版本 | TLS 1.2 | 所需补丁 |
+|---|---|---|
+| 2005（9.0） | **不支持**（无任何补丁） | 无解，只能下探客户端 TLS 下限 + 信任证书 |
+| 2008 SP4 / 2008 R2 SP3 | 需补丁 | KB4057114 / KB4057113 |
+| 2012 SP4- / 2014 SP3- | 需补丁 | 对应 CU/GDR + KB3052404 |
+| 2012 SP4 / 2014 SP2 / 2016+ | 原生支持 | — |
+| 2022 / 2025 | 原生；TDS 8.0 下可 TLS 1.3 | — |
+
+2016+ 实际使用哪个 TLS 版本由**操作系统的 Schannel** 决定，不由 SQL Server 决定——同一版本实例在不同机器上表现可能不同。
+
+### `tlsMinVersion` 参数
+
+| 取值 | 含义 |
+|---|---|
+| `TLSv1` | 最低 TLS 1.0（2008/2008R2 只支持 1.0 时用） |
+| `TLSv1.1` | 最低 TLS 1.1 |
+| `TLSv1.2` | 最低 TLS 1.2（等同不设置时的 Node 默认下限） |
+
+- 不设置即沿用 Node 默认下限 TLSv1.2；取值**区分大小写、不做归一化**，非法值直接报中文错误（不静默回退，避免用户以为已下探）。
+- **不支持 `TLSv1.3`**：底层 tedious 在未指定上限时把 `maxVersion` 封顶为 TLSv1.2，设 1.3 会变成 min > max，握手必然失败（`ERR_SSL_NO_PROTOCOLS_AVAILABLE`）。
+- 只开下限、不提供 ciphers / maxVersion 开关；不要填 OpenSSL 专有 cipher 串（BoringSSL 下会抛 `INVALID_COMMAND`）。
+- 例：`sqlserver://sa:pwd@10.0.0.5:1433/shop?tlsMinVersion=TLSv1`
+- **分页自动分流**：适配器探测 `SERVERPROPERTY('ProductMajorVersion')`，2012+ 用 `OFFSET/FETCH`，2008/2008R2 降级 `ROW_NUMBER() OVER (ORDER BY (SELECT NULL))` 子查询——生成 SQL 时不需要自己补 `TOP`/`ROW_NUMBER`。
+- **传输边界**：写入为参数化多行 `VALUES` INSERT（TDS 单语句 2100 参数上限、`VALUES` 单语句 1000 行上限，每语句行数取两者最小值）。传输分页按目标库版本分流：2012+ 用 `OFFSET/FETCH`，**2008/2008R2 降级可用**——有序游标（keyset/range）用 `SELECT TOP (n) ... ORDER BY key`，无分片键的 offset 全序与 `keyAt` 切块用 `ROW_NUMBER() OVER (...)` 子查询；版本探测失败按 0 走保守降级。已知限制：目标表已存在且该列是 IDENTITY 时，写入显式值会报错 544（当前不自动 `SET IDENTITY_INSERT ON`）；传输自动建表不生成 IDENTITY 列。
+- **真机验证**：真机用例组由环境变量 `DBT_TEST_SQLSERVER_URL` 门控（`tests/adapters-sql/sqlserver.test.ts`，未设置则整体 skip）；错误中文映射、参数默认值与 TLS 分族诊断由 Fake 驱动离线用例覆盖。
+- 只读（ro）强度弱于 MySQL/PG，原因见下文「只读（ro）模式下的正确姿势」。
+
+## 危险操作确认流程（NEEDS_CONFIRMATION）
+
+收到形如以下的返回时：
+
+```json
+{"ok":false,"code":"NEEDS_CONFIRMATION","challengeId":"c_9f8e7d6c5b4a3210fedcba98","statement":"DROP TABLE users","danger":"danger","reason":"DDL 不可回滚（隐式提交）","hint":"..."}
+```
+
+必须按顺序执行：
+
+1. **停下**，向用户原文说明：语句内容、危险原因（`reason`）。
+2. 用户**明确同意**后，携带**同一个 `challenge_id`** 重试同一语句：
+   `DatabaseManager({ action: "execute", conn_id: "c1", statement: "DROP TABLE users", challenge_id: "c_9f8e7d6c5b4a3210fedcba98" })`
+3. 用户拒绝则放弃，不重试。
+
+Challenge 属性：**一次性**（用过即失效）、绑定语句 hash（改语句后失效）、5 分钟过期。过期或无效会返回 `INVALID_CHALLENGE`，此时重新发起调用、走完整确认流程。**严禁**未经用户确认就重试；也**不要**为绕过确认而改写语句。
+
+一次 challenge 只能覆盖一条语句——`run_script` 里多条危险语句必然在第二条起报 `INVALID_CHALLENGE`，多步写请逐条 `execute`。
+
+会触发确认的典型操作：DDL（CREATE/ALTER/DROP/TRUNCATE）、所有 DML 写（INSERT/UPDATE/DELETE）、维护命令、Redis 危险命令（FLUSHALL、CONFIG 等）与写命令、Mongo 写 op（drop、deleteMany、updateMany 等）、以及部分危险读（如 Redis `KEYS *`）。SQL Server 另有：专属危险首词 `BACKUP`（DATABASE/LOG）、`RESTORE`、`DBCC`、`RECONFIGURE`、`BULK INSERT`、`SHUTDOWN`、`xp_cmdshell` 与其他 `xp_*`、`sp_configure`；`SELECT ... INTO <表|#临时表>`（T-SQL 建表副作用）与 `WITH ... (DELETE|UPDATE|INSERT)` 也判危险需确认；其中 `SELECT 1 INTO @t`（表变量/变量赋值）放行、`INSERT INTO ...` 仍按 DML 口径。注意一般 `EXEC sp_*`（非 `sp_configure`/`xp_*`）**未**单列危险，不会因此触发确认。另外这一层是「确认」语义；**ro 授权下** `SELECT ... INTO`、`WITH` 写体与 `OPENQUERY`/`OPENROWSET`/`OPENDATASOURCE` 会被适配器闸门**直接拒绝**（返回错误，无确认可走）。
+
+## 侧边栏五个面板与辅助能力
+
+侧边栏 tab 共 **5 个面板**（中英双语），用户问「在哪儿操作」时按下表指路；这些能力多数没有对应的工具 action。
+
+| 面板 | 能力 | 底层 HTTP API（模型不可直接调用） |
+|---|---|---|
+| 连接管理 | 新增/编辑/删除连接、保存前测试草稿、连通性测试、导出/导入 | `/api/connections*`、`/api/test-draft` |
+| 项目授权 | 为当前项目路径逐连接勾选 ro/rw、撤销 | `/api/grants` |
+| 数据浏览 | 库/模式/表三级树、跨库表名搜索、数据预览网格 | `/api/databases`、`/api/schemas`、`/api/schema`、`/api/tables`、`/api/search-tables`、`/api/preview` |
+| SQL 控制台 | 多标签编辑器、逐条执行、`GO`/`GO n` 批分隔、事务、结果网格（50 行/页，CSV/JSON 导出） | `/api/query`、`/api/execute`、`/api/console/*`、`/api/audit` |
+| 数据传输 | 表数据搬运、实时进度；含「传输历史」「传输日志」两个子标签 | `/api/transfer/start`、`/api/transfer/{id}`、`/api/transfer/live`、`/api/transfer-history`、`/api/transfer-log` |
+
+### 跨库表名搜索（仅在数据浏览面板）
+
+按关键字模糊搜表名，ro 即可，命中项带 `database` 便于定位跳转。它**不是工具 action**，模型侧没有等价入口，只能引导用户去面板搜索，或自己逐库调 `schema`。
+
+真实分流（不存在的实现不会「尽力而为」，直接返回空）：
+
+| 库 | 实现方式 |
+|---|---|
+| MySQL / PostgreSQL / GaussDB | 适配器原生实现（一条 `information_schema` 模糊查询；pg 系可跨库） |
+| SQLite / MongoDB | 回退「逐库 `listTables` + 内存过滤」（并发 8，个别库无权限不影响整体） |
+| **Redis / Oracle / 达梦 / SQL Server** | **恒返回空**（无实现且语义不兼容：Redis 忽略库名会重复返回同一批键，Oracle/达梦 的库层语义是 owner） |
+
+limit 1..200（默认 100）。搜不到时不要断言「表不存在」，换 `schema` 逐库确认。
+
+### 连接导出 / 导入
+
+| 操作 | 请求体 | 返回 |
+|---|---|---|
+| 导出 | `{passphrase}` | `{json, count}` |
+| 导入 | `{json, passphrase}` | `{imported, skipped, errors}` |
+
+- 整包加密：scrypt（N=16384, r=8, p=1）派生密钥 + AES-256-GCM，文件打开无明文；口令**服务端强制 ≥8 位**。
+- 导入时 **id 冲突一律进 `skipped`、不覆盖已有连接**，可重复导入（幂等）。
+- 口令错误与密文损坏统一报 `INVALID_ARGUMENT`（不区分原因，防口令探测）。
+- 导出/导入**不需要项目授权**（属连接管理范围）；审计只记条数，不落口令与密文内容。
+
+### 数据传输（侧边栏「数据传输」面板）
+
+| 写入模式 | 语义 |
+|---|---|
+| `insert`（默认） | 追加；目标表已存在则整表失败（不覆盖已有数据） |
+| `ignore` | 冲突行跳过 |
+| `replace` | 冲突行覆盖（依赖主键） |
+| `truncate` | 先清空目标表再全量写入，**清空不可恢复** |
+
+- 授权要求：源端 ro 即可，目标端需 rw。
+- 目标表不存在时按源表结构自动建表；`overwriteStructure` 可覆盖结构。
+- **Redis 不支持传输**：读端与写端都返回「数据传输暂不支持」，源或目标任一端是 Redis 都无法搬运。
+- 并行降级：目标 SQLite 单写者 → 表级并发钳 1、分片共享同一 writer（写入天然串行）；源 Oracle/达梦 走专用单连接读 → 表内不分片（表级并行仍生效）。
+- 并发与批量：`tableConcurrency` ≤16 默认 4、`shardConcurrency` ≤32 默认 4、`batchSize` ≤5000 默认 1000、单表分片 ≤32；失败分片重试 1 次——重试的幂等性依赖 `ignore`/`replace`，`insert` 模式重试可能产生重复行。
+- 上限：全局并发任务 8、单任务表数 1000、表名不可重复（重复即 `INVALID_ARGUMENT`）。
+- 启动需危险确认（challenge 绑定「源→目标 + 表清单 + 模式 + 定位」，改任一字段即失效）。
+- 结果查看：运行中看「实时进度」，终态进「传输历史」（limit ≤200，可按项目清除），全过程事件进「传输日志」（limit ≤2000）。
+- 模型侧没有 transfer action，**不要伪造传输进度或结果**；只能引导用户在面板操作并读取其反馈。
+
+### 控制台事务
+
+| 步骤 | 行为 |
+|---|---|
+| 开始 | 需 rw 且**未选库**；返回 `sessionToken`，绑定一条粘性连接 |
+| 执行 | 语义等同 `execute`：危险语句逐条走确认（一个 challenge 一条语句） |
+| 提交/回滚 | 销毁会话并 close 适配器；token 随即失效 |
+
+- **只有 rw 且未选库才能 begin**：ro 直接 `READ_ONLY`；带 `database` 入参被显式拒绝（粘性事务绑定连接默认库，跨库会静默跑错库）。
+- **SQLite 无事务通道**：`begin` 报 `INVALID_ARGUMENT`（连接类型不支持控制台事务会话）。
+- 单连接并发事务会话 ≤4；空闲 5 分钟自动回滚并审计（扫描周期 30s）；token 失效后再 `exec` 报 `NOT_FOUND`（已提交/回滚或空闲回收）。
+- 撤销授权或 rw→ro 降级会立即回收该连接的全部事务会话并回滚未提交事务。
+
+## 安全规范（必须遵守）
+
+- **永远使用参数绑定**：`sql: "SELECT * FROM users WHERE id = ?"` + `params: [42]`。**禁止字符串拼接**用户输入进 SQL。
+- **标识符白名单**：表名/列名无法参数化时，只能使用 `schema` action 返回的标识符，或引号包裹并转义（MySQL `` `name` ``、PG/SQLite `"name"`、Oracle/DM `"NAME"`、SQL Server `[name]` 且名字中的 `]` 双写为 `]]`）；禁止把用户原文直接嵌为标识符。
+- 值中的引号交给参数绑定处理；确实无法绑定的场景先向用户确认。
+- 不执行来历不明的语句；用户要求执行时，按危险确认流程处理。
+
+## 只读（ro）模式下的正确姿势
+
+- ro 授权下 execute/写类 run_script 会返回 `READ_ONLY`——**不要反复重试**，直接告知用户需要在侧边栏把授权升级为 rw。
+- 探索数据用 `query` + `schema` + `preview` 组合即可完成绝大多数只读任务；批量导出优先分页（LIMIT/OFFSET 或 SCAN/fetch）而非一次性大查询。
+- Redis ro 下用 `SCAN` 而非 `KEYS`；Mongo ro 下只允许 find/count 类 op。
+- 结果集有行数上限（Oracle/达梦 500、Mongo aggregate 500、Redis 集合读 500、preview 50），要完整数据请分页推进并检查 `truncated`。
+- **SQL Server 的 ro 强度弱于 MySQL/PG**：SQL Server 没有等价的会话级只读语句。ro 下适配器 query 闸门有五道：① 首词白名单（select/with/show/describe/desc/explain/use/set/help/table）；② 拒绝多语句（词法级：顶层分号之后出现任何内容即拒）；③ 拒绝 `SELECT ... INTO`（token 级，字符串/方括号标识符/注释内的 into 不误伤）；④ 拒绝 `WITH ... (INSERT|UPDATE|DELETE|MERGE)`；⑤ 拒绝 `OPENQUERY`/`OPENROWSET`/`OPENDATASOURCE`（远端/外部数据源执行任意语句、无法审计，连合法只读远端查询也一律拒）。服务层另拦 execute，guard 层对同样两类「读头写体」还会要求确认。**不要把 ro 连接当成数据库侧的只读隔离**；需要强隔离请换数据库侧只读账号。
