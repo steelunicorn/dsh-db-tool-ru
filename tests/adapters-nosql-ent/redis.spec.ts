@@ -296,3 +296,30 @@ describe('buildUrl 端口校验（fail-closed，sqlserver validPort 同口径）
     ).rejects.toThrow('redis connection has an invalid port: "abc"');
   });
 });
+
+describe('buildUrl database 号码（前端原样发字符串，保存后不得静默回退 db0）', () => {
+	it("字符串库号 '2' 与数字 2 等效 → /2", () => {
+		expect(buildUrl({ host: 'h', database: '2' })).toBe('redis://h:6379/2');
+		expect(buildUrl({ host: 'h', database: 2 })).toBe('redis://h:6379/2');
+		expect(buildUrl({ host: 'h', database: '15' })).toBe('redis://h:6379/15');
+	});
+	it('留空/未提供/0 → 无路径段（连接默认库 db0）', () => {
+		expect(buildUrl({ host: 'h', database: '' })).toBe('redis://h:6379');
+		expect(buildUrl({ host: 'h', database: undefined })).toBe('redis://h:6379');
+		expect(buildUrl({ host: 'h', database: null })).toBe('redis://h:6379');
+		expect(buildUrl({ host: 'h', database: 0 })).toBe('redis://h:6379');
+		expect(buildUrl({ host: 'h', database: '0' })).toBe('redis://h:6379');
+	});
+	it('库号非法值抛错（fail-closed，绝不静默连 db0）', () => {
+		for (const database of ['abc', -1, 1.5, true]) {
+			expect(() => buildUrl({ host: 'h', database })).toThrow(
+				`Redis connection has an invalid database value: ${JSON.stringify(database)} (expected a non-negative integer database number; leave it empty to use the default database db0)`,
+			);
+		}
+	});
+	it('接线：createRedisAdapter fields 非法 database 在 connect 前抛错（不触网）', async () => {
+		await expect(
+			createRedisAdapter({ meta: { id: 'redis-db', kind: 'redis' }, fields: { host: '127.0.0.1', database: 'abc' } }),
+		).rejects.toThrow('Redis connection has an invalid database value: "abc"');
+	});
+});
