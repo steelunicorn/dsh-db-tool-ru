@@ -62,7 +62,15 @@ Actions:
   The whole file content is passed to execute unchanged (no trailing-whitespace trimming), so the same guard, NEEDS_CONFIRMATION and
   audit rules apply; DDL still needs the user's consent. Reply: {path, bytes, md5, commandtag?}.
   search_path (PostgreSQL only) is prepended as a separate "set search_path = …;" statement so a body that names types or routines
-  without a schema still resolves; it cannot be combined with params.`;
+  without a schema still resolves; it cannot be combined with params.
+
+Chat references (produced by the panel, not by this tool):
+- The user may send messages containing @db:<connId>/<database>[/<schema>]/<table> or @col:<connId>/<database>[/<schema>]/<table>/<column>.
+  These come from the sidebar "Browse data" panel, point at exactly one table or column, and are rendered as chips in the chat.
+  They are NOT file paths and must not be treated as such: resolve the identifiers, check that the connection and database are reachable
+  for this project, and read what you need with schema / query / preview.
+- A segment may be percent-encoded: decode %XX escapes (a space is %20) before using the name; anything else appears literally.
+  When the schema segment is present, pass database as "<database>.<schema>" (same rule as the database argument of query/preview).`;
 export function apply(ctx, config) {
     const log = ctx.logger ?? { info: () => { }, error: () => { } };
     const store = new DbToolStore();
