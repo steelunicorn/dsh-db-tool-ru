@@ -194,12 +194,12 @@ var require_common = __commonJS({
           if (!debug.enabled) {
             return;
           }
-          const self2 = debug;
+          const self = debug;
           const curr = Number(/* @__PURE__ */ new Date());
           const ms = curr - (prevTime || curr);
-          self2.diff = ms;
-          self2.prev = prevTime;
-          self2.curr = curr;
+          self.diff = ms;
+          self.prev = prevTime;
+          self.curr = curr;
           prevTime = curr;
           args[0] = createDebug.coerce(args[0]);
           if (typeof args[0] !== "string") {
@@ -214,15 +214,15 @@ var require_common = __commonJS({
             const formatter = createDebug.formatters[format];
             if (typeof formatter === "function") {
               const val = args[index];
-              match = formatter.call(self2, val);
+              match = formatter.call(self, val);
               args.splice(index, 1);
               index--;
             }
             return match;
           });
-          createDebug.formatArgs.call(self2, args);
-          const logFn = self2.log || createDebug.log;
-          logFn.apply(self2, args);
+          createDebug.formatArgs.call(self, args);
+          const logFn = self.log || createDebug.log;
+          logFn.apply(self, args);
         }
         debug.namespace = namespace;
         debug.useColors = createDebug.useColors();
@@ -1945,6 +1945,9 @@ var require_utils2 = __commonJS({
     var PARAM_NAME = /^(?:[\p{L}\p{N}\p{M}\p{Pc}@#$・･]|\u200C|\u200D)*$/u;
     var QUALIFIED_NAME_PART = '(?:\\[(?:[^\\]]|\\]\\])*\\]|"(?:[^"]|"")*"|[\\p{L}\\p{N}\\p{M}\\p{Pc}@#$]+)';
     var QUALIFIED_NAME = new RegExp(`^(?:${QUALIFIED_NAME_PART}(?:\\.${QUALIFIED_NAME_PART}?)*\\.)?${QUALIFIED_NAME_PART}$`, "u");
+    var TYPE_DECLARATION = new RegExp(`^(?:${QUALIFIED_NAME_PART}(?:\\.${QUALIFIED_NAME_PART}?)*\\.)?${QUALIFIED_NAME_PART}(?:\\s*\\(\\s*(?:\\d+|max)\\s*(?:,\\s*\\d+\\s*)?\\))?$`, "iu");
+    var TABLE_NAME_PART = '(?:\\[(?:[^\\]]|\\]\\])*\\]|"(?:[^"]|"")*"|(?:[\\p{L}\\p{N}\\p{M}\\p{Pc}@#$\u30FB\uFF65]|\\u200C|\\u200D)+)';
+    var TABLE_NAME = new RegExp(`^(?:${TABLE_NAME_PART}(?:\\.${TABLE_NAME_PART}?)*\\.)?${TABLE_NAME_PART}$`, "u");
     var TYPE_SIZE = /^\w*$/;
     var escapesQuotedIdentifier = (name) => String(name).replace(/]]/g, "").includes("]");
     var ODBC_PREFIX = /^(?:\[Microsoft\]\[ODBC Driver Manager\] |\[unixODBC\]\[Driver Manager\]|\[Microsoft\]\[[^\]]+\](?:\[SQL Server\])?)/;
@@ -1970,6 +1973,20 @@ var require_utils2 = __commonJS({
           throw new MSSQLError(`Invalid procedure name '${procedure}'. Procedure names may only contain identifier characters.`, "EINJECT");
         }
         return procedure;
+      },
+      assertSafeTypeDeclaration: (declaration) => {
+        const type = String(declaration).trim();
+        if (!TYPE_DECLARATION.test(type)) {
+          throw new MSSQLError(`Invalid type declaration '${type}'. A type may only be declared with identifier characters, unless a part is in brackets or double quotes, and a size in parentheses.`, "EINJECT");
+        }
+        return type;
+      },
+      assertSafeTableName: (name) => {
+        const table = String(name).trim();
+        if (!TABLE_NAME.test(table)) {
+          throw new MSSQLError(`Invalid table name '${table}'. A table name may only contain identifier characters, unless a part is in brackets or double quotes.`, "EINJECT");
+        }
+        return table;
       },
       assertSafeTypeSize: (value) => {
         if (value == null || typeof value === "number") {
@@ -2031,7 +2048,7 @@ var require_connection_error = __commonJS({
 var require_datatypes = __commonJS({
   "node_modules/mssql/lib/datatypes.js"(exports2, module2) {
     "use strict";
-    var { objectHasProperty: objectHasProperty2, assertSafeTypeName, assertSafeTypeSize } = require_utils2();
+    var { objectHasProperty: objectHasProperty2, assertSafeTypeName, assertSafeTypeDeclaration, assertSafeTypeSize } = require_utils2();
     var inspect = /* @__PURE__ */ Symbol.for("nodejs.util.inspect.custom");
     var TYPES = {
       VarChar(length) {
@@ -2188,7 +2205,7 @@ var require_datatypes = __commonJS({
         case TYPES.TVP:
           return `${assertSafeTypeName(options.tvpType)} readonly`;
         default:
-          return type.declaration;
+          return assertSafeTypeDeclaration(type.declaration);
       }
     };
     module2.exports.cast = (value, type, options) => {
@@ -2233,7 +2250,8 @@ var require_table = __commonJS({
     "use strict";
     var TYPES = require_datatypes().TYPES;
     var declareType = require_datatypes().declare;
-    var { objectHasProperty: objectHasProperty2, assertSafeColumnName } = require_utils2();
+    var MSSQLError = require_mssql_error();
+    var { objectHasProperty: objectHasProperty2, assertSafeColumnName, assertSafeTableName } = require_utils2();
     var MAX = 65535;
     var JSON_COLUMN_ID = "JSON_F52E2B61-18A1-11d1-B105-00805F49916B";
     function Table(name) {
@@ -2321,6 +2339,7 @@ var require_table = __commonJS({
       return this;
     };
     Table.prototype.declare = function declare() {
+      const path3 = assertSafeTableName(this.path);
       const pkey = this.columns.filter((col) => col.primary === true).map((col) => `[${assertSafeColumnName(col.name)}]`);
       const cols = this.columns.map((col) => {
         const def = [`[${assertSafeColumnName(col.name)}] ${declareType(col.type, col)}`];
@@ -2334,8 +2353,16 @@ var require_table = __commonJS({
         }
         return def.join(" ");
       });
-      const constraint = pkey.length > 1 ? `, constraint [PK_${this.temporary ? this.name.substr(1) : this.name}] primary key (${pkey.join(", ")})` : "";
-      return `create table ${this.path} (${cols.join(", ")}${constraint})`;
+      let constraint = "";
+      if (pkey.length > 1) {
+        const name = String(this.name);
+        const constraintName = `PK_${this.temporary ? name.substr(1) : name}`;
+        if (constraintName.replace(/]]/g, "").includes("]")) {
+          throw new MSSQLError(`Invalid table name '${name}'. A ']' in a table name must be written as ']]'.`, "EINJECT");
+        }
+        constraint = `, constraint [${constraintName}] primary key (${pkey.join(", ")})`;
+      }
+      return `create table ${path3} (${cols.join(", ")}${constraint})`;
     };
     Table.fromRecordset = function fromRecordset(recordset, name) {
       const t = new this(name);
@@ -2736,14 +2763,15 @@ var require_connection_pool = __commonJS({
     var shared = require_shared();
     var { MSSQLError } = require_error();
     var { CHANNELS, tracePromise, traceCallback, publish } = require_diagnostics();
-    var NODE_MSSQL_SCHEMA = {
+    var NODE_MSSQL_SCHEMA = Object.fromEntries(Object.entries({
       ...MSSQL_SCHEMA,
-      encrypt: { type: "boolean" },
+      // read as a string, because `strict` is a valid value as well as a boolean
+      encrypt: { ...MSSQL_SCHEMA.encrypt, type: "string" },
       useutc: { type: "boolean" },
       stream: { type: "boolean" },
       parsejson: { type: "boolean" },
       "request timeout": { type: "number" }
-    };
+    }).map(([key, { default: _default, ...item }]) => [key, item]));
     var ConnectionPool = class extends EventEmitter {
       /**
        * Create new Connection.
@@ -2837,14 +2865,28 @@ var require_connection_pool = __commonJS({
           }
         }
         return Object.entries(parsed).reduce((config, [key, value]) => {
+          if (value === void 0) {
+            return config;
+          }
+          const number = () => {
+            if (Number.isNaN(value)) {
+              const prop = [key, ...NODE_MSSQL_SCHEMA[key].aliases ?? []].find((k) => result.has(k));
+              throw new Error(`Invalid value for connection string key "${prop}": "${result.get(prop)}" is not a number.`);
+            }
+            return value;
+          };
           switch (key) {
             case "application name":
               break;
-            case "applicationintent":
-              Object.assign(config.options, {
-                readOnlyIntent: value === "readonly"
-              });
+            case "applicationintent": {
+              const intent = value.trim().toLowerCase();
+              if (intent) {
+                Object.assign(config.options, {
+                  readOnlyIntent: intent === "readonly"
+                });
+              }
               break;
+            }
             case "asynchronous processing":
               break;
             case "attachdbfilename":
@@ -2858,7 +2900,7 @@ var require_connection_pool = __commonJS({
               break;
             case "connection timeout":
               Object.assign(config, {
-                connectionTimeout: value * 1e3
+                connectionTimeout: number() * 1e3
               });
               break;
             case "connection lifetime":
@@ -2867,7 +2909,7 @@ var require_connection_pool = __commonJS({
               break;
             case "connectretryinterval":
               Object.assign(config.options, {
-                connectionRetryInterval: value * 1e3
+                connectionRetryInterval: number() * 1e3
               });
               break;
             case "context connection":
@@ -2927,13 +2969,19 @@ var require_connection_pool = __commonJS({
               }
               break;
             }
-            case "encrypt":
-              if (typeof value === "boolean") {
-                Object.assign(config.options, {
-                  encrypt: value
-                });
+            case "encrypt": {
+              if (!value.trim()) {
+                break;
               }
+              const encrypt = value.toLowerCase();
+              Object.assign(config.options, {
+                // `strict` is TDS 8.0 strict encryption, and `optional` is a
+                // synonym of `false` (as in SqlClient 5 and ODBC Driver 18); other
+                // values have the boolean meaning of @tediousjs/connection-string
+                encrypt: encrypt === "strict" ? "strict" : !["false", "no", "0", "optional"].includes(encrypt)
+              });
               break;
+            }
             case "enlist":
               break;
             case "failover partner":
@@ -2947,12 +2995,12 @@ var require_connection_pool = __commonJS({
               break;
             case "max pool size":
               Object.assign(config.pool, {
-                max: value
+                max: number()
               });
               break;
             case "min pool size":
               Object.assign(config.pool, {
-                min: value
+                min: number()
               });
               break;
             case "msi endpoint":
@@ -2976,7 +3024,7 @@ var require_connection_pool = __commonJS({
               break;
             case "packet size":
               Object.assign(config.options, {
-                packetSize: value
+                packetSize: number()
               });
               break;
             case "password":
@@ -3045,7 +3093,7 @@ var require_connection_pool = __commonJS({
               break;
             case "request timeout":
               Object.assign(config, {
-                requestTimeout: parseInt(value, 10)
+                requestTimeout: number()
               });
               break;
             case "stream":
@@ -3179,6 +3227,10 @@ var require_connection_pool = __commonJS({
           debug("pool(%d): already connected, executing connect callback immediately", IDS.get(this));
           return setImmediate(callback, null, this);
         }
+        if (this.pool && this.pool.destroyed) {
+          debug("pool(%d): connect called while closing", IDS.get(this));
+          return setImmediate(callback, new ConnectionError("Cannot connect a pool while it is closing", "ECLOSING"));
+        }
         this._connectStack.push(callback);
         if (this._connecting) {
           return;
@@ -3224,17 +3276,18 @@ var require_connection_pool = __commonJS({
           this._connectStack = [];
         });
       }
+      // the pool has no connections before connect() and after close(), so each count is then 0
       get size() {
-        return this.pool.numFree() + this.pool.numUsed() + this.pool.numPendingCreates();
+        return this.pool ? this.pool.numFree() + this.pool.numUsed() + this.pool.numPendingCreates() : 0;
       }
       get available() {
-        return this.pool.numFree();
+        return this.pool ? this.pool.numFree() : 0;
       }
       get pending() {
-        return this.pool.numPendingAcquires();
+        return this.pool ? this.pool.numPendingAcquires() : 0;
       }
       get borrowed() {
-        return this.pool.numUsed();
+        return this.pool ? this.pool.numUsed() : 0;
       }
       /**
        * Close all active connections in the pool.
@@ -3261,7 +3314,7 @@ var require_connection_pool = __commonJS({
       _close(callback) {
         if (this._connecting) {
           debug("pool(%d): close called while connecting", IDS.get(this));
-          return setImmediate(callback, new ConnectionError("Cannot close a pool while it is connecting"));
+          return setImmediate(callback, new ConnectionError("Cannot close a pool while it is connecting", "ECONNECTING"));
         }
         if (!this.pool) {
           debug("pool(%d): already closed, executing close callback immediately", IDS.get(this));
@@ -3270,23 +3323,24 @@ var require_connection_pool = __commonJS({
         this._closeStack.push(callback);
         if (this.pool.destroyed) return;
         this._connecting = this._connected = this._healthy = false;
-        this.pool.destroy().then(() => {
+        const pool = this.pool;
+        pool.destroy().then(() => {
           debug("pool(%d): pool closed, removing pool reference and executing close callbacks", IDS.get(this));
+          if (this.pool === pool) this.pool = null;
           publish(CHANNELS.POOL_CLOSE, () => ({
             poolId: IDS.get(this),
             reason: "closed"
           }));
-          this.pool = null;
           this._closeStack.forEach((cb) => {
             setImmediate(cb, null);
           });
         }).catch((err) => {
+          if (this.pool === pool) this.pool = null;
           publish(CHANNELS.POOL_CLOSE, () => ({
             poolId: IDS.get(this),
             reason: "error",
             error: err
           }));
-          this.pool = null;
           this._closeStack.forEach((cb) => {
             setImmediate(cb, err);
           });
@@ -3382,6 +3436,9 @@ var require_global_connection = __commonJS({
         }
         const ogClose = globalConnection.close;
         const globalClose = function(callback2) {
+          if (this.connecting) {
+            return ogClose.call(this, callback2);
+          }
           for (const event in globalConnectionHandlers) {
             for (let i = 0, l = globalConnectionHandlers[event].length; i < l; i++) {
               this.removeListener(event, globalConnectionHandlers[event][i]);
@@ -3394,28 +3451,30 @@ var require_global_connection = __commonJS({
               }
             }
           });
-          globalConnection = null;
+          if (globalConnection === this) globalConnection = null;
           return ogClose.call(this, callback2);
         };
         globalConnection.close = globalClose.bind(globalConnection);
       }
+      const pool = globalConnection;
+      const forgetFailedPool = () => {
+        if (globalConnection === pool && !pool.connecting && !pool.connected) globalConnection = null;
+      };
       if (typeof callback === "function") {
-        return globalConnection.connect((err, connection) => {
-          if (err) {
-            globalConnection = null;
-          }
+        return pool.connect((err, connection) => {
+          if (err) forgetFailedPool();
           callback(err, connection);
         });
       }
-      return globalConnection.connect().catch((err) => {
-        globalConnection = null;
+      return pool.connect().catch((err) => {
+        forgetFailedPool();
         return shared.Promise.reject(err);
       });
     }
     function close(callback) {
       if (globalConnection) {
         const gc = globalConnection;
-        globalConnection = null;
+        if (!gc.connecting) globalConnection = null;
         return gc.close(callback);
       }
       if (typeof callback === "function") {
@@ -3437,7 +3496,7 @@ var require_global_connection = __commonJS({
       const index = globalConnectionHandlers[event].indexOf(handler);
       if (index === -1) return globalConnection;
       globalConnectionHandlers[event].splice(index, 1);
-      if (globalConnectionHandlers[event].length === 0) globalConnectionHandlers[event] = void 0;
+      if (globalConnectionHandlers[event].length === 0) delete globalConnectionHandlers[event];
       if (globalConnection) globalConnection.removeListener(event, handler);
       return globalConnection;
     }
@@ -3476,6 +3535,293 @@ var require_global_connection = __commonJS({
   }
 });
 
+// node_modules/mssql/lib/isolationlevel.js
+var require_isolationlevel = __commonJS({
+  "node_modules/mssql/lib/isolationlevel.js"(exports2, module2) {
+    "use strict";
+    module2.exports = {
+      READ_UNCOMMITTED: 1,
+      READ_COMMITTED: 2,
+      REPEATABLE_READ: 3,
+      SERIALIZABLE: 4,
+      SNAPSHOT: 5
+    };
+  }
+});
+
+// node_modules/mssql/lib/base/transaction.js
+var require_transaction = __commonJS({
+  "node_modules/mssql/lib/base/transaction.js"(exports2, module2) {
+    "use strict";
+    var debug = require_src()("mssql:base");
+    var { EventEmitter } = require("node:events");
+    var { IDS, getPoolId } = require_utils2();
+    var globalConnection = require_global_connection();
+    var { ConnectionError, TransactionError } = require_error();
+    var shared = require_shared();
+    var ISOLATION_LEVEL = require_isolationlevel();
+    var { CHANNELS, publish } = require_diagnostics();
+    var ISOLATION_LEVEL_NAMES = Object.fromEntries(
+      Object.entries(ISOLATION_LEVEL).map(([name, value]) => [value, name])
+    );
+    var Transaction = class _Transaction extends EventEmitter {
+      /**
+       * Create new Transaction.
+       *
+       * @param {Connection} [parent] If omitted, global connection is used instead.
+       * @param {{ requestTimeout?: number }} [overrides]
+       */
+      constructor(parent, overrides = {}) {
+        super();
+        IDS.add(this, "Transaction");
+        debug("transaction(%d): created", IDS.get(this));
+        this.parent = parent || globalConnection.pool;
+        this.isolationLevel = _Transaction.defaultIsolationLevel;
+        this.name = "";
+        this.overrides = {};
+        if (Number.isFinite(overrides?.requestTimeout) && overrides.requestTimeout >= 0) {
+          this.overrides.requestTimeout = overrides.requestTimeout;
+        }
+      }
+      get config() {
+        return this.parent ? this.parent.config : {};
+      }
+      get connected() {
+        return this.parent ? this.parent.connected : false;
+      }
+      /**
+       * Acquire connection from connection pool.
+       *
+       * @param {Request} request Request.
+       * @param {ConnectionPool~acquireCallback} [callback] A callback which is called after connection has established, or an error has occurred. If omited, method returns Promise.
+       * @return {Transaction|Promise}
+       */
+      acquire(request, callback) {
+        if (!this._acquiredConnection) {
+          setImmediate(callback, new TransactionError("Transaction has not begun. Call begin() first.", "ENOTBEGUN"));
+          return this;
+        }
+        if (this._activeRequest) {
+          setImmediate(callback, new TransactionError("Can't acquire connection for the request. There is another request in progress.", "EREQINPROG"));
+          return this;
+        }
+        this._activeRequest = request;
+        setImmediate(callback, null, this._acquiredConnection, this._acquiredConfig);
+        return this;
+      }
+      /**
+       * Release connection back to the pool.
+       *
+       * @param {Connection} connection Previously acquired connection.
+       * @return {Transaction}
+       */
+      release(connection) {
+        if (connection === this._acquiredConnection) {
+          this._activeRequest = null;
+        }
+        return this;
+      }
+      /**
+       * Begin a transaction.
+       *
+       * @param {Number} [isolationLevel] Controls the locking and row versioning behavior of TSQL statements issued by a connection.
+       * @param {basicCallback} [callback] A callback which is called after transaction has began, or an error has occurred. If omited, method returns Promise.
+       * @return {Transaction|Promise}
+       */
+      begin(isolationLevel, callback) {
+        if (isolationLevel instanceof Function) {
+          callback = isolationLevel;
+          isolationLevel = void 0;
+        }
+        if (typeof callback === "function") {
+          this._begin(isolationLevel, (err) => {
+            if (!err) {
+              publish(CHANNELS.TRANSACTION_BEGIN, () => ({
+                transactionId: IDS.get(this),
+                isolationLevel: this.isolationLevel,
+                isolationLevelName: ISOLATION_LEVEL_NAMES[this.isolationLevel],
+                poolId: getPoolId(this)
+              }));
+              this.emit("begin");
+            }
+            callback(err);
+          });
+          return this;
+        }
+        return new shared.Promise((resolve, reject) => {
+          this._begin(isolationLevel, (err) => {
+            if (err) return reject(err);
+            publish(CHANNELS.TRANSACTION_BEGIN, () => ({
+              transactionId: IDS.get(this),
+              isolationLevel: this.isolationLevel,
+              isolationLevelName: ISOLATION_LEVEL_NAMES[this.isolationLevel],
+              poolId: getPoolId(this)
+            }));
+            this.emit("begin");
+            resolve(this);
+          });
+        });
+      }
+      /**
+       * @private
+       * @param {Number} [isolationLevel]
+       * @param {basicCallback} [callback]
+       * @return {Transaction}
+       */
+      _begin(isolationLevel, callback) {
+        if (this._acquiredConnection) {
+          return setImmediate(callback, new TransactionError("Transaction has already begun.", "EALREADYBEGUN"));
+        }
+        this._aborted = false;
+        this._abortReason = null;
+        this._rollbackRequested = false;
+        if (isolationLevel) {
+          if (Object.keys(ISOLATION_LEVEL).some((key) => {
+            return ISOLATION_LEVEL[key] === isolationLevel;
+          })) {
+            this.isolationLevel = isolationLevel;
+          } else {
+            throw new TransactionError("Invalid isolation level.");
+          }
+        }
+        if (!this.parent) {
+          return setImmediate(callback, new TransactionError("No connection is specified for that transaction.", "ENOCONN"));
+        }
+        if (!this.parent.connected) {
+          return setImmediate(callback, new ConnectionError("Connection is closed.", "ECONNCLOSED"));
+        }
+        setImmediate(callback);
+      }
+      /**
+       * Commit a transaction.
+       *
+       * @param {basicCallback} [callback] A callback which is called after transaction has commited, or an error has occurred. If omited, method returns Promise.
+       * @return {Transaction|Promise}
+       */
+      commit(callback) {
+        if (typeof callback === "function") {
+          this._commit((err) => {
+            if (!err) {
+              publish(CHANNELS.TRANSACTION_COMMIT, () => ({
+                transactionId: IDS.get(this)
+              }));
+              this.emit("commit");
+            }
+            callback(err);
+          });
+          return this;
+        }
+        return new shared.Promise((resolve, reject) => {
+          this._commit((err) => {
+            if (err) return reject(err);
+            publish(CHANNELS.TRANSACTION_COMMIT, () => ({
+              transactionId: IDS.get(this)
+            }));
+            this.emit("commit");
+            resolve();
+          });
+        });
+      }
+      /**
+       * Creates a TransactionError for an aborted transaction, preserving the
+       * original abort reason (if any) as `originalError`.
+       *
+       * @private
+       * @return {TransactionError}
+       */
+      _createAbortError() {
+        const err = new TransactionError("Transaction has been aborted.", "EABORT");
+        if (this._abortReason) {
+          Object.defineProperty(err, "originalError", { enumerable: true, value: this._abortReason });
+        }
+        return err;
+      }
+      /**
+       * @private
+       * @param {basicCallback} [callback]
+       * @return {Transaction}
+       */
+      _commit(callback) {
+        if (this._aborted) {
+          return setImmediate(callback, this._createAbortError());
+        }
+        if (!this._acquiredConnection) {
+          return setImmediate(callback, new TransactionError("Transaction has not begun. Call begin() first.", "ENOTBEGUN"));
+        }
+        if (this._activeRequest) {
+          return setImmediate(callback, new TransactionError("Can't commit transaction. There is a request in progress.", "EREQINPROG"));
+        }
+        setImmediate(callback);
+      }
+      /**
+       * Returns new request using this transaction.
+       *
+       * @param {{ requestTimeout?: number }} [config]
+       * @return {Request}
+       */
+      request(config) {
+        const overrides = { ...this.overrides };
+        if (Number.isFinite(config?.requestTimeout) && config.requestTimeout >= 0) {
+          overrides.requestTimeout = config.requestTimeout;
+        }
+        return new shared.driver.Request(this, overrides);
+      }
+      /**
+       * Rollback a transaction.
+       *
+       * @param {basicCallback} [callback] A callback which is called after transaction has rolled back, or an error has occurred. If omited, method returns Promise.
+       * @return {Transaction|Promise}
+       */
+      rollback(callback) {
+        if (typeof callback === "function") {
+          this._rollback((err) => {
+            if (!err) {
+              publish(CHANNELS.TRANSACTION_ROLLBACK, () => ({
+                transactionId: IDS.get(this),
+                aborted: this._aborted
+              }));
+              this.emit("rollback", this._aborted);
+            }
+            callback(err);
+          });
+          return this;
+        }
+        return new shared.Promise((resolve, reject) => {
+          return this._rollback((err) => {
+            if (err) return reject(err);
+            publish(CHANNELS.TRANSACTION_ROLLBACK, () => ({
+              transactionId: IDS.get(this),
+              aborted: this._aborted
+            }));
+            this.emit("rollback", this._aborted);
+            resolve();
+          });
+        });
+      }
+      /**
+       * @private
+       * @param {basicCallback} [callback]
+       * @return {Transaction}
+       */
+      _rollback(callback) {
+        if (this._aborted) {
+          return setImmediate(callback, this._createAbortError());
+        }
+        if (!this._acquiredConnection) {
+          return setImmediate(callback, new TransactionError("Transaction has not begun. Call begin() first.", "ENOTBEGUN"));
+        }
+        if (this._activeRequest) {
+          return setImmediate(callback, new TransactionError("Can't rollback transaction. There is a request in progress.", "EREQINPROG"));
+        }
+        this._rollbackRequested = true;
+        setImmediate(callback);
+      }
+    };
+    Transaction.defaultIsolationLevel = ISOLATION_LEVEL.READ_COMMITTED;
+    module2.exports = Transaction;
+  }
+});
+
 // node_modules/mssql/lib/base/prepared-statement.js
 var require_prepared_statement = __commonJS({
   "node_modules/mssql/lib/base/prepared-statement.js"(exports2, module2) {
@@ -3486,6 +3832,7 @@ var require_prepared_statement = __commonJS({
     var globalConnection = require_global_connection();
     var { ConnectionError, TransactionError, PreparedStatementError } = require_error();
     var shared = require_shared();
+    var Transaction = require_transaction();
     var { TYPES, declare } = require_datatypes();
     var { CHANNELS, tracePromise, traceCallback, publish } = require_diagnostics();
     var PreparedStatement = class extends EventEmitter {
@@ -3509,10 +3856,23 @@ var require_prepared_statement = __commonJS({
         }
       }
       get config() {
-        return this.parent.config;
+        return this.parent ? this.parent.config : {};
       }
       get connected() {
-        return this.parent.connected;
+        return this.parent ? this.parent.connected : false;
+      }
+      /**
+       * Whether the statement was prepared in a transaction that no longer lends its connection
+       * to the statement. This happens when the server rolls the transaction back (XACT_ABORT):
+       * the transaction then gives its connection back to the pool, and the pool can lend it to
+       * another caller, or to the same transaction when it begins again. While the statement is
+       * prepared, the transaction lends its connection to the statement and to nothing else.
+       *
+       * @private
+       * @return {boolean}
+       */
+      _transactionLostConnection() {
+        return this.parent instanceof Transaction && (this.parent._acquiredConnection !== this._acquiredConnection || this.parent._activeRequest !== this);
       }
       /**
        * Acquire connection from connection pool.
@@ -3524,6 +3884,10 @@ var require_prepared_statement = __commonJS({
       acquire(request, callback) {
         if (!this._acquiredConnection) {
           setImmediate(callback, new PreparedStatementError("Statement is not prepared. Call prepare() first.", "ENOTPREPARED"));
+          return this;
+        }
+        if (this._transactionLostConnection()) {
+          setImmediate(callback, this.parent._createAbortError());
           return this;
         }
         if (this._activeRequest) {
@@ -3781,6 +4145,9 @@ var require_prepared_statement = __commonJS({
             precision: param.precision
           };
         }
+        if (!this.parent) {
+          req._execute = (procedure, callback2) => setImmediate(callback2, new PreparedStatementError("No connection is specified for that prepared statement.", "ENOCONN"));
+        }
         req.execute(
           "sp_execute",
           typeof callback === "function" ? callback : () => {
@@ -3830,17 +4197,32 @@ var require_prepared_statement = __commonJS({
         if (this._activeRequest) {
           return setImmediate(callback, new TransactionError("Can't unprepare the statement. There is a request in progress.", "EREQINPROG"));
         }
-        const req = new shared.driver.Request(this, this.overrides);
-        req._internal = true;
-        req.stream = false;
-        req.input("handle", TYPES.Int, this._handle);
-        req.execute("sp_unprepare", (err) => {
-          if (err) return callback(err);
-          this.parent.release(this._acquiredConnection);
+        if (this._transactionLostConnection()) {
           this._acquiredConnection = null;
           this._acquiredConfig = null;
           this._handle = 0;
           this.prepared = false;
+          debug("ps(%d): unprepared without the connection, as the transaction has lost it", IDS.get(this));
+          return setImmediate(callback, null);
+        }
+        const req = new shared.driver.Request(this, this.overrides);
+        req._internal = true;
+        req.stream = false;
+        req.input("handle", TYPES.Int, this._handle);
+        req._allowDuringClose = true;
+        req.execute("sp_unprepare", (err) => {
+          const connection = this._acquiredConnection;
+          if (err && (err.code === "EREQINPROG" || !connection)) return callback(err);
+          if (err) {
+            debug("ps(%d): failed to unprepare", IDS.get(this), err);
+            connection.hasError = true;
+          }
+          this.parent.release(connection);
+          this._acquiredConnection = null;
+          this._acquiredConfig = null;
+          this._handle = 0;
+          this.prepared = false;
+          if (err) return callback(err);
           debug("ps(%d): unprepared", IDS.get(this));
           return callback(null);
         });
@@ -3884,6 +4266,7 @@ var require_request = __commonJS({
         this.canceled = false;
         this._paused = false;
         this._internal = false;
+        this._allowDuringClose = false;
         this.parent = parent || globalConnection.pool;
         this.parameters = {};
         this.stream = null;
@@ -4342,7 +4725,7 @@ var require_request = __commonJS({
         if (!this.parent) {
           return setImmediate(callback, new RequestError("No connection is specified for that request.", "ENOCONN"));
         }
-        if (!this.parent.connected) {
+        if (!this.parent.connected && !this._allowDuringClose) {
           return setImmediate(callback, new ConnectionError("Connection is closed.", "ECONNCLOSED"));
         }
         this.canceled = false;
@@ -4428,7 +4811,7 @@ var require_request = __commonJS({
         if (!this.parent) {
           return setImmediate(callback, new RequestError("No connection is specified for that request.", "ENOCONN"));
         }
-        if (!this.parent.connected) {
+        if (!this.parent.connected && !this._allowDuringClose) {
           return setImmediate(callback, new ConnectionError("Connection is closed.", "ECONNCLOSED"));
         }
         this.canceled = false;
@@ -4483,293 +4866,6 @@ var require_request = __commonJS({
       }
     };
     module2.exports = Request;
-  }
-});
-
-// node_modules/mssql/lib/isolationlevel.js
-var require_isolationlevel = __commonJS({
-  "node_modules/mssql/lib/isolationlevel.js"(exports2, module2) {
-    "use strict";
-    module2.exports = {
-      READ_UNCOMMITTED: 1,
-      READ_COMMITTED: 2,
-      REPEATABLE_READ: 3,
-      SERIALIZABLE: 4,
-      SNAPSHOT: 5
-    };
-  }
-});
-
-// node_modules/mssql/lib/base/transaction.js
-var require_transaction = __commonJS({
-  "node_modules/mssql/lib/base/transaction.js"(exports2, module2) {
-    "use strict";
-    var debug = require_src()("mssql:base");
-    var { EventEmitter } = require("node:events");
-    var { IDS, getPoolId } = require_utils2();
-    var globalConnection = require_global_connection();
-    var { ConnectionError, TransactionError } = require_error();
-    var shared = require_shared();
-    var ISOLATION_LEVEL = require_isolationlevel();
-    var { CHANNELS, publish } = require_diagnostics();
-    var ISOLATION_LEVEL_NAMES = Object.fromEntries(
-      Object.entries(ISOLATION_LEVEL).map(([name, value]) => [value, name])
-    );
-    var Transaction = class _Transaction extends EventEmitter {
-      /**
-       * Create new Transaction.
-       *
-       * @param {Connection} [parent] If omitted, global connection is used instead.
-       * @param {{ requestTimeout?: number }} [overrides]
-       */
-      constructor(parent, overrides = {}) {
-        super();
-        IDS.add(this, "Transaction");
-        debug("transaction(%d): created", IDS.get(this));
-        this.parent = parent || globalConnection.pool;
-        this.isolationLevel = _Transaction.defaultIsolationLevel;
-        this.name = "";
-        this.overrides = {};
-        if (Number.isFinite(overrides?.requestTimeout) && overrides.requestTimeout >= 0) {
-          this.overrides.requestTimeout = overrides.requestTimeout;
-        }
-      }
-      get config() {
-        return this.parent.config;
-      }
-      get connected() {
-        return this.parent ? this.parent.connected : false;
-      }
-      /**
-       * Acquire connection from connection pool.
-       *
-       * @param {Request} request Request.
-       * @param {ConnectionPool~acquireCallback} [callback] A callback which is called after connection has established, or an error has occurred. If omited, method returns Promise.
-       * @return {Transaction|Promise}
-       */
-      acquire(request, callback) {
-        if (!this._acquiredConnection) {
-          setImmediate(callback, new TransactionError("Transaction has not begun. Call begin() first.", "ENOTBEGUN"));
-          return this;
-        }
-        if (this._activeRequest) {
-          setImmediate(callback, new TransactionError("Can't acquire connection for the request. There is another request in progress.", "EREQINPROG"));
-          return this;
-        }
-        this._activeRequest = request;
-        setImmediate(callback, null, this._acquiredConnection, this._acquiredConfig);
-        return this;
-      }
-      /**
-       * Release connection back to the pool.
-       *
-       * @param {Connection} connection Previously acquired connection.
-       * @return {Transaction}
-       */
-      release(connection) {
-        if (connection === this._acquiredConnection) {
-          this._activeRequest = null;
-        }
-        return this;
-      }
-      /**
-       * Begin a transaction.
-       *
-       * @param {Number} [isolationLevel] Controls the locking and row versioning behavior of TSQL statements issued by a connection.
-       * @param {basicCallback} [callback] A callback which is called after transaction has began, or an error has occurred. If omited, method returns Promise.
-       * @return {Transaction|Promise}
-       */
-      begin(isolationLevel, callback) {
-        if (isolationLevel instanceof Function) {
-          callback = isolationLevel;
-          isolationLevel = void 0;
-        }
-        if (typeof callback === "function") {
-          this._begin(isolationLevel, (err) => {
-            if (!err) {
-              publish(CHANNELS.TRANSACTION_BEGIN, () => ({
-                transactionId: IDS.get(this),
-                isolationLevel: this.isolationLevel,
-                isolationLevelName: ISOLATION_LEVEL_NAMES[this.isolationLevel],
-                poolId: getPoolId(this)
-              }));
-              this.emit("begin");
-            }
-            callback(err);
-          });
-          return this;
-        }
-        return new shared.Promise((resolve, reject) => {
-          this._begin(isolationLevel, (err) => {
-            if (err) return reject(err);
-            publish(CHANNELS.TRANSACTION_BEGIN, () => ({
-              transactionId: IDS.get(this),
-              isolationLevel: this.isolationLevel,
-              isolationLevelName: ISOLATION_LEVEL_NAMES[this.isolationLevel],
-              poolId: getPoolId(this)
-            }));
-            this.emit("begin");
-            resolve(this);
-          });
-        });
-      }
-      /**
-       * @private
-       * @param {Number} [isolationLevel]
-       * @param {basicCallback} [callback]
-       * @return {Transaction}
-       */
-      _begin(isolationLevel, callback) {
-        if (this._acquiredConnection) {
-          return setImmediate(callback, new TransactionError("Transaction has already begun.", "EALREADYBEGUN"));
-        }
-        this._aborted = false;
-        this._abortReason = null;
-        this._rollbackRequested = false;
-        if (isolationLevel) {
-          if (Object.keys(ISOLATION_LEVEL).some((key) => {
-            return ISOLATION_LEVEL[key] === isolationLevel;
-          })) {
-            this.isolationLevel = isolationLevel;
-          } else {
-            throw new TransactionError("Invalid isolation level.");
-          }
-        }
-        if (!this.parent) {
-          return setImmediate(callback, new TransactionError("No connection is specified for that transaction.", "ENOCONN"));
-        }
-        if (!this.parent.connected) {
-          return setImmediate(callback, new ConnectionError("Connection is closed.", "ECONNCLOSED"));
-        }
-        setImmediate(callback);
-      }
-      /**
-       * Commit a transaction.
-       *
-       * @param {basicCallback} [callback] A callback which is called after transaction has commited, or an error has occurred. If omited, method returns Promise.
-       * @return {Transaction|Promise}
-       */
-      commit(callback) {
-        if (typeof callback === "function") {
-          this._commit((err) => {
-            if (!err) {
-              publish(CHANNELS.TRANSACTION_COMMIT, () => ({
-                transactionId: IDS.get(this)
-              }));
-              this.emit("commit");
-            }
-            callback(err);
-          });
-          return this;
-        }
-        return new shared.Promise((resolve, reject) => {
-          this._commit((err) => {
-            if (err) return reject(err);
-            publish(CHANNELS.TRANSACTION_COMMIT, () => ({
-              transactionId: IDS.get(this)
-            }));
-            this.emit("commit");
-            resolve();
-          });
-        });
-      }
-      /**
-       * Creates a TransactionError for an aborted transaction, preserving the
-       * original abort reason (if any) as `originalError`.
-       *
-       * @private
-       * @return {TransactionError}
-       */
-      _createAbortError() {
-        const err = new TransactionError("Transaction has been aborted.", "EABORT");
-        if (this._abortReason) {
-          Object.defineProperty(err, "originalError", { enumerable: true, value: this._abortReason });
-        }
-        return err;
-      }
-      /**
-       * @private
-       * @param {basicCallback} [callback]
-       * @return {Transaction}
-       */
-      _commit(callback) {
-        if (this._aborted) {
-          return setImmediate(callback, this._createAbortError());
-        }
-        if (!this._acquiredConnection) {
-          return setImmediate(callback, new TransactionError("Transaction has not begun. Call begin() first.", "ENOTBEGUN"));
-        }
-        if (this._activeRequest) {
-          return setImmediate(callback, new TransactionError("Can't commit transaction. There is a request in progress.", "EREQINPROG"));
-        }
-        setImmediate(callback);
-      }
-      /**
-       * Returns new request using this transaction.
-       *
-       * @param {{ requestTimeout?: number }} [config]
-       * @return {Request}
-       */
-      request(config) {
-        const overrides = { ...this.overrides };
-        if (Number.isFinite(config?.requestTimeout) && config.requestTimeout >= 0) {
-          overrides.requestTimeout = config.requestTimeout;
-        }
-        return new shared.driver.Request(this, overrides);
-      }
-      /**
-       * Rollback a transaction.
-       *
-       * @param {basicCallback} [callback] A callback which is called after transaction has rolled back, or an error has occurred. If omited, method returns Promise.
-       * @return {Transaction|Promise}
-       */
-      rollback(callback) {
-        if (typeof callback === "function") {
-          this._rollback((err) => {
-            if (!err) {
-              publish(CHANNELS.TRANSACTION_ROLLBACK, () => ({
-                transactionId: IDS.get(this),
-                aborted: this._aborted
-              }));
-              this.emit("rollback", this._aborted);
-            }
-            callback(err);
-          });
-          return this;
-        }
-        return new shared.Promise((resolve, reject) => {
-          return this._rollback((err) => {
-            if (err) return reject(err);
-            publish(CHANNELS.TRANSACTION_ROLLBACK, () => ({
-              transactionId: IDS.get(this),
-              aborted: this._aborted
-            }));
-            this.emit("rollback", this._aborted);
-            resolve();
-          });
-        });
-      }
-      /**
-       * @private
-       * @param {basicCallback} [callback]
-       * @return {Transaction}
-       */
-      _rollback(callback) {
-        if (this._aborted) {
-          return setImmediate(callback, this._createAbortError());
-        }
-        if (!this._acquiredConnection) {
-          return setImmediate(callback, new TransactionError("Transaction has not begun. Call begin() first.", "ENOTBEGUN"));
-        }
-        if (this._activeRequest) {
-          return setImmediate(callback, new TransactionError("Can't rollback transaction. There is a request in progress.", "EREQINPROG"));
-        }
-        this._rollbackRequested = true;
-        setImmediate(callback);
-      }
-    };
-    Transaction.defaultIsolationLevel = ISOLATION_LEVEL.READ_COMMITTED;
-    module2.exports = Transaction;
   }
 });
 
@@ -5507,6 +5603,9 @@ var require_bulk_load = __commonJS({
       ATTN: 32,
       SRVERROR: 256
     };
+    function quoteIdentifier(name) {
+      return "[" + name.replace(/]/g, "]]") + "]";
+    }
     var BulkLoad = class extends _events.EventEmitter {
       /**
        * @private
@@ -5611,14 +5710,14 @@ var require_bulk_load = __commonJS({
        * bulkLoad.addColumn('MyIntColumn', TYPES.Int, { nullable: false });
        * ```
        *
-       * @param name The name of the column.
+       * @param name The name of the column. It is quoted and escaped in the generated SQL, so it can contain any character, including `]`.
        * @param type One of the supported `data types`.
        * @param __namedParameters Additional column type information. At a minimum, `nullable` must be set to true or false.
        * @param length For VarChar, NVarChar, VarBinary. Use length as `Infinity` for VarChar(max), NVarChar(max) and VarBinary(max).
        * @param nullable Indicates whether the column accepts NULL values.
-       * @param objName If the name of the column is different from the name of the property found on `rowObj` arguments passed to [[addRow]] or [[Connection.execBulkLoad]], then you can use this option to specify the property name.
+       * @param objName If the name of the column is different from the name of the property found on `rowObj` arguments passed to {@link addRow} or {@link Connection.execBulkLoad}, then you can use this option to specify the property name.
        * @param precision For Numeric, Decimal.
-       * @param scale For Numeric, Decimal, Time, DateTime2, DateTimeOffset.
+       * @param scale For Numeric and Decimal, the number of digits after the decimal point (defaults to 0). For Time, DateTime2, and DateTimeOffset, the fractional-second precision (the `n` in `datetime2(n)`); defaults to 0 for bulk-load columns, so set it explicitly (for example, to 7) to preserve fractional seconds.
       */
       addColumn(name, type, {
         output = false,
@@ -5697,7 +5796,7 @@ var require_bulk_load = __commonJS({
           if (i !== 0) {
             sql += ", ";
           }
-          sql += "[" + c.name + "] " + c.type.declaration(c);
+          sql += quoteIdentifier(c.name) + " " + c.type.declaration(c);
         }
         sql += ")";
         sql += this.getOptionsSql();
@@ -5711,8 +5810,10 @@ var require_bulk_load = __commonJS({
        * var sql = bulkLoad.getTableCreationSql();
        * ```
        *
+       * The table name is used as-is (see {@link Connection.newBulkLoad}), while column names are quoted and escaped.
+       *
        * A side note on bulk inserting into temporary tables: if you want to access a local temporary table after executing the bulk load,
-       * you'll need to use the same connection and execute your requests using [[Connection.execSqlBatch]] instead of [[Connection.execSql]]
+       * you'll need to use the same connection and execute your requests using {@link Connection.execSqlBatch} instead of {@link Connection.execSql}
        */
       getTableCreationSql() {
         let sql = "CREATE TABLE " + this.table + "(\n";
@@ -5721,7 +5822,7 @@ var require_bulk_load = __commonJS({
           if (i !== 0) {
             sql += ",\n";
           }
-          sql += "[" + c.name + "] " + c.type.declaration(c);
+          sql += quoteIdentifier(c.name) + " " + c.type.declaration(c);
           if (c.nullable !== void 0) {
             sql += " " + (c.nullable ? "NULL" : "NOT NULL");
           }
@@ -5772,7 +5873,7 @@ var require_bulk_load = __commonJS({
        * ```
        *
        * @param timeout The number of milliseconds before the bulk load is considered failed, or 0 for no timeout.
-       *   When no timeout is set for the bulk load, the [[ConnectionOptions.requestTimeout]] of the Connection is used.
+       *   When no timeout is set for the bulk load, the {@link ConnectionOptions.requestTimeout} of the Connection is used.
        */
       setTimeout(timeout) {
         this.timeout = timeout;
@@ -26283,12 +26384,12 @@ var require_common2 = __commonJS({
           if (!debug.enabled) {
             return;
           }
-          const self2 = debug;
+          const self = debug;
           const curr = Number(/* @__PURE__ */ new Date());
           const ms = curr - (prevTime || curr);
-          self2.diff = ms;
-          self2.prev = prevTime;
-          self2.curr = curr;
+          self.diff = ms;
+          self.prev = prevTime;
+          self.curr = curr;
           prevTime = curr;
           args[0] = createDebug.coerce(args[0]);
           if (typeof args[0] !== "string") {
@@ -26303,15 +26404,15 @@ var require_common2 = __commonJS({
             const formatter = createDebug.formatters[format];
             if (typeof formatter === "function") {
               const val = args[index];
-              match = formatter.call(self2, val);
+              match = formatter.call(self, val);
               args.splice(index, 1);
               index--;
             }
             return match;
           });
-          createDebug.formatArgs.call(self2, args);
-          const logFn = self2.log || createDebug.log;
-          logFn.apply(self2, args);
+          createDebug.formatArgs.call(self, args);
+          const logFn = self.log || createDebug.log;
+          logFn.apply(self, args);
         }
         debug.namespace = namespace;
         debug.useColors = createDebug.useColors();
@@ -27287,12 +27388,12 @@ var require_common3 = __commonJS({
           if (!debug.enabled) {
             return;
           }
-          const self2 = debug;
+          const self = debug;
           const curr = Number(/* @__PURE__ */ new Date());
           const ms = curr - (prevTime || curr);
-          self2.diff = ms;
-          self2.prev = prevTime;
-          self2.curr = curr;
+          self.diff = ms;
+          self.prev = prevTime;
+          self.curr = curr;
           prevTime = curr;
           args[0] = createDebug.coerce(args[0]);
           if (typeof args[0] !== "string") {
@@ -27307,15 +27408,15 @@ var require_common3 = __commonJS({
             const formatter = createDebug.formatters[format];
             if (typeof formatter === "function") {
               const val = args[index];
-              match = formatter.call(self2, val);
+              match = formatter.call(self, val);
               args.splice(index, 1);
               index--;
             }
             return match;
           });
-          createDebug.formatArgs.call(self2, args);
-          const logFn = self2.log || createDebug.log;
-          logFn.apply(self2, args);
+          createDebug.formatArgs.call(self, args);
+          const logFn = self.log || createDebug.log;
+          logFn.apply(self, args);
         }
         debug.namespace = namespace;
         debug.useColors = createDebug.useColors();
@@ -42082,10438 +42183,69 @@ var require_money = __commonJS({
   }
 });
 
-// node_modules/@js-joda/core/dist/js-joda.js
-var require_js_joda = __commonJS({
-  "node_modules/@js-joda/core/dist/js-joda.js"(exports2, module2) {
-    (function(global2, factory) {
-      typeof exports2 === "object" && typeof module2 !== "undefined" ? factory(exports2) : typeof define === "function" && define.amd ? define(["exports"], factory) : (global2 = typeof globalThis !== "undefined" ? globalThis : global2 || self, factory(global2.JSJoda = {}));
-    })(exports2, (function(exports3) {
-      "use strict";
-      function createErrorType(name, init2, superErrorClass) {
-        if (superErrorClass === void 0) {
-          superErrorClass = Error;
-        }
-        function JsJodaException(message) {
-          if (!Error.captureStackTrace) {
-            this.stack = new Error().stack;
-          } else {
-            Error.captureStackTrace(this, this.constructor);
-          }
-          this.message = message;
-          init2 && init2.apply(this, arguments);
-          this.toString = function() {
-            return this.name + ": " + this.message;
-          };
-        }
-        JsJodaException.prototype = Object.create(superErrorClass.prototype);
-        JsJodaException.prototype.name = name;
-        JsJodaException.prototype.constructor = JsJodaException;
-        return JsJodaException;
+// node_modules/tedious/lib/data-types/temporal.js
+var require_temporal = __commonJS({
+  "node_modules/tedious/lib/data-types/temporal.js"(exports2) {
+    "use strict";
+    Object.defineProperty(exports2, "__esModule", {
+      value: true
+    });
+    exports2.daysSinceYearOne = daysSinceYearOne;
+    exports2.epochDay = epochDay;
+    exports2.timeLength = timeLength;
+    exports2.writeTimeOfDay = writeTimeOfDay;
+    var MILLISECONDS_PER_DAY = 864e5;
+    function epochDay(year, month, day) {
+      const date = /* @__PURE__ */ new Date(0);
+      const time = date.setUTCFullYear(year, month - 1, day);
+      if (Number.isNaN(time)) {
+        throw new TypeError("Invalid date.");
       }
-      var DateTimeException = createErrorType("DateTimeException", messageWithCause);
-      var DateTimeParseException = createErrorType("DateTimeParseException", messageForDateTimeParseException);
-      var UnsupportedTemporalTypeException = createErrorType("UnsupportedTemporalTypeException", null, DateTimeException);
-      var ArithmeticException = createErrorType("ArithmeticException");
-      var IllegalArgumentException = createErrorType("IllegalArgumentException");
-      var IllegalStateException = createErrorType("IllegalStateException");
-      var NullPointerException = createErrorType("NullPointerException");
-      function messageWithCause(message, cause) {
-        if (cause === void 0) {
-          cause = null;
-        }
-        var msg = message || this.name;
-        if (cause !== null && cause instanceof Error) {
-          msg += "\n-------\nCaused by: " + cause.stack + "\n-------\n";
-        }
-        this.message = msg;
+      return time / MILLISECONDS_PER_DAY;
+    }
+    var YEAR_ONE = epochDay(1, 1, 1);
+    function daysSinceYearOne(value, useUTC) {
+      const days = useUTC ? epochDay(value.getUTCFullYear(), value.getUTCMonth() + 1, value.getUTCDate()) : epochDay(value.getFullYear(), value.getMonth() + 1, value.getDate());
+      return days - YEAR_ONE;
+    }
+    function timeLength(scale) {
+      switch (scale) {
+        case 0:
+        case 1:
+        case 2:
+          return 3;
+        case 3:
+        case 4:
+          return 4;
+        case 5:
+        case 6:
+        case 7:
+          return 5;
+        default:
+          throw new Error("invalid scale");
       }
-      function messageForDateTimeParseException(message, text, index, cause) {
-        if (text === void 0) {
-          text = "";
-        }
-        if (index === void 0) {
-          index = 0;
-        }
-        if (cause === void 0) {
-          cause = null;
-        }
-        var msg = message || this.name;
-        msg += ": " + text + ", at index: " + index;
-        if (cause !== null && cause instanceof Error) {
-          msg += "\n-------\nCaused by: " + cause.stack + "\n-------\n";
-        }
-        this.message = msg;
-        this.parsedString = function() {
-          return text;
-        };
-        this.errorIndex = function() {
-          return index;
-        };
+    }
+    function writeTimeOfDay(buffer, value, scale, useUTC) {
+      let timestamp = useUTC ? ((value.getUTCHours() * 60 + value.getUTCMinutes()) * 60 + value.getUTCSeconds()) * 1e3 + value.getUTCMilliseconds() : ((value.getHours() * 60 + value.getMinutes()) * 60 + value.getSeconds()) * 1e3 + value.getMilliseconds();
+      timestamp = timestamp * Math.pow(10, scale - 3);
+      timestamp += (value.nanosecondDelta != null ? value.nanosecondDelta : 0) * Math.pow(10, scale);
+      timestamp = Math.round(timestamp);
+      switch (scale) {
+        case 0:
+        case 1:
+        case 2:
+          buffer.writeUInt24LE(timestamp);
+          break;
+        case 3:
+        case 4:
+          buffer.writeUInt32LE(timestamp);
+          break;
+        case 5:
+        case 6:
+        case 7:
+          buffer.writeUInt40LE(timestamp);
       }
-      function _assertThisInitialized(e) {
-        if (void 0 === e) throw new ReferenceError("this hasn't been initialised - super() hasn't been called");
-        return e;
-      }
-      function _inheritsLoose(t, o) {
-        t.prototype = Object.create(o.prototype), t.prototype.constructor = t, _setPrototypeOf(t, o);
-      }
-      function _setPrototypeOf(t, e) {
-        return _setPrototypeOf = Object.setPrototypeOf ? Object.setPrototypeOf.bind() : function(t2, e2) {
-          return t2.__proto__ = e2, t2;
-        }, _setPrototypeOf(t, e);
-      }
-      function assert(assertion, msg, error) {
-        if (!assertion) {
-          if (error) {
-            throw new error(msg);
-          } else {
-            throw new Error(msg);
-          }
-        }
-      }
-      function requireNonNull(value, parameterName) {
-        if (value == null) {
-          throw new NullPointerException(parameterName + " must not be null");
-        }
-        return value;
-      }
-      function requireInstance(value, _class, parameterName) {
-        if (!(value instanceof _class)) {
-          throw new IllegalArgumentException(parameterName + " must be an instance of " + (_class.name ? _class.name : _class) + (value && value.constructor && value.constructor.name ? ", but is " + value.constructor.name : ""));
-        }
-        return value;
-      }
-      function abstractMethodFail(methodName) {
-        throw new TypeError('abstract method "' + methodName + '" is not implemented');
-      }
-      var assert$1 = /* @__PURE__ */ Object.freeze({
-        __proto__: null,
-        abstractMethodFail,
-        assert,
-        requireInstance,
-        requireNonNull
-      });
-      var MAX_SAFE_INTEGER = 9007199254740991;
-      var MIN_SAFE_INTEGER = -9007199254740991;
-      var MathUtil = (function() {
-        function MathUtil2() {
-        }
-        MathUtil2.intDiv = function intDiv(x, y) {
-          var r = x / y;
-          r = MathUtil2.roundDown(r);
-          return MathUtil2.safeZero(r);
-        };
-        MathUtil2.intMod = function intMod(x, y) {
-          var r = x - MathUtil2.intDiv(x, y) * y;
-          r = MathUtil2.roundDown(r);
-          return MathUtil2.safeZero(r);
-        };
-        MathUtil2.roundDown = function roundDown(r) {
-          if (r < 0) {
-            return Math.ceil(r);
-          } else {
-            return Math.floor(r);
-          }
-        };
-        MathUtil2.floorDiv = function floorDiv(x, y) {
-          var r = Math.floor(x / y);
-          return MathUtil2.safeZero(r);
-        };
-        MathUtil2.floorMod = function floorMod(x, y) {
-          var r = x - MathUtil2.floorDiv(x, y) * y;
-          return MathUtil2.safeZero(r);
-        };
-        MathUtil2.safeAdd = function safeAdd(x, y) {
-          MathUtil2.verifyInt(x);
-          MathUtil2.verifyInt(y);
-          if (x === 0) {
-            return MathUtil2.safeZero(y);
-          }
-          if (y === 0) {
-            return MathUtil2.safeZero(x);
-          }
-          var r = MathUtil2.safeToInt(x + y);
-          if (r === x || r === y) {
-            throw new ArithmeticException("Invalid addition beyond MAX_SAFE_INTEGER!");
-          }
-          return r;
-        };
-        MathUtil2.safeSubtract = function safeSubtract(x, y) {
-          MathUtil2.verifyInt(x);
-          MathUtil2.verifyInt(y);
-          if (x === 0 && y === 0) {
-            return 0;
-          } else if (x === 0) {
-            return MathUtil2.safeZero(-1 * y);
-          } else if (y === 0) {
-            return MathUtil2.safeZero(x);
-          }
-          return MathUtil2.safeToInt(x - y);
-        };
-        MathUtil2.safeMultiply = function safeMultiply(x, y) {
-          MathUtil2.verifyInt(x);
-          MathUtil2.verifyInt(y);
-          if (x === 1) {
-            return MathUtil2.safeZero(y);
-          }
-          if (y === 1) {
-            return MathUtil2.safeZero(x);
-          }
-          if (x === 0 || y === 0) {
-            return 0;
-          }
-          var r = MathUtil2.safeToInt(x * y);
-          if (r / y !== x || x === MIN_SAFE_INTEGER && y === -1 || y === MIN_SAFE_INTEGER && x === -1) {
-            throw new ArithmeticException("Multiplication overflows: " + x + " * " + y);
-          }
-          return r;
-        };
-        MathUtil2.parseInt = function(value) {
-          var r = parseInt(value);
-          return MathUtil2.safeToInt(r);
-        };
-        MathUtil2.safeToInt = function safeToInt(value) {
-          MathUtil2.verifyInt(value);
-          return MathUtil2.safeZero(value);
-        };
-        MathUtil2.verifyInt = function verifyInt(value) {
-          if (value == null) {
-            throw new ArithmeticException("Invalid value: '" + value + "', using null or undefined as argument");
-          }
-          if (isNaN(value)) {
-            throw new ArithmeticException("Invalid int value, using NaN as argument");
-          }
-          if (!Number.isInteger(Number(value))) {
-            throw new ArithmeticException("Invalid value: '" + value + "' is a float");
-          }
-          if (value > MAX_SAFE_INTEGER || value < MIN_SAFE_INTEGER) {
-            throw new ArithmeticException("Calculation overflows an int: " + value);
-          }
-        };
-        MathUtil2.safeZero = function safeZero(value) {
-          return value === 0 ? 0 : +value;
-        };
-        MathUtil2.compareNumbers = function compareNumbers(a, b) {
-          if (a < b) {
-            return -1;
-          }
-          if (a > b) {
-            return 1;
-          }
-          return 0;
-        };
-        MathUtil2.smi = function smi(int) {
-          return int >>> 1 & 1073741824 | int & 3221225471;
-        };
-        MathUtil2.hash = function hash(number) {
-          if (number !== number || number === Infinity) {
-            return 0;
-          }
-          var result = number;
-          while (number > 4294967295) {
-            number /= 4294967295;
-            result ^= number;
-          }
-          return MathUtil2.smi(result);
-        };
-        MathUtil2.hashCode = function hashCode() {
-          var result = 17;
-          for (var _len = arguments.length, numbers = new Array(_len), _key = 0; _key < _len; _key++) {
-            numbers[_key] = arguments[_key];
-          }
-          for (var _i = 0, _numbers = numbers; _i < _numbers.length; _i++) {
-            var n = _numbers[_i];
-            result = (result << 5) - result + MathUtil2.hash(n);
-          }
-          return MathUtil2.hash(result);
-        };
-        return MathUtil2;
-      })();
-      MathUtil.MAX_SAFE_INTEGER = MAX_SAFE_INTEGER;
-      MathUtil.MIN_SAFE_INTEGER = MIN_SAFE_INTEGER;
-      var Enum = (function() {
-        function Enum2(name) {
-          this._name = name;
-        }
-        var _proto = Enum2.prototype;
-        _proto.equals = function equals(other) {
-          return this === other;
-        };
-        _proto.toString = function toString() {
-          return this._name;
-        };
-        _proto.toJSON = function toJSON() {
-          return this.toString();
-        };
-        return Enum2;
-      })();
-      var TemporalAmount = (function() {
-        function TemporalAmount2() {
-        }
-        var _proto = TemporalAmount2.prototype;
-        _proto.get = function get(unit) {
-          abstractMethodFail("get");
-        };
-        _proto.units = function units() {
-          abstractMethodFail("units");
-        };
-        _proto.addTo = function addTo(temporal) {
-          abstractMethodFail("addTo");
-        };
-        _proto.subtractFrom = function subtractFrom(temporal) {
-          abstractMethodFail("subtractFrom");
-        };
-        return TemporalAmount2;
-      })();
-      if (typeof Symbol !== "undefined" && Symbol.toPrimitive) {
-        TemporalAmount.prototype[Symbol.toPrimitive] = function(hint) {
-          if (hint !== "number") {
-            return this.toString();
-          }
-          throw new TypeError("A conversion from TemporalAmount to a number is not allowed. To compare use the methods .equals(), .compareTo(), .isBefore() or one that is more suitable to your use case.");
-        };
-      }
-      var TemporalUnit = (function() {
-        function TemporalUnit2() {
-        }
-        var _proto = TemporalUnit2.prototype;
-        _proto.duration = function duration() {
-          abstractMethodFail("duration");
-        };
-        _proto.isDurationEstimated = function isDurationEstimated() {
-          abstractMethodFail("isDurationEstimated");
-        };
-        _proto.isDateBased = function isDateBased() {
-          abstractMethodFail("isDateBased");
-        };
-        _proto.isTimeBased = function isTimeBased() {
-          abstractMethodFail("isTimeBased");
-        };
-        _proto.isSupportedBy = function isSupportedBy(temporal) {
-          abstractMethodFail("isSupportedBy");
-        };
-        _proto.addTo = function addTo(dateTime, periodToAdd) {
-          abstractMethodFail("addTo");
-        };
-        _proto.between = function between(temporal1, temporal2) {
-          abstractMethodFail("between");
-        };
-        return TemporalUnit2;
-      })();
-      var Duration = (function(_TemporalAmount) {
-        function Duration2(seconds, nanos) {
-          var _this;
-          _this = _TemporalAmount.call(this) || this;
-          _this._seconds = MathUtil.safeToInt(seconds);
-          _this._nanos = MathUtil.safeToInt(nanos);
-          return _this;
-        }
-        _inheritsLoose(Duration2, _TemporalAmount);
-        Duration2.ofDays = function ofDays(days) {
-          return Duration2._create(MathUtil.safeMultiply(days, LocalTime.SECONDS_PER_DAY), 0);
-        };
-        Duration2.ofHours = function ofHours(hours) {
-          return Duration2._create(MathUtil.safeMultiply(hours, LocalTime.SECONDS_PER_HOUR), 0);
-        };
-        Duration2.ofMinutes = function ofMinutes(minutes) {
-          return Duration2._create(MathUtil.safeMultiply(minutes, LocalTime.SECONDS_PER_MINUTE), 0);
-        };
-        Duration2.ofSeconds = function ofSeconds(seconds, nanoAdjustment) {
-          if (nanoAdjustment === void 0) {
-            nanoAdjustment = 0;
-          }
-          var secs = MathUtil.safeAdd(seconds, MathUtil.floorDiv(nanoAdjustment, LocalTime.NANOS_PER_SECOND));
-          var nos = MathUtil.floorMod(nanoAdjustment, LocalTime.NANOS_PER_SECOND);
-          return Duration2._create(secs, nos);
-        };
-        Duration2.ofMillis = function ofMillis(millis) {
-          var secs = MathUtil.intDiv(millis, 1e3);
-          var mos = MathUtil.intMod(millis, 1e3);
-          if (mos < 0) {
-            mos += 1e3;
-            secs--;
-          }
-          return Duration2._create(secs, mos * 1e6);
-        };
-        Duration2.ofNanos = function ofNanos(nanos) {
-          var secs = MathUtil.intDiv(nanos, LocalTime.NANOS_PER_SECOND);
-          var nos = MathUtil.intMod(nanos, LocalTime.NANOS_PER_SECOND);
-          if (nos < 0) {
-            nos += LocalTime.NANOS_PER_SECOND;
-            secs--;
-          }
-          return this._create(secs, nos);
-        };
-        Duration2.of = function of(amount, unit) {
-          return Duration2.ZERO.plus(amount, unit);
-        };
-        Duration2.from = function from(amount) {
-          requireNonNull(amount, "amount");
-          requireInstance(amount, TemporalAmount);
-          var duration = Duration2.ZERO;
-          amount.units().forEach(function(unit) {
-            duration = duration.plus(amount.get(unit), unit);
-          });
-          return duration;
-        };
-        Duration2.between = function between(startInclusive, endExclusive) {
-          requireNonNull(startInclusive, "startInclusive");
-          requireNonNull(endExclusive, "endExclusive");
-          var secs = startInclusive.until(endExclusive, ChronoUnit.SECONDS);
-          var nanos = 0;
-          if (startInclusive.isSupported(ChronoField.NANO_OF_SECOND) && endExclusive.isSupported(ChronoField.NANO_OF_SECOND)) {
-            try {
-              var startNos = startInclusive.getLong(ChronoField.NANO_OF_SECOND);
-              nanos = endExclusive.getLong(ChronoField.NANO_OF_SECOND) - startNos;
-              if (secs > 0 && nanos < 0) {
-                nanos += LocalTime.NANOS_PER_SECOND;
-              } else if (secs < 0 && nanos > 0) {
-                nanos -= LocalTime.NANOS_PER_SECOND;
-              } else if (secs === 0 && nanos !== 0) {
-                var adjustedEnd = endExclusive.with(ChronoField.NANO_OF_SECOND, startNos);
-                secs = startInclusive.until(adjustedEnd, ChronoUnit.SECONDS);
-              }
-            } catch (e) {
-            }
-          }
-          return this.ofSeconds(secs, nanos);
-        };
-        Duration2.parse = function parse(text) {
-          requireNonNull(text, "text");
-          var PATTERN2 = new RegExp("([-+]?)P(?:([-+]?[0-9]+)D)?(T(?:([-+]?[0-9]+)H)?(?:([-+]?[0-9]+)M)?(?:([-+]?[0-9]+)(?:[.,]([0-9]{0,9}))?S)?)?", "i");
-          var matches = PATTERN2.exec(text);
-          if (matches !== null) {
-            if ("T" === matches[3] === false) {
-              var negate = "-" === matches[1];
-              var dayMatch = matches[2];
-              var hourMatch = matches[4];
-              var minuteMatch = matches[5];
-              var secondMatch = matches[6];
-              var fractionMatch = matches[7];
-              if (dayMatch != null || hourMatch != null || minuteMatch != null || secondMatch != null) {
-                var daysAsSecs = Duration2._parseNumber(text, dayMatch, LocalTime.SECONDS_PER_DAY, "days");
-                var hoursAsSecs = Duration2._parseNumber(text, hourMatch, LocalTime.SECONDS_PER_HOUR, "hours");
-                var minsAsSecs = Duration2._parseNumber(text, minuteMatch, LocalTime.SECONDS_PER_MINUTE, "minutes");
-                var seconds = Duration2._parseNumber(text, secondMatch, 1, "seconds");
-                var negativeSecs = secondMatch != null && secondMatch.charAt(0) === "-";
-                var nanos = Duration2._parseFraction(text, fractionMatch, negativeSecs ? -1 : 1);
-                try {
-                  return Duration2._create(negate, daysAsSecs, hoursAsSecs, minsAsSecs, seconds, nanos);
-                } catch (ex) {
-                  throw new DateTimeParseException("Text cannot be parsed to a Duration: overflow", text, 0, ex);
-                }
-              }
-            }
-          }
-          throw new DateTimeParseException("Text cannot be parsed to a Duration", text, 0);
-        };
-        Duration2._parseNumber = function _parseNumber(text, parsed, multiplier, errorText) {
-          if (parsed == null) {
-            return 0;
-          }
-          try {
-            if (parsed[0] === "+") {
-              parsed = parsed.substring(1);
-            }
-            return MathUtil.safeMultiply(parseFloat(parsed), multiplier);
-          } catch (ex) {
-            throw new DateTimeParseException("Text cannot be parsed to a Duration: " + errorText, text, 0, ex);
-          }
-        };
-        Duration2._parseFraction = function _parseFraction(text, parsed, negate) {
-          if (parsed == null || parsed.length === 0) {
-            return 0;
-          }
-          parsed = (parsed + "000000000").substring(0, 9);
-          return parseFloat(parsed) * negate;
-        };
-        Duration2._create = function _create() {
-          if (arguments.length <= 2) {
-            return Duration2._createSecondsNanos(arguments[0], arguments[1]);
-          } else {
-            return Duration2._createNegateDaysHoursMinutesSecondsNanos(arguments[0], arguments[1], arguments[2], arguments[3], arguments[4], arguments[5]);
-          }
-        };
-        Duration2._createNegateDaysHoursMinutesSecondsNanos = function _createNegateDaysHoursMinutesSecondsNanos(negate, daysAsSecs, hoursAsSecs, minsAsSecs, secs, nanos) {
-          var seconds = MathUtil.safeAdd(daysAsSecs, MathUtil.safeAdd(hoursAsSecs, MathUtil.safeAdd(minsAsSecs, secs)));
-          if (negate) {
-            return Duration2.ofSeconds(seconds, nanos).negated();
-          }
-          return Duration2.ofSeconds(seconds, nanos);
-        };
-        Duration2._createSecondsNanos = function _createSecondsNanos(seconds, nanoAdjustment) {
-          if (seconds === void 0) {
-            seconds = 0;
-          }
-          if (nanoAdjustment === void 0) {
-            nanoAdjustment = 0;
-          }
-          if (seconds === 0 && nanoAdjustment === 0) {
-            return Duration2.ZERO;
-          }
-          return new Duration2(seconds, nanoAdjustment);
-        };
-        var _proto = Duration2.prototype;
-        _proto.get = function get(unit) {
-          if (unit === ChronoUnit.SECONDS) {
-            return this._seconds;
-          } else if (unit === ChronoUnit.NANOS) {
-            return this._nanos;
-          } else {
-            throw new UnsupportedTemporalTypeException("Unsupported unit: " + unit);
-          }
-        };
-        _proto.units = function units() {
-          return [ChronoUnit.SECONDS, ChronoUnit.NANOS];
-        };
-        _proto.isZero = function isZero() {
-          return this._seconds === 0 && this._nanos === 0;
-        };
-        _proto.isNegative = function isNegative() {
-          return this._seconds < 0;
-        };
-        _proto.seconds = function seconds() {
-          return this._seconds;
-        };
-        _proto.nano = function nano() {
-          return this._nanos;
-        };
-        _proto.withSeconds = function withSeconds(seconds) {
-          return Duration2._create(seconds, this._nanos);
-        };
-        _proto.withNanos = function withNanos(nanoOfSecond) {
-          ChronoField.NANO_OF_SECOND.checkValidIntValue(nanoOfSecond);
-          return Duration2._create(this._seconds, nanoOfSecond);
-        };
-        _proto.plusDuration = function plusDuration(duration) {
-          requireNonNull(duration, "duration");
-          return this.plus(duration.seconds(), duration.nano());
-        };
-        _proto.plus = function plus(durationOrNumber, unitOrNumber) {
-          if (arguments.length === 1) {
-            return this.plusDuration(durationOrNumber);
-          } else if (arguments.length === 2 && unitOrNumber instanceof TemporalUnit) {
-            return this.plusAmountUnit(durationOrNumber, unitOrNumber);
-          } else {
-            return this.plusSecondsNanos(durationOrNumber, unitOrNumber);
-          }
-        };
-        _proto.plusAmountUnit = function plusAmountUnit(amountToAdd, unit) {
-          requireNonNull(amountToAdd, "amountToAdd");
-          requireNonNull(unit, "unit");
-          if (unit === ChronoUnit.DAYS) {
-            return this.plusSecondsNanos(MathUtil.safeMultiply(amountToAdd, LocalTime.SECONDS_PER_DAY), 0);
-          }
-          if (unit.isDurationEstimated()) {
-            throw new UnsupportedTemporalTypeException("Unit must not have an estimated duration");
-          }
-          if (amountToAdd === 0) {
-            return this;
-          }
-          if (unit instanceof ChronoUnit) {
-            switch (unit) {
-              case ChronoUnit.NANOS:
-                return this.plusNanos(amountToAdd);
-              case ChronoUnit.MICROS:
-                return this.plusSecondsNanos(MathUtil.intDiv(amountToAdd, 1e6 * 1e3) * 1e3, MathUtil.intMod(amountToAdd, 1e6 * 1e3) * 1e3);
-              case ChronoUnit.MILLIS:
-                return this.plusMillis(amountToAdd);
-              case ChronoUnit.SECONDS:
-                return this.plusSeconds(amountToAdd);
-            }
-            return this.plusSecondsNanos(MathUtil.safeMultiply(unit.duration().seconds(), amountToAdd), 0);
-          }
-          var duration = unit.duration().multipliedBy(amountToAdd);
-          return this.plusSecondsNanos(duration.seconds(), duration.nano());
-        };
-        _proto.plusDays = function plusDays(daysToAdd) {
-          return this.plusSecondsNanos(MathUtil.safeMultiply(daysToAdd, LocalTime.SECONDS_PER_DAY), 0);
-        };
-        _proto.plusHours = function plusHours(hoursToAdd) {
-          return this.plusSecondsNanos(MathUtil.safeMultiply(hoursToAdd, LocalTime.SECONDS_PER_HOUR), 0);
-        };
-        _proto.plusMinutes = function plusMinutes(minutesToAdd) {
-          return this.plusSecondsNanos(MathUtil.safeMultiply(minutesToAdd, LocalTime.SECONDS_PER_MINUTE), 0);
-        };
-        _proto.plusSeconds = function plusSeconds(secondsToAdd) {
-          return this.plusSecondsNanos(secondsToAdd, 0);
-        };
-        _proto.plusMillis = function plusMillis(millisToAdd) {
-          return this.plusSecondsNanos(MathUtil.intDiv(millisToAdd, 1e3), MathUtil.intMod(millisToAdd, 1e3) * 1e6);
-        };
-        _proto.plusNanos = function plusNanos(nanosToAdd) {
-          return this.plusSecondsNanos(0, nanosToAdd);
-        };
-        _proto.plusSecondsNanos = function plusSecondsNanos(secondsToAdd, nanosToAdd) {
-          requireNonNull(secondsToAdd, "secondsToAdd");
-          requireNonNull(nanosToAdd, "nanosToAdd");
-          if (secondsToAdd === 0 && nanosToAdd === 0) {
-            return this;
-          }
-          var epochSec = MathUtil.safeAdd(this._seconds, secondsToAdd);
-          epochSec = MathUtil.safeAdd(epochSec, MathUtil.intDiv(nanosToAdd, LocalTime.NANOS_PER_SECOND));
-          nanosToAdd = MathUtil.intMod(nanosToAdd, LocalTime.NANOS_PER_SECOND);
-          var nanoAdjustment = MathUtil.safeAdd(this._nanos, nanosToAdd);
-          return Duration2.ofSeconds(epochSec, nanoAdjustment);
-        };
-        _proto.minus = function minus(durationOrNumber, unit) {
-          if (arguments.length === 1) {
-            return this.minusDuration(durationOrNumber);
-          } else {
-            return this.minusAmountUnit(durationOrNumber, unit);
-          }
-        };
-        _proto.minusDuration = function minusDuration(duration) {
-          requireNonNull(duration, "duration");
-          var secsToSubtract = duration.seconds();
-          var nanosToSubtract = duration.nano();
-          if (secsToSubtract === MIN_SAFE_INTEGER) {
-            return this.plus(MAX_SAFE_INTEGER, -nanosToSubtract);
-          }
-          return this.plus(-secsToSubtract, -nanosToSubtract);
-        };
-        _proto.minusAmountUnit = function minusAmountUnit(amountToSubtract, unit) {
-          requireNonNull(amountToSubtract, "amountToSubtract");
-          requireNonNull(unit, "unit");
-          return amountToSubtract === MIN_SAFE_INTEGER ? this.plusAmountUnit(MAX_SAFE_INTEGER, unit) : this.plusAmountUnit(-amountToSubtract, unit);
-        };
-        _proto.minusDays = function minusDays(daysToSubtract) {
-          return daysToSubtract === MIN_SAFE_INTEGER ? this.plusDays(MAX_SAFE_INTEGER) : this.plusDays(-daysToSubtract);
-        };
-        _proto.minusHours = function minusHours(hoursToSubtract) {
-          return hoursToSubtract === MIN_SAFE_INTEGER ? this.plusHours(MAX_SAFE_INTEGER) : this.plusHours(-hoursToSubtract);
-        };
-        _proto.minusMinutes = function minusMinutes(minutesToSubtract) {
-          return minutesToSubtract === MIN_SAFE_INTEGER ? this.plusMinutes(MAX_SAFE_INTEGER) : this.plusMinutes(-minutesToSubtract);
-        };
-        _proto.minusSeconds = function minusSeconds(secondsToSubtract) {
-          return secondsToSubtract === MIN_SAFE_INTEGER ? this.plusSeconds(MAX_SAFE_INTEGER) : this.plusSeconds(-secondsToSubtract);
-        };
-        _proto.minusMillis = function minusMillis(millisToSubtract) {
-          return millisToSubtract === MIN_SAFE_INTEGER ? this.plusMillis(MAX_SAFE_INTEGER) : this.plusMillis(-millisToSubtract);
-        };
-        _proto.minusNanos = function minusNanos(nanosToSubtract) {
-          return nanosToSubtract === MIN_SAFE_INTEGER ? this.plusNanos(MAX_SAFE_INTEGER) : this.plusNanos(-nanosToSubtract);
-        };
-        _proto.multipliedBy = function multipliedBy(multiplicand) {
-          if (multiplicand === 0) {
-            return Duration2.ZERO;
-          }
-          if (multiplicand === 1) {
-            return this;
-          }
-          var secs = MathUtil.safeMultiply(this._seconds, multiplicand);
-          var nos = MathUtil.safeMultiply(this._nanos, multiplicand);
-          secs = secs + MathUtil.intDiv(nos, LocalTime.NANOS_PER_SECOND);
-          nos = MathUtil.intMod(nos, LocalTime.NANOS_PER_SECOND);
-          return Duration2.ofSeconds(secs, nos);
-        };
-        _proto.dividedBy = function dividedBy(divisor) {
-          if (divisor === 0) {
-            throw new ArithmeticException("Cannot divide by zero");
-          }
-          if (divisor === 1) {
-            return this;
-          }
-          var seconds = this._seconds;
-          var nanos = this._nanos;
-          if (seconds < 0 && nanos > 0) {
-            seconds += 1;
-            nanos -= LocalTime.NANOS_PER_SECOND;
-          }
-          var secs = MathUtil.intDiv(seconds, divisor);
-          var remainder = MathUtil.intMod(seconds, divisor);
-          var nos = MathUtil.intDiv(remainder * LocalTime.NANOS_PER_SECOND + nanos, divisor);
-          return Duration2.ofSeconds(secs, nos);
-        };
-        _proto.negated = function negated() {
-          return this.multipliedBy(-1);
-        };
-        _proto.abs = function abs() {
-          return this.isNegative() ? this.negated() : this;
-        };
-        _proto.addTo = function addTo(temporal) {
-          requireNonNull(temporal, "temporal");
-          if (this._seconds !== 0) {
-            temporal = temporal.plus(this._seconds, ChronoUnit.SECONDS);
-          }
-          if (this._nanos !== 0) {
-            temporal = temporal.plus(this._nanos, ChronoUnit.NANOS);
-          }
-          return temporal;
-        };
-        _proto.subtractFrom = function subtractFrom(temporal) {
-          requireNonNull(temporal, "temporal");
-          if (this._seconds !== 0) {
-            temporal = temporal.minus(this._seconds, ChronoUnit.SECONDS);
-          }
-          if (this._nanos !== 0) {
-            temporal = temporal.minus(this._nanos, ChronoUnit.NANOS);
-          }
-          return temporal;
-        };
-        _proto.toDays = function toDays() {
-          return MathUtil.intDiv(this._seconds, LocalTime.SECONDS_PER_DAY);
-        };
-        _proto.toHours = function toHours() {
-          return MathUtil.intDiv(this._seconds, LocalTime.SECONDS_PER_HOUR);
-        };
-        _proto.toMinutes = function toMinutes() {
-          return MathUtil.intDiv(this._seconds, LocalTime.SECONDS_PER_MINUTE);
-        };
-        _proto.toMillis = function toMillis() {
-          var millis = Math.round(MathUtil.safeMultiply(this._seconds, 1e3));
-          millis = MathUtil.safeAdd(millis, MathUtil.intDiv(this._nanos, 1e6));
-          return millis;
-        };
-        _proto.toNanos = function toNanos() {
-          var totalNanos = MathUtil.safeMultiply(this._seconds, LocalTime.NANOS_PER_SECOND);
-          totalNanos = MathUtil.safeAdd(totalNanos, this._nanos);
-          return totalNanos;
-        };
-        _proto.toDaysPart = function toDaysPart() {
-          return MathUtil.intDiv(this._seconds, LocalTime.SECONDS_PER_DAY);
-        };
-        _proto.toHoursPart = function toHoursPart() {
-          return MathUtil.intMod(this.toHours(), LocalTime.HOURS_PER_DAY);
-        };
-        _proto.toMinutesPart = function toMinutesPart() {
-          return MathUtil.intMod(this.toMinutes(), LocalTime.MINUTES_PER_HOUR);
-        };
-        _proto.toSecondsPart = function toSecondsPart() {
-          return MathUtil.intMod(this._seconds, LocalTime.SECONDS_PER_MINUTE);
-        };
-        _proto.toMillisPart = function toMillisPart() {
-          return MathUtil.intDiv(this._nanos, 1e6);
-        };
-        _proto.toNanosPart = function toNanosPart() {
-          return this._nanos;
-        };
-        _proto.compareTo = function compareTo(otherDuration) {
-          requireNonNull(otherDuration, "otherDuration");
-          requireInstance(otherDuration, Duration2, "otherDuration");
-          var cmp = MathUtil.compareNumbers(this._seconds, otherDuration.seconds());
-          if (cmp !== 0) {
-            return cmp;
-          }
-          return this._nanos - otherDuration.nano();
-        };
-        _proto.equals = function equals(otherDuration) {
-          if (this === otherDuration) {
-            return true;
-          }
-          if (otherDuration instanceof Duration2) {
-            return this.seconds() === otherDuration.seconds() && this.nano() === otherDuration.nano();
-          }
-          return false;
-        };
-        _proto.toString = function toString() {
-          if (this === Duration2.ZERO) {
-            return "PT0S";
-          }
-          var negativeFraction = this._seconds < 0 && this._nanos > 0;
-          var wholeSeconds = negativeFraction ? this._seconds + 1 : this._seconds;
-          var fractionNanos = negativeFraction ? LocalTime.NANOS_PER_SECOND - this._nanos : this._nanos;
-          var hours = MathUtil.intDiv(wholeSeconds, LocalTime.SECONDS_PER_HOUR);
-          var minutes = MathUtil.intDiv(MathUtil.intMod(wholeSeconds, LocalTime.SECONDS_PER_HOUR), LocalTime.SECONDS_PER_MINUTE);
-          var secs = MathUtil.intMod(wholeSeconds, LocalTime.SECONDS_PER_MINUTE);
-          var rval = "PT";
-          if (hours !== 0) {
-            rval += hours + "H";
-          }
-          if (minutes !== 0) {
-            rval += minutes + "M";
-          }
-          if (secs === 0 && fractionNanos === 0 && rval.length > 2) {
-            return rval;
-          }
-          if (secs === 0 && negativeFraction) {
-            rval += "-0";
-          } else {
-            rval += "" + secs;
-          }
-          if (fractionNanos > 0) {
-            var fraction = "" + fractionNanos;
-            while (fraction.length < 9) {
-              fraction = "0" + fraction;
-            }
-            while (fraction.charAt(fraction.length - 1) === "0") {
-              fraction = fraction.slice(0, fraction.length - 1);
-            }
-            rval += "." + fraction;
-          }
-          rval += "S";
-          return rval;
-        };
-        _proto.toJSON = function toJSON() {
-          return this.toString();
-        };
-        return Duration2;
-      })(TemporalAmount);
-      function _init$n() {
-        Duration.ZERO = new Duration(0, 0);
-      }
-      var YearConstants = function YearConstants2() {
-      };
-      function _init$m() {
-        YearConstants.MIN_VALUE = -999999;
-        YearConstants.MAX_VALUE = 999999;
-      }
-      var ChronoUnit = (function(_TemporalUnit) {
-        function ChronoUnit2(name, estimatedDuration) {
-          var _this;
-          _this = _TemporalUnit.call(this) || this;
-          _this._name = name;
-          _this._duration = estimatedDuration;
-          return _this;
-        }
-        _inheritsLoose(ChronoUnit2, _TemporalUnit);
-        var _proto = ChronoUnit2.prototype;
-        _proto.duration = function duration() {
-          return this._duration;
-        };
-        _proto.isDurationEstimated = function isDurationEstimated() {
-          return this.isDateBased() || this === ChronoUnit2.FOREVER;
-        };
-        _proto.isDateBased = function isDateBased() {
-          return this.compareTo(ChronoUnit2.DAYS) >= 0 && this !== ChronoUnit2.FOREVER;
-        };
-        _proto.isTimeBased = function isTimeBased() {
-          return this.compareTo(ChronoUnit2.DAYS) < 0;
-        };
-        _proto.isSupportedBy = function isSupportedBy(temporal) {
-          if (this === ChronoUnit2.FOREVER) {
-            return false;
-          }
-          try {
-            temporal.plus(1, this);
-            return true;
-          } catch (e) {
-            try {
-              temporal.plus(-1, this);
-              return true;
-            } catch (e2) {
-              return false;
-            }
-          }
-        };
-        _proto.addTo = function addTo(temporal, amount) {
-          return temporal.plus(amount, this);
-        };
-        _proto.between = function between(temporal1, temporal2) {
-          return temporal1.until(temporal2, this);
-        };
-        _proto.toString = function toString() {
-          return this._name;
-        };
-        _proto.compareTo = function compareTo(other) {
-          return this.duration().compareTo(other.duration());
-        };
-        return ChronoUnit2;
-      })(TemporalUnit);
-      function _init$l() {
-        ChronoUnit.NANOS = new ChronoUnit("Nanos", Duration.ofNanos(1));
-        ChronoUnit.MICROS = new ChronoUnit("Micros", Duration.ofNanos(1e3));
-        ChronoUnit.MILLIS = new ChronoUnit("Millis", Duration.ofNanos(1e6));
-        ChronoUnit.SECONDS = new ChronoUnit("Seconds", Duration.ofSeconds(1));
-        ChronoUnit.MINUTES = new ChronoUnit("Minutes", Duration.ofSeconds(60));
-        ChronoUnit.HOURS = new ChronoUnit("Hours", Duration.ofSeconds(3600));
-        ChronoUnit.HALF_DAYS = new ChronoUnit("HalfDays", Duration.ofSeconds(43200));
-        ChronoUnit.DAYS = new ChronoUnit("Days", Duration.ofSeconds(86400));
-        ChronoUnit.WEEKS = new ChronoUnit("Weeks", Duration.ofSeconds(7 * 86400));
-        ChronoUnit.MONTHS = new ChronoUnit("Months", Duration.ofSeconds(31556952 / 12));
-        ChronoUnit.YEARS = new ChronoUnit("Years", Duration.ofSeconds(31556952));
-        ChronoUnit.DECADES = new ChronoUnit("Decades", Duration.ofSeconds(31556952 * 10));
-        ChronoUnit.CENTURIES = new ChronoUnit("Centuries", Duration.ofSeconds(31556952 * 100));
-        ChronoUnit.MILLENNIA = new ChronoUnit("Millennia", Duration.ofSeconds(31556952 * 1e3));
-        ChronoUnit.ERAS = new ChronoUnit("Eras", Duration.ofSeconds(31556952 * (YearConstants.MAX_VALUE + 1)));
-        ChronoUnit.FOREVER = new ChronoUnit("Forever", Duration.ofSeconds(MathUtil.MAX_SAFE_INTEGER, 999999999));
-      }
-      var TemporalField = (function() {
-        function TemporalField2() {
-        }
-        var _proto = TemporalField2.prototype;
-        _proto.isDateBased = function isDateBased() {
-          abstractMethodFail("isDateBased");
-        };
-        _proto.isTimeBased = function isTimeBased() {
-          abstractMethodFail("isTimeBased");
-        };
-        _proto.baseUnit = function baseUnit() {
-          abstractMethodFail("baseUnit");
-        };
-        _proto.rangeUnit = function rangeUnit() {
-          abstractMethodFail("rangeUnit");
-        };
-        _proto.range = function range() {
-          abstractMethodFail("range");
-        };
-        _proto.rangeRefinedBy = function rangeRefinedBy(temporal) {
-          abstractMethodFail("rangeRefinedBy");
-        };
-        _proto.getFrom = function getFrom(temporal) {
-          abstractMethodFail("getFrom");
-        };
-        _proto.adjustInto = function adjustInto(temporal, newValue) {
-          abstractMethodFail("adjustInto");
-        };
-        _proto.isSupportedBy = function isSupportedBy(temporal) {
-          abstractMethodFail("isSupportedBy");
-        };
-        _proto.displayName = function displayName() {
-          abstractMethodFail("displayName");
-        };
-        _proto.equals = function equals(other) {
-          abstractMethodFail("equals");
-        };
-        _proto.name = function name() {
-          abstractMethodFail("name");
-        };
-        return TemporalField2;
-      })();
-      var ValueRange = (function() {
-        function ValueRange2(minSmallest, minLargest, maxSmallest, maxLargest) {
-          assert(!(minSmallest > minLargest), "Smallest minimum value '" + minSmallest + "' must be less than largest minimum value '" + minLargest + "'", IllegalArgumentException);
-          assert(!(maxSmallest > maxLargest), "Smallest maximum value '" + maxSmallest + "' must be less than largest maximum value '" + maxLargest + "'", IllegalArgumentException);
-          assert(!(minLargest > maxLargest), "Minimum value '" + minLargest + "' must be less than maximum value '" + maxLargest + "'", IllegalArgumentException);
-          this._minSmallest = minSmallest;
-          this._minLargest = minLargest;
-          this._maxLargest = maxLargest;
-          this._maxSmallest = maxSmallest;
-        }
-        var _proto = ValueRange2.prototype;
-        _proto.isFixed = function isFixed() {
-          return this._minSmallest === this._minLargest && this._maxSmallest === this._maxLargest;
-        };
-        _proto.minimum = function minimum() {
-          return this._minSmallest;
-        };
-        _proto.largestMinimum = function largestMinimum() {
-          return this._minLargest;
-        };
-        _proto.maximum = function maximum() {
-          return this._maxLargest;
-        };
-        _proto.smallestMaximum = function smallestMaximum() {
-          return this._maxSmallest;
-        };
-        _proto.isValidValue = function isValidValue(value) {
-          return this.minimum() <= value && value <= this.maximum();
-        };
-        _proto.checkValidValue = function checkValidValue(value, field) {
-          var msg;
-          if (!this.isValidValue(value)) {
-            if (field != null) {
-              msg = "Invalid value for " + field + " (valid values " + this.toString() + "): " + value;
-            } else {
-              msg = "Invalid value (valid values " + this.toString() + "): " + value;
-            }
-            return assert(false, msg, DateTimeException);
-          }
-          return value;
-        };
-        _proto.checkValidIntValue = function checkValidIntValue(value, field) {
-          if (this.isValidIntValue(value) === false) {
-            throw new DateTimeException("Invalid int value for " + field + ": " + value);
-          }
-          return value;
-        };
-        _proto.isValidIntValue = function isValidIntValue(value) {
-          return this.isIntValue() && this.isValidValue(value);
-        };
-        _proto.isIntValue = function isIntValue() {
-          return this.minimum() >= MathUtil.MIN_SAFE_INTEGER && this.maximum() <= MathUtil.MAX_SAFE_INTEGER;
-        };
-        _proto.equals = function equals(other) {
-          if (other === this) {
-            return true;
-          }
-          if (other instanceof ValueRange2) {
-            return this._minSmallest === other._minSmallest && this._minLargest === other._minLargest && this._maxSmallest === other._maxSmallest && this._maxLargest === other._maxLargest;
-          }
-          return false;
-        };
-        _proto.hashCode = function hashCode() {
-          return MathUtil.hashCode(this._minSmallest, this._minLargest, this._maxSmallest, this._maxLargest);
-        };
-        _proto.toString = function toString() {
-          var str = this.minimum() + (this.minimum() !== this.largestMinimum() ? "/" + this.largestMinimum() : "");
-          str += " - ";
-          str += this.smallestMaximum() + (this.smallestMaximum() !== this.maximum() ? "/" + this.maximum() : "");
-          return str;
-        };
-        ValueRange2.of = function of() {
-          if (arguments.length === 2) {
-            return new ValueRange2(arguments[0], arguments[0], arguments[1], arguments[1]);
-          } else if (arguments.length === 3) {
-            return new ValueRange2(arguments[0], arguments[0], arguments[1], arguments[2]);
-          } else if (arguments.length === 4) {
-            return new ValueRange2(arguments[0], arguments[1], arguments[2], arguments[3]);
-          } else {
-            return assert(false, "Invalid number of arguments " + arguments.length, IllegalArgumentException);
-          }
-        };
-        return ValueRange2;
-      })();
-      var ChronoField = (function(_TemporalField) {
-        function ChronoField2(name, baseUnit, rangeUnit, range) {
-          var _this;
-          _this = _TemporalField.call(this) || this;
-          _this._name = name;
-          _this._baseUnit = baseUnit;
-          _this._rangeUnit = rangeUnit;
-          _this._range = range;
-          return _this;
-        }
-        _inheritsLoose(ChronoField2, _TemporalField);
-        ChronoField2.byName = function byName(fieldName) {
-          for (var prop in ChronoField2) {
-            if (ChronoField2[prop]) {
-              if (ChronoField2[prop] instanceof ChronoField2 && ChronoField2[prop].name() === fieldName) {
-                return ChronoField2[prop];
-              }
-            }
-          }
-        };
-        var _proto = ChronoField2.prototype;
-        _proto.name = function name() {
-          return this._name;
-        };
-        _proto.baseUnit = function baseUnit() {
-          return this._baseUnit;
-        };
-        _proto.rangeUnit = function rangeUnit() {
-          return this._rangeUnit;
-        };
-        _proto.range = function range() {
-          return this._range;
-        };
-        _proto.displayName = function displayName() {
-          return this.toString();
-        };
-        _proto.checkValidValue = function checkValidValue(value) {
-          return this.range().checkValidValue(value, this);
-        };
-        _proto.checkValidIntValue = function checkValidIntValue(value) {
-          return this.range().checkValidIntValue(value, this);
-        };
-        _proto.isDateBased = function isDateBased() {
-          var dateBased = this === ChronoField2.DAY_OF_WEEK || this === ChronoField2.ALIGNED_DAY_OF_WEEK_IN_MONTH || this === ChronoField2.ALIGNED_DAY_OF_WEEK_IN_YEAR || this === ChronoField2.DAY_OF_MONTH || this === ChronoField2.DAY_OF_YEAR || this === ChronoField2.EPOCH_DAY || this === ChronoField2.ALIGNED_WEEK_OF_MONTH || this === ChronoField2.ALIGNED_WEEK_OF_YEAR || this === ChronoField2.MONTH_OF_YEAR || this === ChronoField2.PROLEPTIC_MONTH || this === ChronoField2.YEAR_OF_ERA || this === ChronoField2.YEAR || this === ChronoField2.ERA;
-          return dateBased;
-        };
-        _proto.isTimeBased = function isTimeBased() {
-          var timeBased = this === ChronoField2.NANO_OF_SECOND || this === ChronoField2.NANO_OF_DAY || this === ChronoField2.MICRO_OF_SECOND || this === ChronoField2.MICRO_OF_DAY || this === ChronoField2.MILLI_OF_SECOND || this === ChronoField2.MILLI_OF_DAY || this === ChronoField2.SECOND_OF_MINUTE || this === ChronoField2.SECOND_OF_DAY || this === ChronoField2.MINUTE_OF_HOUR || this === ChronoField2.MINUTE_OF_DAY || this === ChronoField2.HOUR_OF_AMPM || this === ChronoField2.CLOCK_HOUR_OF_AMPM || this === ChronoField2.HOUR_OF_DAY || this === ChronoField2.CLOCK_HOUR_OF_DAY || this === ChronoField2.AMPM_OF_DAY;
-          return timeBased;
-        };
-        _proto.rangeRefinedBy = function rangeRefinedBy(temporal) {
-          return temporal.range(this);
-        };
-        _proto.getFrom = function getFrom(temporal) {
-          return temporal.getLong(this);
-        };
-        _proto.toString = function toString() {
-          return this.name();
-        };
-        _proto.equals = function equals(other) {
-          return this === other;
-        };
-        _proto.adjustInto = function adjustInto(temporal, newValue) {
-          return temporal.with(this, newValue);
-        };
-        _proto.isSupportedBy = function isSupportedBy(temporal) {
-          return temporal.isSupported(this);
-        };
-        return ChronoField2;
-      })(TemporalField);
-      function _init$k() {
-        ChronoField.NANO_OF_SECOND = new ChronoField("NanoOfSecond", ChronoUnit.NANOS, ChronoUnit.SECONDS, ValueRange.of(0, 999999999));
-        ChronoField.NANO_OF_DAY = new ChronoField("NanoOfDay", ChronoUnit.NANOS, ChronoUnit.DAYS, ValueRange.of(0, 86400 * 1e9 - 1));
-        ChronoField.MICRO_OF_SECOND = new ChronoField("MicroOfSecond", ChronoUnit.MICROS, ChronoUnit.SECONDS, ValueRange.of(0, 999999));
-        ChronoField.MICRO_OF_DAY = new ChronoField("MicroOfDay", ChronoUnit.MICROS, ChronoUnit.DAYS, ValueRange.of(0, 86400 * 1e6 - 1));
-        ChronoField.MILLI_OF_SECOND = new ChronoField("MilliOfSecond", ChronoUnit.MILLIS, ChronoUnit.SECONDS, ValueRange.of(0, 999));
-        ChronoField.MILLI_OF_DAY = new ChronoField("MilliOfDay", ChronoUnit.MILLIS, ChronoUnit.DAYS, ValueRange.of(0, 86400 * 1e3 - 1));
-        ChronoField.SECOND_OF_MINUTE = new ChronoField("SecondOfMinute", ChronoUnit.SECONDS, ChronoUnit.MINUTES, ValueRange.of(0, 59));
-        ChronoField.SECOND_OF_DAY = new ChronoField("SecondOfDay", ChronoUnit.SECONDS, ChronoUnit.DAYS, ValueRange.of(0, 86400 - 1));
-        ChronoField.MINUTE_OF_HOUR = new ChronoField("MinuteOfHour", ChronoUnit.MINUTES, ChronoUnit.HOURS, ValueRange.of(0, 59));
-        ChronoField.MINUTE_OF_DAY = new ChronoField("MinuteOfDay", ChronoUnit.MINUTES, ChronoUnit.DAYS, ValueRange.of(0, 24 * 60 - 1));
-        ChronoField.HOUR_OF_AMPM = new ChronoField("HourOfAmPm", ChronoUnit.HOURS, ChronoUnit.HALF_DAYS, ValueRange.of(0, 11));
-        ChronoField.CLOCK_HOUR_OF_AMPM = new ChronoField("ClockHourOfAmPm", ChronoUnit.HOURS, ChronoUnit.HALF_DAYS, ValueRange.of(1, 12));
-        ChronoField.HOUR_OF_DAY = new ChronoField("HourOfDay", ChronoUnit.HOURS, ChronoUnit.DAYS, ValueRange.of(0, 23));
-        ChronoField.CLOCK_HOUR_OF_DAY = new ChronoField("ClockHourOfDay", ChronoUnit.HOURS, ChronoUnit.DAYS, ValueRange.of(1, 24));
-        ChronoField.AMPM_OF_DAY = new ChronoField("AmPmOfDay", ChronoUnit.HALF_DAYS, ChronoUnit.DAYS, ValueRange.of(0, 1));
-        ChronoField.DAY_OF_WEEK = new ChronoField("DayOfWeek", ChronoUnit.DAYS, ChronoUnit.WEEKS, ValueRange.of(1, 7));
-        ChronoField.ALIGNED_DAY_OF_WEEK_IN_MONTH = new ChronoField("AlignedDayOfWeekInMonth", ChronoUnit.DAYS, ChronoUnit.WEEKS, ValueRange.of(1, 7));
-        ChronoField.ALIGNED_DAY_OF_WEEK_IN_YEAR = new ChronoField("AlignedDayOfWeekInYear", ChronoUnit.DAYS, ChronoUnit.WEEKS, ValueRange.of(1, 7));
-        ChronoField.DAY_OF_MONTH = new ChronoField("DayOfMonth", ChronoUnit.DAYS, ChronoUnit.MONTHS, ValueRange.of(1, 28, 31), "day");
-        ChronoField.DAY_OF_YEAR = new ChronoField("DayOfYear", ChronoUnit.DAYS, ChronoUnit.YEARS, ValueRange.of(1, 365, 366));
-        ChronoField.EPOCH_DAY = new ChronoField("EpochDay", ChronoUnit.DAYS, ChronoUnit.FOREVER, ValueRange.of(-365961662, 364522971));
-        ChronoField.ALIGNED_WEEK_OF_MONTH = new ChronoField("AlignedWeekOfMonth", ChronoUnit.WEEKS, ChronoUnit.MONTHS, ValueRange.of(1, 4, 5));
-        ChronoField.ALIGNED_WEEK_OF_YEAR = new ChronoField("AlignedWeekOfYear", ChronoUnit.WEEKS, ChronoUnit.YEARS, ValueRange.of(1, 53));
-        ChronoField.MONTH_OF_YEAR = new ChronoField("MonthOfYear", ChronoUnit.MONTHS, ChronoUnit.YEARS, ValueRange.of(1, 12), "month");
-        ChronoField.PROLEPTIC_MONTH = new ChronoField("ProlepticMonth", ChronoUnit.MONTHS, ChronoUnit.FOREVER, ValueRange.of(YearConstants.MIN_VALUE * 12, YearConstants.MAX_VALUE * 12 + 11));
-        ChronoField.YEAR_OF_ERA = new ChronoField("YearOfEra", ChronoUnit.YEARS, ChronoUnit.FOREVER, ValueRange.of(1, YearConstants.MAX_VALUE, YearConstants.MAX_VALUE + 1));
-        ChronoField.YEAR = new ChronoField("Year", ChronoUnit.YEARS, ChronoUnit.FOREVER, ValueRange.of(YearConstants.MIN_VALUE, YearConstants.MAX_VALUE), "year");
-        ChronoField.ERA = new ChronoField("Era", ChronoUnit.ERAS, ChronoUnit.FOREVER, ValueRange.of(0, 1));
-        ChronoField.INSTANT_SECONDS = new ChronoField("InstantSeconds", ChronoUnit.SECONDS, ChronoUnit.FOREVER, ValueRange.of(MIN_SAFE_INTEGER, MAX_SAFE_INTEGER));
-        ChronoField.OFFSET_SECONDS = new ChronoField("OffsetSeconds", ChronoUnit.SECONDS, ChronoUnit.FOREVER, ValueRange.of(-18 * 3600, 18 * 3600));
-      }
-      var TemporalQueries = (function() {
-        function TemporalQueries2() {
-        }
-        TemporalQueries2.zoneId = function zoneId() {
-          return TemporalQueries2.ZONE_ID;
-        };
-        TemporalQueries2.chronology = function chronology() {
-          return TemporalQueries2.CHRONO;
-        };
-        TemporalQueries2.precision = function precision() {
-          return TemporalQueries2.PRECISION;
-        };
-        TemporalQueries2.zone = function zone() {
-          return TemporalQueries2.ZONE;
-        };
-        TemporalQueries2.offset = function offset() {
-          return TemporalQueries2.OFFSET;
-        };
-        TemporalQueries2.localDate = function localDate() {
-          return TemporalQueries2.LOCAL_DATE;
-        };
-        TemporalQueries2.localTime = function localTime() {
-          return TemporalQueries2.LOCAL_TIME;
-        };
-        return TemporalQueries2;
-      })();
-      var TemporalAccessor = (function() {
-        function TemporalAccessor2() {
-        }
-        var _proto = TemporalAccessor2.prototype;
-        _proto.query = function query(_query) {
-          if (_query === TemporalQueries.zoneId() || _query === TemporalQueries.chronology() || _query === TemporalQueries.precision()) {
-            return null;
-          }
-          return _query.queryFrom(this);
-        };
-        _proto.get = function get(field) {
-          return this.range(field).checkValidIntValue(this.getLong(field), field);
-        };
-        _proto.getLong = function getLong(field) {
-          abstractMethodFail("getLong");
-        };
-        _proto.range = function range(field) {
-          if (field instanceof ChronoField) {
-            if (this.isSupported(field)) {
-              return field.range();
-            }
-            throw new UnsupportedTemporalTypeException("Unsupported field: " + field);
-          }
-          return field.rangeRefinedBy(this);
-        };
-        _proto.isSupported = function isSupported(field) {
-          abstractMethodFail("isSupported");
-        };
-        return TemporalAccessor2;
-      })();
-      var TemporalQuery = (function(_Enum) {
-        function TemporalQuery2() {
-          return _Enum.apply(this, arguments) || this;
-        }
-        _inheritsLoose(TemporalQuery2, _Enum);
-        var _proto = TemporalQuery2.prototype;
-        _proto.queryFrom = function queryFrom(temporal) {
-          abstractMethodFail("queryFrom");
-        };
-        return TemporalQuery2;
-      })(Enum);
-      function createTemporalQuery(name, queryFromFunction) {
-        var ExtendedTemporalQuery = (function(_TemporalQuery) {
-          function ExtendedTemporalQuery2() {
-            return _TemporalQuery.apply(this, arguments) || this;
-          }
-          _inheritsLoose(ExtendedTemporalQuery2, _TemporalQuery);
-          return ExtendedTemporalQuery2;
-        })(TemporalQuery);
-        ExtendedTemporalQuery.prototype.queryFrom = queryFromFunction;
-        return new ExtendedTemporalQuery(name);
-      }
-      var DayOfWeek = (function(_TemporalAccessor) {
-        function DayOfWeek2(ordinal, name) {
-          var _this;
-          _this = _TemporalAccessor.call(this) || this;
-          _this._ordinal = ordinal;
-          _this._name = name;
-          return _this;
-        }
-        _inheritsLoose(DayOfWeek2, _TemporalAccessor);
-        var _proto = DayOfWeek2.prototype;
-        _proto.ordinal = function ordinal() {
-          return this._ordinal;
-        };
-        _proto.name = function name() {
-          return this._name;
-        };
-        DayOfWeek2.values = function values() {
-          return ENUMS.slice();
-        };
-        DayOfWeek2.valueOf = function valueOf(name) {
-          var ordinal = 0;
-          for (ordinal; ordinal < ENUMS.length; ordinal++) {
-            if (ENUMS[ordinal].name() === name) {
-              break;
-            }
-          }
-          return DayOfWeek2.of(ordinal + 1);
-        };
-        DayOfWeek2.of = function of(dayOfWeek) {
-          if (dayOfWeek < 1 || dayOfWeek > 7) {
-            throw new DateTimeException("Invalid value for DayOfWeek: " + dayOfWeek);
-          }
-          return ENUMS[dayOfWeek - 1];
-        };
-        DayOfWeek2.from = function from(temporal) {
-          assert(temporal != null, "temporal", NullPointerException);
-          if (temporal instanceof DayOfWeek2) {
-            return temporal;
-          }
-          try {
-            return DayOfWeek2.of(temporal.get(ChronoField.DAY_OF_WEEK));
-          } catch (ex) {
-            if (ex instanceof DateTimeException) {
-              throw new DateTimeException("Unable to obtain DayOfWeek from TemporalAccessor: " + temporal + ", type " + (temporal.constructor != null ? temporal.constructor.name : ""), ex);
-            } else {
-              throw ex;
-            }
-          }
-        };
-        _proto.value = function value() {
-          return this._ordinal + 1;
-        };
-        _proto.displayName = function displayName(style, locale) {
-          throw new IllegalArgumentException("Pattern using (localized) text not implemented yet!");
-        };
-        _proto.isSupported = function isSupported(field) {
-          if (field instanceof ChronoField) {
-            return field === ChronoField.DAY_OF_WEEK;
-          }
-          return field != null && field.isSupportedBy(this);
-        };
-        _proto.range = function range(field) {
-          if (field === ChronoField.DAY_OF_WEEK) {
-            return field.range();
-          } else if (field instanceof ChronoField) {
-            throw new UnsupportedTemporalTypeException("Unsupported field: " + field);
-          }
-          return field.rangeRefinedBy(this);
-        };
-        _proto.get = function get(field) {
-          if (field === ChronoField.DAY_OF_WEEK) {
-            return this.value();
-          }
-          return this.range(field).checkValidIntValue(this.getLong(field), field);
-        };
-        _proto.getLong = function getLong(field) {
-          if (field === ChronoField.DAY_OF_WEEK) {
-            return this.value();
-          } else if (field instanceof ChronoField) {
-            throw new UnsupportedTemporalTypeException("Unsupported field: " + field);
-          }
-          return field.getFrom(this);
-        };
-        _proto.plus = function plus(days) {
-          var amount = MathUtil.floorMod(days, 7);
-          return ENUMS[MathUtil.floorMod(this._ordinal + (amount + 7), 7)];
-        };
-        _proto.minus = function minus(days) {
-          return this.plus(-1 * MathUtil.floorMod(days, 7));
-        };
-        _proto.query = function query(_query) {
-          if (_query === TemporalQueries.precision()) {
-            return ChronoUnit.DAYS;
-          } else if (_query === TemporalQueries.localDate() || _query === TemporalQueries.localTime() || _query === TemporalQueries.chronology() || _query === TemporalQueries.zone() || _query === TemporalQueries.zoneId() || _query === TemporalQueries.offset()) {
-            return null;
-          }
-          assert(_query != null, "query", NullPointerException);
-          return _query.queryFrom(this);
-        };
-        _proto.adjustInto = function adjustInto(temporal) {
-          requireNonNull(temporal, "temporal");
-          return temporal.with(ChronoField.DAY_OF_WEEK, this.value());
-        };
-        _proto.equals = function equals(other) {
-          return this === other;
-        };
-        _proto.toString = function toString() {
-          return this._name;
-        };
-        _proto.compareTo = function compareTo(other) {
-          requireNonNull(other, "other");
-          requireInstance(other, DayOfWeek2, "other");
-          return this._ordinal - other._ordinal;
-        };
-        _proto.toJSON = function toJSON() {
-          return this.toString();
-        };
-        return DayOfWeek2;
-      })(TemporalAccessor);
-      var ENUMS;
-      function _init$j() {
-        DayOfWeek.MONDAY = new DayOfWeek(0, "MONDAY");
-        DayOfWeek.TUESDAY = new DayOfWeek(1, "TUESDAY");
-        DayOfWeek.WEDNESDAY = new DayOfWeek(2, "WEDNESDAY");
-        DayOfWeek.THURSDAY = new DayOfWeek(3, "THURSDAY");
-        DayOfWeek.FRIDAY = new DayOfWeek(4, "FRIDAY");
-        DayOfWeek.SATURDAY = new DayOfWeek(5, "SATURDAY");
-        DayOfWeek.SUNDAY = new DayOfWeek(6, "SUNDAY");
-        DayOfWeek.FROM = createTemporalQuery("DayOfWeek.FROM", function(temporal) {
-          return DayOfWeek.from(temporal);
-        });
-        ENUMS = [DayOfWeek.MONDAY, DayOfWeek.TUESDAY, DayOfWeek.WEDNESDAY, DayOfWeek.THURSDAY, DayOfWeek.FRIDAY, DayOfWeek.SATURDAY, DayOfWeek.SUNDAY];
-      }
-      var Month = (function(_TemporalAccessor) {
-        function Month2(value, name) {
-          var _this;
-          _this = _TemporalAccessor.call(this) || this;
-          _this._value = MathUtil.safeToInt(value);
-          _this._name = name;
-          return _this;
-        }
-        _inheritsLoose(Month2, _TemporalAccessor);
-        var _proto = Month2.prototype;
-        _proto.value = function value() {
-          return this._value;
-        };
-        _proto.ordinal = function ordinal() {
-          return this._value - 1;
-        };
-        _proto.name = function name() {
-          return this._name;
-        };
-        _proto.displayName = function displayName(style, locale) {
-          throw new IllegalArgumentException("Pattern using (localized) text not implemented yet!");
-        };
-        _proto.isSupported = function isSupported(field) {
-          if (null === field) {
-            return false;
-          }
-          if (field instanceof ChronoField) {
-            return field === ChronoField.MONTH_OF_YEAR;
-          }
-          return field != null && field.isSupportedBy(this);
-        };
-        _proto.get = function get(field) {
-          if (field === ChronoField.MONTH_OF_YEAR) {
-            return this.value();
-          }
-          return this.range(field).checkValidIntValue(this.getLong(field), field);
-        };
-        _proto.getLong = function getLong(field) {
-          if (field === ChronoField.MONTH_OF_YEAR) {
-            return this.value();
-          } else if (field instanceof ChronoField) {
-            throw new UnsupportedTemporalTypeException("Unsupported field: " + field);
-          }
-          return field.getFrom(this);
-        };
-        _proto.plus = function plus(months) {
-          var amount = MathUtil.intMod(months, 12) + 12;
-          var newMonthVal = MathUtil.intMod(this.value() + amount, 12);
-          newMonthVal = newMonthVal === 0 ? 12 : newMonthVal;
-          return Month2.of(newMonthVal);
-        };
-        _proto.minus = function minus(months) {
-          return this.plus(-1 * MathUtil.intMod(months, 12));
-        };
-        _proto.length = function length(leapYear) {
-          switch (this) {
-            case Month2.FEBRUARY:
-              return leapYear ? 29 : 28;
-            case Month2.APRIL:
-            case Month2.JUNE:
-            case Month2.SEPTEMBER:
-            case Month2.NOVEMBER:
-              return 30;
-            default:
-              return 31;
-          }
-        };
-        _proto.minLength = function minLength() {
-          switch (this) {
-            case Month2.FEBRUARY:
-              return 28;
-            case Month2.APRIL:
-            case Month2.JUNE:
-            case Month2.SEPTEMBER:
-            case Month2.NOVEMBER:
-              return 30;
-            default:
-              return 31;
-          }
-        };
-        _proto.maxLength = function maxLength() {
-          switch (this) {
-            case Month2.FEBRUARY:
-              return 29;
-            case Month2.APRIL:
-            case Month2.JUNE:
-            case Month2.SEPTEMBER:
-            case Month2.NOVEMBER:
-              return 30;
-            default:
-              return 31;
-          }
-        };
-        _proto.firstDayOfYear = function firstDayOfYear(leapYear) {
-          var leap = leapYear ? 1 : 0;
-          switch (this) {
-            case Month2.JANUARY:
-              return 1;
-            case Month2.FEBRUARY:
-              return 32;
-            case Month2.MARCH:
-              return 60 + leap;
-            case Month2.APRIL:
-              return 91 + leap;
-            case Month2.MAY:
-              return 121 + leap;
-            case Month2.JUNE:
-              return 152 + leap;
-            case Month2.JULY:
-              return 182 + leap;
-            case Month2.AUGUST:
-              return 213 + leap;
-            case Month2.SEPTEMBER:
-              return 244 + leap;
-            case Month2.OCTOBER:
-              return 274 + leap;
-            case Month2.NOVEMBER:
-              return 305 + leap;
-            case Month2.DECEMBER:
-            default:
-              return 335 + leap;
-          }
-        };
-        _proto.firstMonthOfQuarter = function firstMonthOfQuarter() {
-          switch (this) {
-            case Month2.JANUARY:
-            case Month2.FEBRUARY:
-            case Month2.MARCH:
-              return Month2.JANUARY;
-            case Month2.APRIL:
-            case Month2.MAY:
-            case Month2.JUNE:
-              return Month2.APRIL;
-            case Month2.JULY:
-            case Month2.AUGUST:
-            case Month2.SEPTEMBER:
-              return Month2.JULY;
-            case Month2.OCTOBER:
-            case Month2.NOVEMBER:
-            case Month2.DECEMBER:
-            default:
-              return Month2.OCTOBER;
-          }
-        };
-        _proto.query = function query(_query) {
-          assert(_query != null, "query() parameter must not be null", DateTimeException);
-          if (_query === TemporalQueries.chronology()) {
-            return IsoChronology.INSTANCE;
-          } else if (_query === TemporalQueries.precision()) {
-            return ChronoUnit.MONTHS;
-          }
-          return _TemporalAccessor.prototype.query.call(this, _query);
-        };
-        _proto.toString = function toString() {
-          switch (this) {
-            case Month2.JANUARY:
-              return "JANUARY";
-            case Month2.FEBRUARY:
-              return "FEBRUARY";
-            case Month2.MARCH:
-              return "MARCH";
-            case Month2.APRIL:
-              return "APRIL";
-            case Month2.MAY:
-              return "MAY";
-            case Month2.JUNE:
-              return "JUNE";
-            case Month2.JULY:
-              return "JULY";
-            case Month2.AUGUST:
-              return "AUGUST";
-            case Month2.SEPTEMBER:
-              return "SEPTEMBER";
-            case Month2.OCTOBER:
-              return "OCTOBER";
-            case Month2.NOVEMBER:
-              return "NOVEMBER";
-            case Month2.DECEMBER:
-              return "DECEMBER";
-            default:
-              return "unknown Month, value: " + this.value();
-          }
-        };
-        _proto.toJSON = function toJSON() {
-          return this.toString();
-        };
-        _proto.adjustInto = function adjustInto(temporal) {
-          return temporal.with(ChronoField.MONTH_OF_YEAR, this.value());
-        };
-        _proto.compareTo = function compareTo(other) {
-          requireNonNull(other, "other");
-          requireInstance(other, Month2, "other");
-          return this._value - other._value;
-        };
-        _proto.equals = function equals(other) {
-          return this === other;
-        };
-        Month2.valueOf = function valueOf(name) {
-          var ordinal = 0;
-          for (ordinal; ordinal < MONTHS.length; ordinal++) {
-            if (MONTHS[ordinal].name() === name) {
-              break;
-            }
-          }
-          return Month2.of(ordinal + 1);
-        };
-        Month2.values = function values() {
-          return MONTHS.slice();
-        };
-        Month2.of = function of(month) {
-          if (month < 1 || month > 12) {
-            assert(false, "Invalid value for MonthOfYear: " + month, DateTimeException);
-          }
-          return MONTHS[month - 1];
-        };
-        Month2.from = function from(temporal) {
-          if (temporal instanceof Month2) {
-            return temporal;
-          }
-          try {
-            return Month2.of(temporal.get(ChronoField.MONTH_OF_YEAR));
-          } catch (ex) {
-            throw new DateTimeException("Unable to obtain Month from TemporalAccessor: " + temporal + " of type " + (temporal && temporal.constructor != null ? temporal.constructor.name : ""), ex);
-          }
-        };
-        return Month2;
-      })(TemporalAccessor);
-      var MONTHS;
-      function _init$i() {
-        Month.JANUARY = new Month(1, "JANUARY");
-        Month.FEBRUARY = new Month(2, "FEBRUARY");
-        Month.MARCH = new Month(3, "MARCH");
-        Month.APRIL = new Month(4, "APRIL");
-        Month.MAY = new Month(5, "MAY");
-        Month.JUNE = new Month(6, "JUNE");
-        Month.JULY = new Month(7, "JULY");
-        Month.AUGUST = new Month(8, "AUGUST");
-        Month.SEPTEMBER = new Month(9, "SEPTEMBER");
-        Month.OCTOBER = new Month(10, "OCTOBER");
-        Month.NOVEMBER = new Month(11, "NOVEMBER");
-        Month.DECEMBER = new Month(12, "DECEMBER");
-        MONTHS = [Month.JANUARY, Month.FEBRUARY, Month.MARCH, Month.APRIL, Month.MAY, Month.JUNE, Month.JULY, Month.AUGUST, Month.SEPTEMBER, Month.OCTOBER, Month.NOVEMBER, Month.DECEMBER];
-      }
-      var PATTERN = /([-+]?)P(?:([-+]?[0-9]+)Y)?(?:([-+]?[0-9]+)M)?(?:([-+]?[0-9]+)W)?(?:([-+]?[0-9]+)D)?/;
-      var Period = (function(_TemporalAmount) {
-        function Period2(years, months, days) {
-          var _this;
-          _this = _TemporalAmount.call(this) || this;
-          var _years = MathUtil.safeToInt(years);
-          var _months = MathUtil.safeToInt(months);
-          var _days = MathUtil.safeToInt(days);
-          if (_years === 0 && _months === 0 && _days === 0) {
-            if (!Period2.ZERO) {
-              _this._years = _years;
-              _this._months = _months;
-              _this._days = _days;
-              Period2.ZERO = _this;
-            }
-            return Period2.ZERO || _assertThisInitialized(_this);
-          }
-          _this._years = _years;
-          _this._months = _months;
-          _this._days = _days;
-          return _this;
-        }
-        _inheritsLoose(Period2, _TemporalAmount);
-        Period2.ofYears = function ofYears(years) {
-          return Period2.create(years, 0, 0);
-        };
-        Period2.ofMonths = function ofMonths(months) {
-          return Period2.create(0, months, 0);
-        };
-        Period2.ofWeeks = function ofWeeks(weeks) {
-          return Period2.create(0, 0, MathUtil.safeMultiply(weeks, 7));
-        };
-        Period2.ofDays = function ofDays(days) {
-          return Period2.create(0, 0, days);
-        };
-        Period2.of = function of(years, months, days) {
-          return Period2.create(years, months, days);
-        };
-        Period2.from = function from(amount) {
-          if (amount instanceof Period2) {
-            return amount;
-          }
-          requireNonNull(amount, "amount");
-          var years = 0;
-          var months = 0;
-          var days = 0;
-          var units = amount.units();
-          for (var i = 0; i < units.length; i++) {
-            var unit = units[i];
-            var unitAmount = amount.get(unit);
-            if (unit === ChronoUnit.YEARS) {
-              years = MathUtil.safeToInt(unitAmount);
-            } else if (unit === ChronoUnit.MONTHS) {
-              months = MathUtil.safeToInt(unitAmount);
-            } else if (unit === ChronoUnit.DAYS) {
-              days = MathUtil.safeToInt(unitAmount);
-            } else {
-              throw new DateTimeException("Unit must be Years, Months or Days, but was " + unit);
-            }
-          }
-          return Period2.create(years, months, days);
-        };
-        Period2.between = function between(startDate, endDate) {
-          requireNonNull(startDate, "startDate");
-          requireNonNull(endDate, "endDate");
-          requireInstance(startDate, LocalDate, "startDate");
-          requireInstance(endDate, LocalDate, "endDate");
-          return startDate.until(endDate);
-        };
-        Period2.parse = function parse(text) {
-          requireNonNull(text, "text");
-          try {
-            return Period2._parse(text);
-          } catch (ex) {
-            if (ex instanceof ArithmeticException) {
-              throw new DateTimeParseException("Text cannot be parsed to a Period", text, 0, ex);
-            } else {
-              throw ex;
-            }
-          }
-        };
-        Period2._parse = function _parse(text) {
-          var matches = PATTERN.exec(text);
-          if (matches != null) {
-            var negate = "-" === matches[1] ? -1 : 1;
-            var yearMatch = matches[2];
-            var monthMatch = matches[3];
-            var weekMatch = matches[4];
-            var dayMatch = matches[5];
-            if (yearMatch != null || monthMatch != null || weekMatch != null || dayMatch != null) {
-              var years = Period2._parseNumber(text, yearMatch, negate);
-              var months = Period2._parseNumber(text, monthMatch, negate);
-              var weeks = Period2._parseNumber(text, weekMatch, negate);
-              var days = Period2._parseNumber(text, dayMatch, negate);
-              days = MathUtil.safeAdd(days, MathUtil.safeMultiply(weeks, 7));
-              return Period2.create(years, months, days);
-            }
-          }
-          throw new DateTimeParseException("Text cannot be parsed to a Period", text, 0);
-        };
-        Period2._parseNumber = function _parseNumber(text, str, negate) {
-          if (str == null) {
-            return 0;
-          }
-          var val = MathUtil.parseInt(str);
-          return MathUtil.safeMultiply(val, negate);
-        };
-        Period2.create = function create(years, months, days) {
-          return new Period2(years, months, days);
-        };
-        var _proto = Period2.prototype;
-        _proto.units = function units() {
-          return [ChronoUnit.YEARS, ChronoUnit.MONTHS, ChronoUnit.DAYS];
-        };
-        _proto.chronology = function chronology() {
-          return IsoChronology.INSTANCE;
-        };
-        _proto.get = function get(unit) {
-          if (unit === ChronoUnit.YEARS) {
-            return this._years;
-          }
-          if (unit === ChronoUnit.MONTHS) {
-            return this._months;
-          }
-          if (unit === ChronoUnit.DAYS) {
-            return this._days;
-          }
-          throw new UnsupportedTemporalTypeException("Unsupported unit: " + unit);
-        };
-        _proto.isZero = function isZero() {
-          return this === Period2.ZERO;
-        };
-        _proto.isNegative = function isNegative() {
-          return this._years < 0 || this._months < 0 || this._days < 0;
-        };
-        _proto.years = function years() {
-          return this._years;
-        };
-        _proto.months = function months() {
-          return this._months;
-        };
-        _proto.days = function days() {
-          return this._days;
-        };
-        _proto.withYears = function withYears(years) {
-          if (years === this._years) {
-            return this;
-          }
-          return Period2.create(years, this._months, this._days);
-        };
-        _proto.withMonths = function withMonths(months) {
-          if (months === this._months) {
-            return this;
-          }
-          return Period2.create(this._years, months, this._days);
-        };
-        _proto.withDays = function withDays(days) {
-          if (days === this._days) {
-            return this;
-          }
-          return Period2.create(this._years, this._months, days);
-        };
-        _proto.plus = function plus(amountToAdd) {
-          var amount = Period2.from(amountToAdd);
-          return Period2.create(MathUtil.safeAdd(this._years, amount._years), MathUtil.safeAdd(this._months, amount._months), MathUtil.safeAdd(this._days, amount._days));
-        };
-        _proto.plusYears = function plusYears(yearsToAdd) {
-          if (yearsToAdd === 0) {
-            return this;
-          }
-          return Period2.create(MathUtil.safeToInt(MathUtil.safeAdd(this._years, yearsToAdd)), this._months, this._days);
-        };
-        _proto.plusMonths = function plusMonths(monthsToAdd) {
-          if (monthsToAdd === 0) {
-            return this;
-          }
-          return Period2.create(this._years, MathUtil.safeToInt(MathUtil.safeAdd(this._months, monthsToAdd)), this._days);
-        };
-        _proto.plusDays = function plusDays(daysToAdd) {
-          if (daysToAdd === 0) {
-            return this;
-          }
-          return Period2.create(this._years, this._months, MathUtil.safeToInt(MathUtil.safeAdd(this._days, daysToAdd)));
-        };
-        _proto.minus = function minus(amountToSubtract) {
-          var amount = Period2.from(amountToSubtract);
-          return Period2.create(MathUtil.safeSubtract(this._years, amount._years), MathUtil.safeSubtract(this._months, amount._months), MathUtil.safeSubtract(this._days, amount._days));
-        };
-        _proto.minusYears = function minusYears(yearsToSubtract) {
-          return this.plusYears(-1 * yearsToSubtract);
-        };
-        _proto.minusMonths = function minusMonths(monthsToSubtract) {
-          return this.plusMonths(-1 * monthsToSubtract);
-        };
-        _proto.minusDays = function minusDays(daysToSubtract) {
-          return this.plusDays(-1 * daysToSubtract);
-        };
-        _proto.multipliedBy = function multipliedBy(scalar) {
-          if (this === Period2.ZERO || scalar === 1) {
-            return this;
-          }
-          return Period2.create(MathUtil.safeMultiply(this._years, scalar), MathUtil.safeMultiply(this._months, scalar), MathUtil.safeMultiply(this._days, scalar));
-        };
-        _proto.negated = function negated() {
-          return this.multipliedBy(-1);
-        };
-        _proto.normalized = function normalized() {
-          var totalMonths = this.toTotalMonths();
-          var splitYears = MathUtil.intDiv(totalMonths, 12);
-          var splitMonths = MathUtil.intMod(totalMonths, 12);
-          if (splitYears === this._years && splitMonths === this._months) {
-            return this;
-          }
-          return Period2.create(MathUtil.safeToInt(splitYears), splitMonths, this._days);
-        };
-        _proto.toTotalMonths = function toTotalMonths() {
-          return this._years * 12 + this._months;
-        };
-        _proto.addTo = function addTo(temporal) {
-          requireNonNull(temporal, "temporal");
-          if (this._years !== 0) {
-            if (this._months !== 0) {
-              temporal = temporal.plus(this.toTotalMonths(), ChronoUnit.MONTHS);
-            } else {
-              temporal = temporal.plus(this._years, ChronoUnit.YEARS);
-            }
-          } else if (this._months !== 0) {
-            temporal = temporal.plus(this._months, ChronoUnit.MONTHS);
-          }
-          if (this._days !== 0) {
-            temporal = temporal.plus(this._days, ChronoUnit.DAYS);
-          }
-          return temporal;
-        };
-        _proto.subtractFrom = function subtractFrom(temporal) {
-          requireNonNull(temporal, "temporal");
-          if (this._years !== 0) {
-            if (this._months !== 0) {
-              temporal = temporal.minus(this.toTotalMonths(), ChronoUnit.MONTHS);
-            } else {
-              temporal = temporal.minus(this._years, ChronoUnit.YEARS);
-            }
-          } else if (this._months !== 0) {
-            temporal = temporal.minus(this._months, ChronoUnit.MONTHS);
-          }
-          if (this._days !== 0) {
-            temporal = temporal.minus(this._days, ChronoUnit.DAYS);
-          }
-          return temporal;
-        };
-        _proto.equals = function equals(obj) {
-          if (this === obj) {
-            return true;
-          }
-          if (obj instanceof Period2) {
-            var other = obj;
-            return this._years === other._years && this._months === other._months && this._days === other._days;
-          }
-          return false;
-        };
-        _proto.hashCode = function hashCode() {
-          return MathUtil.hashCode(this._years, this._months, this._days);
-        };
-        _proto.toString = function toString() {
-          if (this === Period2.ZERO) {
-            return "P0D";
-          } else {
-            var buf = "P";
-            if (this._years !== 0) {
-              buf += this._years + "Y";
-            }
-            if (this._months !== 0) {
-              buf += this._months + "M";
-            }
-            if (this._days !== 0) {
-              buf += this._days + "D";
-            }
-            return buf;
-          }
-        };
-        _proto.toJSON = function toJSON() {
-          return this.toString();
-        };
-        return Period2;
-      })(TemporalAmount);
-      function _init$h() {
-        Period.ofDays(0);
-      }
-      var ParsePosition = (function() {
-        function ParsePosition2(index) {
-          this._index = index;
-          this._errorIndex = -1;
-        }
-        var _proto = ParsePosition2.prototype;
-        _proto.getIndex = function getIndex() {
-          return this._index;
-        };
-        _proto.setIndex = function setIndex(index) {
-          this._index = index;
-        };
-        _proto.getErrorIndex = function getErrorIndex() {
-          return this._errorIndex;
-        };
-        _proto.setErrorIndex = function setErrorIndex(errorIndex) {
-          this._errorIndex = errorIndex;
-        };
-        return ParsePosition2;
-      })();
-      var EnumMap = (function() {
-        function EnumMap2() {
-          this._map = {};
-        }
-        var _proto = EnumMap2.prototype;
-        _proto.putAll = function putAll(otherMap) {
-          for (var key in otherMap._map) {
-            this._map[key] = otherMap._map[key];
-          }
-          return this;
-        };
-        _proto.containsKey = function containsKey(key) {
-          return this._map.hasOwnProperty(key.name()) && this.get(key) !== void 0;
-        };
-        _proto.get = function get(key) {
-          return this._map[key.name()];
-        };
-        _proto.put = function put(key, val) {
-          return this.set(key, val);
-        };
-        _proto.set = function set(key, val) {
-          this._map[key.name()] = val;
-          return this;
-        };
-        _proto.retainAll = function retainAll(keyList) {
-          var map = {};
-          for (var i = 0; i < keyList.length; i++) {
-            var key = keyList[i].name();
-            map[key] = this._map[key];
-          }
-          this._map = map;
-          return this;
-        };
-        _proto.remove = function remove(key) {
-          var keyName = key.name();
-          var val = this._map[keyName];
-          this._map[keyName] = void 0;
-          return val;
-        };
-        _proto.keySet = function keySet() {
-          return this._map;
-        };
-        _proto.clear = function clear() {
-          this._map = {};
-        };
-        return EnumMap2;
-      })();
-      var ResolverStyle = (function(_Enum) {
-        function ResolverStyle2() {
-          return _Enum.apply(this, arguments) || this;
-        }
-        _inheritsLoose(ResolverStyle2, _Enum);
-        return ResolverStyle2;
-      })(Enum);
-      ResolverStyle.STRICT = new ResolverStyle("STRICT");
-      ResolverStyle.SMART = new ResolverStyle("SMART");
-      ResolverStyle.LENIENT = new ResolverStyle("LENIENT");
-      var Temporal = (function(_TemporalAccessor) {
-        function Temporal2() {
-          return _TemporalAccessor.apply(this, arguments) || this;
-        }
-        _inheritsLoose(Temporal2, _TemporalAccessor);
-        var _proto = Temporal2.prototype;
-        _proto.isSupported = function isSupported(fieldOrUnit) {
-          abstractMethodFail("isSupported");
-        };
-        _proto.minus = function minus(amount, unit) {
-          if (arguments.length < 2) {
-            return this._minusAmount(amount);
-          } else {
-            return this._minusUnit(amount, unit);
-          }
-        };
-        _proto._minusAmount = function _minusAmount(amount) {
-          requireNonNull(amount, "amount");
-          requireInstance(amount, TemporalAmount, "amount");
-          return amount.subtractFrom(this);
-        };
-        _proto._minusUnit = function _minusUnit(amountToSubtract, unit) {
-          requireNonNull(amountToSubtract, "amountToSubtract");
-          requireNonNull(unit, "unit");
-          requireInstance(unit, TemporalUnit, "unit");
-          return this._plusUnit(-amountToSubtract, unit);
-        };
-        _proto.plus = function plus(amount, unit) {
-          if (arguments.length < 2) {
-            return this._plusAmount(amount);
-          } else {
-            return this._plusUnit(amount, unit);
-          }
-        };
-        _proto._plusAmount = function _plusAmount(amount) {
-          requireNonNull(amount, "amount");
-          requireInstance(amount, TemporalAmount, "amount");
-          return amount.addTo(this);
-        };
-        _proto._plusUnit = function _plusUnit(amountToAdd, unit) {
-          abstractMethodFail("_plusUnit");
-        };
-        _proto.until = function until(endTemporal, unit) {
-          abstractMethodFail("until");
-        };
-        _proto.with = function _with(adjusterOrField, newValue) {
-          if (arguments.length < 2) {
-            return this._withAdjuster(adjusterOrField);
-          } else {
-            return this._withField(adjusterOrField, newValue);
-          }
-        };
-        _proto._withAdjuster = function _withAdjuster(adjuster) {
-          requireNonNull(adjuster, "adjuster");
-          assert(typeof adjuster.adjustInto === "function", "adjuster must be a TemporalAdjuster", IllegalArgumentException);
-          return adjuster.adjustInto(this);
-        };
-        _proto._withField = function _withField(field, newValue) {
-          abstractMethodFail("_withField");
-        };
-        return Temporal2;
-      })(TemporalAccessor);
-      if (typeof Symbol !== "undefined" && Symbol.toPrimitive) {
-        Temporal.prototype[Symbol.toPrimitive] = function(hint) {
-          if (hint !== "number") {
-            return this.toString();
-          }
-          throw new TypeError("A conversion from Temporal to a number is not allowed. To compare use the methods .equals(), .compareTo(), .isBefore() or one that is more suitable to your use case.");
-        };
-      }
-      var ChronoLocalDate = (function(_Temporal) {
-        function ChronoLocalDate2() {
-          return _Temporal.apply(this, arguments) || this;
-        }
-        _inheritsLoose(ChronoLocalDate2, _Temporal);
-        var _proto = ChronoLocalDate2.prototype;
-        _proto.isSupported = function isSupported(fieldOrUnit) {
-          if (fieldOrUnit instanceof ChronoField) {
-            return fieldOrUnit.isDateBased();
-          } else if (fieldOrUnit instanceof ChronoUnit) {
-            return fieldOrUnit.isDateBased();
-          }
-          return fieldOrUnit != null && fieldOrUnit.isSupportedBy(this);
-        };
-        _proto.query = function query(_query) {
-          if (_query === TemporalQueries.chronology()) {
-            return this.chronology();
-          } else if (_query === TemporalQueries.precision()) {
-            return ChronoUnit.DAYS;
-          } else if (_query === TemporalQueries.localDate()) {
-            return LocalDate.ofEpochDay(this.toEpochDay());
-          } else if (_query === TemporalQueries.localTime() || _query === TemporalQueries.zone() || _query === TemporalQueries.zoneId() || _query === TemporalQueries.offset()) {
-            return null;
-          }
-          return _Temporal.prototype.query.call(this, _query);
-        };
-        _proto.adjustInto = function adjustInto(temporal) {
-          return temporal.with(ChronoField.EPOCH_DAY, this.toEpochDay());
-        };
-        _proto.format = function format(formatter) {
-          requireNonNull(formatter, "formatter");
-          requireInstance(formatter, DateTimeFormatter, "formatter");
-          return formatter.format(this);
-        };
-        return ChronoLocalDate2;
-      })(Temporal);
-      var IsoFields = {};
-      var QUARTER_DAYS = [0, 90, 181, 273, 0, 91, 182, 274];
-      var Field = (function(_TemporalField) {
-        function Field2() {
-          return _TemporalField.apply(this, arguments) || this;
-        }
-        _inheritsLoose(Field2, _TemporalField);
-        var _proto = Field2.prototype;
-        _proto.isDateBased = function isDateBased() {
-          return true;
-        };
-        _proto.isTimeBased = function isTimeBased() {
-          return false;
-        };
-        _proto._isIso = function _isIso() {
-          return true;
-        };
-        Field2._getWeekRangeByLocalDate = function _getWeekRangeByLocalDate(date) {
-          var wby = Field2._getWeekBasedYear(date);
-          return ValueRange.of(1, Field2._getWeekRangeByYear(wby));
-        };
-        Field2._getWeekRangeByYear = function _getWeekRangeByYear(wby) {
-          var date = LocalDate.of(wby, 1, 1);
-          if (date.dayOfWeek() === DayOfWeek.THURSDAY || date.dayOfWeek() === DayOfWeek.WEDNESDAY && date.isLeapYear()) {
-            return 53;
-          }
-          return 52;
-        };
-        Field2._getWeek = function _getWeek(date) {
-          var dow0 = date.dayOfWeek().ordinal();
-          var doy0 = date.dayOfYear() - 1;
-          var doyThu0 = doy0 + (3 - dow0);
-          var alignedWeek = MathUtil.intDiv(doyThu0, 7);
-          var firstThuDoy0 = doyThu0 - alignedWeek * 7;
-          var firstMonDoy0 = firstThuDoy0 - 3;
-          if (firstMonDoy0 < -3) {
-            firstMonDoy0 += 7;
-          }
-          if (doy0 < firstMonDoy0) {
-            return Field2._getWeekRangeByLocalDate(date.withDayOfYear(180).minusYears(1)).maximum();
-          }
-          var week = MathUtil.intDiv(doy0 - firstMonDoy0, 7) + 1;
-          if (week === 53) {
-            if ((firstMonDoy0 === -3 || firstMonDoy0 === -2 && date.isLeapYear()) === false) {
-              week = 1;
-            }
-          }
-          return week;
-        };
-        Field2._getWeekBasedYear = function _getWeekBasedYear(date) {
-          var year = date.year();
-          var doy = date.dayOfYear();
-          if (doy <= 3) {
-            var dow = date.dayOfWeek().ordinal();
-            if (doy - dow < -2) {
-              year--;
-            }
-          } else if (doy >= 363) {
-            var _dow = date.dayOfWeek().ordinal();
-            doy = doy - 363 - (date.isLeapYear() ? 1 : 0);
-            if (doy - _dow >= 0) {
-              year++;
-            }
-          }
-          return year;
-        };
-        _proto.displayName = function displayName() {
-          return this.toString();
-        };
-        _proto.resolve = function resolve() {
-          return null;
-        };
-        _proto.name = function name() {
-          return this.toString();
-        };
-        return Field2;
-      })(TemporalField);
-      var DAY_OF_QUARTER_FIELD = (function(_Field) {
-        function DAY_OF_QUARTER_FIELD2() {
-          return _Field.apply(this, arguments) || this;
-        }
-        _inheritsLoose(DAY_OF_QUARTER_FIELD2, _Field);
-        var _proto2 = DAY_OF_QUARTER_FIELD2.prototype;
-        _proto2.toString = function toString() {
-          return "DayOfQuarter";
-        };
-        _proto2.baseUnit = function baseUnit() {
-          return ChronoUnit.DAYS;
-        };
-        _proto2.rangeUnit = function rangeUnit() {
-          return QUARTER_YEARS;
-        };
-        _proto2.range = function range() {
-          return ValueRange.of(1, 90, 92);
-        };
-        _proto2.isSupportedBy = function isSupportedBy(temporal) {
-          return temporal.isSupported(ChronoField.DAY_OF_YEAR) && temporal.isSupported(ChronoField.MONTH_OF_YEAR) && temporal.isSupported(ChronoField.YEAR) && this._isIso(temporal);
-        };
-        _proto2.rangeRefinedBy = function rangeRefinedBy(temporal) {
-          if (temporal.isSupported(this) === false) {
-            throw new UnsupportedTemporalTypeException("Unsupported field: DayOfQuarter");
-          }
-          var qoy = temporal.getLong(QUARTER_OF_YEAR);
-          if (qoy === 1) {
-            var year = temporal.getLong(ChronoField.YEAR);
-            return IsoChronology.isLeapYear(year) ? ValueRange.of(1, 91) : ValueRange.of(1, 90);
-          } else if (qoy === 2) {
-            return ValueRange.of(1, 91);
-          } else if (qoy === 3 || qoy === 4) {
-            return ValueRange.of(1, 92);
-          }
-          return this.range();
-        };
-        _proto2.getFrom = function getFrom(temporal) {
-          if (temporal.isSupported(this) === false) {
-            throw new UnsupportedTemporalTypeException("Unsupported field: DayOfQuarter");
-          }
-          var doy = temporal.get(ChronoField.DAY_OF_YEAR);
-          var moy = temporal.get(ChronoField.MONTH_OF_YEAR);
-          var year = temporal.getLong(ChronoField.YEAR);
-          return doy - QUARTER_DAYS[MathUtil.intDiv(moy - 1, 3) + (IsoChronology.isLeapYear(year) ? 4 : 0)];
-        };
-        _proto2.adjustInto = function adjustInto(temporal, newValue) {
-          var curValue = this.getFrom(temporal);
-          this.range().checkValidValue(newValue, this);
-          return temporal.with(ChronoField.DAY_OF_YEAR, temporal.getLong(ChronoField.DAY_OF_YEAR) + (newValue - curValue));
-        };
-        _proto2.resolve = function resolve(fieldValues, partialTemporal, resolverStyle) {
-          var yearLong = fieldValues.get(ChronoField.YEAR);
-          var qoyLong = fieldValues.get(QUARTER_OF_YEAR);
-          if (yearLong == null || qoyLong == null) {
-            return null;
-          }
-          var y = ChronoField.YEAR.checkValidIntValue(yearLong);
-          var doq = fieldValues.get(DAY_OF_QUARTER);
-          var date;
-          if (resolverStyle === ResolverStyle.LENIENT) {
-            var qoy = qoyLong;
-            date = LocalDate.of(y, 1, 1);
-            date = date.plusMonths(MathUtil.safeMultiply(MathUtil.safeSubtract(qoy, 1), 3));
-            date = date.plusDays(MathUtil.safeSubtract(doq, 1));
-          } else {
-            var _qoy = QUARTER_OF_YEAR.range().checkValidIntValue(qoyLong, QUARTER_OF_YEAR);
-            if (resolverStyle === ResolverStyle.STRICT) {
-              var max = 92;
-              if (_qoy === 1) {
-                max = IsoChronology.isLeapYear(y) ? 91 : 90;
-              } else if (_qoy === 2) {
-                max = 91;
-              }
-              ValueRange.of(1, max).checkValidValue(doq, this);
-            } else {
-              this.range().checkValidValue(doq, this);
-            }
-            date = LocalDate.of(y, (_qoy - 1) * 3 + 1, 1).plusDays(doq - 1);
-          }
-          fieldValues.remove(this);
-          fieldValues.remove(ChronoField.YEAR);
-          fieldValues.remove(QUARTER_OF_YEAR);
-          return date;
-        };
-        return DAY_OF_QUARTER_FIELD2;
-      })(Field);
-      var QUARTER_OF_YEAR_FIELD = (function(_Field2) {
-        function QUARTER_OF_YEAR_FIELD2() {
-          return _Field2.apply(this, arguments) || this;
-        }
-        _inheritsLoose(QUARTER_OF_YEAR_FIELD2, _Field2);
-        var _proto3 = QUARTER_OF_YEAR_FIELD2.prototype;
-        _proto3.toString = function toString() {
-          return "QuarterOfYear";
-        };
-        _proto3.baseUnit = function baseUnit() {
-          return QUARTER_YEARS;
-        };
-        _proto3.rangeUnit = function rangeUnit() {
-          return ChronoUnit.YEARS;
-        };
-        _proto3.range = function range() {
-          return ValueRange.of(1, 4);
-        };
-        _proto3.isSupportedBy = function isSupportedBy(temporal) {
-          return temporal.isSupported(ChronoField.MONTH_OF_YEAR) && this._isIso(temporal);
-        };
-        _proto3.rangeRefinedBy = function rangeRefinedBy(temporal) {
-          return this.range();
-        };
-        _proto3.getFrom = function getFrom(temporal) {
-          if (temporal.isSupported(this) === false) {
-            throw new UnsupportedTemporalTypeException("Unsupported field: QuarterOfYear");
-          }
-          var moy = temporal.getLong(ChronoField.MONTH_OF_YEAR);
-          return MathUtil.intDiv(moy + 2, 3);
-        };
-        _proto3.adjustInto = function adjustInto(temporal, newValue) {
-          var curValue = this.getFrom(temporal);
-          this.range().checkValidValue(newValue, this);
-          return temporal.with(ChronoField.MONTH_OF_YEAR, temporal.getLong(ChronoField.MONTH_OF_YEAR) + (newValue - curValue) * 3);
-        };
-        return QUARTER_OF_YEAR_FIELD2;
-      })(Field);
-      var WEEK_OF_WEEK_BASED_YEAR_FIELD = (function(_Field3) {
-        function WEEK_OF_WEEK_BASED_YEAR_FIELD2() {
-          return _Field3.apply(this, arguments) || this;
-        }
-        _inheritsLoose(WEEK_OF_WEEK_BASED_YEAR_FIELD2, _Field3);
-        var _proto4 = WEEK_OF_WEEK_BASED_YEAR_FIELD2.prototype;
-        _proto4.toString = function toString() {
-          return "WeekOfWeekBasedYear";
-        };
-        _proto4.baseUnit = function baseUnit() {
-          return ChronoUnit.WEEKS;
-        };
-        _proto4.rangeUnit = function rangeUnit() {
-          return WEEK_BASED_YEARS;
-        };
-        _proto4.range = function range() {
-          return ValueRange.of(1, 52, 53);
-        };
-        _proto4.isSupportedBy = function isSupportedBy(temporal) {
-          return temporal.isSupported(ChronoField.EPOCH_DAY) && this._isIso(temporal);
-        };
-        _proto4.rangeRefinedBy = function rangeRefinedBy(temporal) {
-          if (temporal.isSupported(this) === false) {
-            throw new UnsupportedTemporalTypeException("Unsupported field: WeekOfWeekBasedYear");
-          }
-          return Field._getWeekRangeByLocalDate(LocalDate.from(temporal));
-        };
-        _proto4.getFrom = function getFrom(temporal) {
-          if (temporal.isSupported(this) === false) {
-            throw new UnsupportedTemporalTypeException("Unsupported field: WeekOfWeekBasedYear");
-          }
-          return Field._getWeek(LocalDate.from(temporal));
-        };
-        _proto4.adjustInto = function adjustInto(temporal, newValue) {
-          this.range().checkValidValue(newValue, this);
-          return temporal.plus(MathUtil.safeSubtract(newValue, this.getFrom(temporal)), ChronoUnit.WEEKS);
-        };
-        _proto4.resolve = function resolve(fieldValues, partialTemporal, resolverStyle) {
-          var wbyLong = fieldValues.get(WEEK_BASED_YEAR);
-          var dowLong = fieldValues.get(ChronoField.DAY_OF_WEEK);
-          if (wbyLong == null || dowLong == null) {
-            return null;
-          }
-          var wby = WEEK_BASED_YEAR.range().checkValidIntValue(wbyLong, WEEK_BASED_YEAR);
-          var wowby = fieldValues.get(WEEK_OF_WEEK_BASED_YEAR);
-          var date;
-          if (resolverStyle === ResolverStyle.LENIENT) {
-            var dow = dowLong;
-            var weeks = 0;
-            if (dow > 7) {
-              weeks = MathUtil.intDiv(dow - 1, 7);
-              dow = MathUtil.intMod(dow - 1, 7) + 1;
-            } else if (dow < 1) {
-              weeks = MathUtil.intDiv(dow, 7) - 1;
-              dow = MathUtil.intMod(dow, 7) + 7;
-            }
-            date = LocalDate.of(wby, 1, 4).plusWeeks(wowby - 1).plusWeeks(weeks).with(ChronoField.DAY_OF_WEEK, dow);
-          } else {
-            var _dow2 = ChronoField.DAY_OF_WEEK.checkValidIntValue(dowLong);
-            if (resolverStyle === ResolverStyle.STRICT) {
-              var temp = LocalDate.of(wby, 1, 4);
-              var range = Field._getWeekRangeByLocalDate(temp);
-              range.checkValidValue(wowby, this);
-            } else {
-              this.range().checkValidValue(wowby, this);
-            }
-            date = LocalDate.of(wby, 1, 4).plusWeeks(wowby - 1).with(ChronoField.DAY_OF_WEEK, _dow2);
-          }
-          fieldValues.remove(this);
-          fieldValues.remove(WEEK_BASED_YEAR);
-          fieldValues.remove(ChronoField.DAY_OF_WEEK);
-          return date;
-        };
-        _proto4.displayName = function displayName() {
-          return "Week";
-        };
-        return WEEK_OF_WEEK_BASED_YEAR_FIELD2;
-      })(Field);
-      var WEEK_BASED_YEAR_FIELD = (function(_Field4) {
-        function WEEK_BASED_YEAR_FIELD2() {
-          return _Field4.apply(this, arguments) || this;
-        }
-        _inheritsLoose(WEEK_BASED_YEAR_FIELD2, _Field4);
-        var _proto5 = WEEK_BASED_YEAR_FIELD2.prototype;
-        _proto5.toString = function toString() {
-          return "WeekBasedYear";
-        };
-        _proto5.baseUnit = function baseUnit() {
-          return WEEK_BASED_YEARS;
-        };
-        _proto5.rangeUnit = function rangeUnit() {
-          return ChronoUnit.FOREVER;
-        };
-        _proto5.range = function range() {
-          return ChronoField.YEAR.range();
-        };
-        _proto5.isSupportedBy = function isSupportedBy(temporal) {
-          return temporal.isSupported(ChronoField.EPOCH_DAY) && this._isIso(temporal);
-        };
-        _proto5.rangeRefinedBy = function rangeRefinedBy(temporal) {
-          return ChronoField.YEAR.range();
-        };
-        _proto5.getFrom = function getFrom(temporal) {
-          if (temporal.isSupported(this) === false) {
-            throw new UnsupportedTemporalTypeException("Unsupported field: WeekBasedYear");
-          }
-          return Field._getWeekBasedYear(LocalDate.from(temporal));
-        };
-        _proto5.adjustInto = function adjustInto(temporal, newValue) {
-          if (this.isSupportedBy(temporal) === false) {
-            throw new UnsupportedTemporalTypeException("Unsupported field: WeekBasedYear");
-          }
-          var newWby = this.range().checkValidIntValue(newValue, WEEK_BASED_YEAR);
-          var date = LocalDate.from(temporal);
-          var dow = date.get(ChronoField.DAY_OF_WEEK);
-          var week = Field._getWeek(date);
-          if (week === 53 && Field._getWeekRangeByYear(newWby) === 52) {
-            week = 52;
-          }
-          var resolved = LocalDate.of(newWby, 1, 4);
-          var days = dow - resolved.get(ChronoField.DAY_OF_WEEK) + (week - 1) * 7;
-          resolved = resolved.plusDays(days);
-          return temporal.with(resolved);
-        };
-        return WEEK_BASED_YEAR_FIELD2;
-      })(Field);
-      var Unit = (function(_TemporalUnit) {
-        function Unit2(name, estimatedDuration) {
-          var _this;
-          _this = _TemporalUnit.call(this) || this;
-          _this._name = name;
-          _this._duration = estimatedDuration;
-          return _this;
-        }
-        _inheritsLoose(Unit2, _TemporalUnit);
-        var _proto6 = Unit2.prototype;
-        _proto6.duration = function duration() {
-          return this._duration;
-        };
-        _proto6.isDurationEstimated = function isDurationEstimated() {
-          return true;
-        };
-        _proto6.isDateBased = function isDateBased() {
-          return true;
-        };
-        _proto6.isTimeBased = function isTimeBased() {
-          return false;
-        };
-        _proto6.isSupportedBy = function isSupportedBy(temporal) {
-          return temporal.isSupported(ChronoField.EPOCH_DAY);
-        };
-        _proto6.addTo = function addTo(temporal, periodToAdd) {
-          switch (this) {
-            case WEEK_BASED_YEARS: {
-              var added = MathUtil.safeAdd(temporal.get(WEEK_BASED_YEAR), periodToAdd);
-              return temporal.with(WEEK_BASED_YEAR, added);
-            }
-            case QUARTER_YEARS:
-              return temporal.plus(MathUtil.intDiv(periodToAdd, 256), ChronoUnit.YEARS).plus(MathUtil.intMod(periodToAdd, 256) * 3, ChronoUnit.MONTHS);
-            default:
-              throw new IllegalStateException("Unreachable");
-          }
-        };
-        _proto6.between = function between(temporal1, temporal2) {
-          switch (this) {
-            case WEEK_BASED_YEARS:
-              return MathUtil.safeSubtract(temporal2.getLong(WEEK_BASED_YEAR), temporal1.getLong(WEEK_BASED_YEAR));
-            case QUARTER_YEARS:
-              return MathUtil.intDiv(temporal1.until(temporal2, ChronoUnit.MONTHS), 3);
-            default:
-              throw new IllegalStateException("Unreachable");
-          }
-        };
-        _proto6.toString = function toString() {
-          return this._name;
-        };
-        return Unit2;
-      })(TemporalUnit);
-      var DAY_OF_QUARTER = null;
-      var QUARTER_OF_YEAR = null;
-      var WEEK_OF_WEEK_BASED_YEAR = null;
-      var WEEK_BASED_YEAR = null;
-      var WEEK_BASED_YEARS = null;
-      var QUARTER_YEARS = null;
-      function _init$g() {
-        DAY_OF_QUARTER = new DAY_OF_QUARTER_FIELD();
-        QUARTER_OF_YEAR = new QUARTER_OF_YEAR_FIELD();
-        WEEK_OF_WEEK_BASED_YEAR = new WEEK_OF_WEEK_BASED_YEAR_FIELD();
-        WEEK_BASED_YEAR = new WEEK_BASED_YEAR_FIELD();
-        WEEK_BASED_YEARS = new Unit("WeekBasedYears", Duration.ofSeconds(31556952));
-        QUARTER_YEARS = new Unit("QuarterYears", Duration.ofSeconds(31556952 / 4));
-        IsoFields.DAY_OF_QUARTER = DAY_OF_QUARTER;
-        IsoFields.QUARTER_OF_YEAR = QUARTER_OF_YEAR;
-        IsoFields.WEEK_OF_WEEK_BASED_YEAR = WEEK_OF_WEEK_BASED_YEAR;
-        IsoFields.WEEK_BASED_YEAR = WEEK_BASED_YEAR;
-        IsoFields.WEEK_BASED_YEARS = WEEK_BASED_YEARS;
-        IsoFields.QUARTER_YEARS = QUARTER_YEARS;
-        LocalDate.prototype.isoWeekOfWeekyear = function() {
-          return this.get(IsoFields.WEEK_OF_WEEK_BASED_YEAR);
-        };
-        LocalDate.prototype.isoWeekyear = function() {
-          return this.get(IsoFields.WEEK_BASED_YEAR);
-        };
-      }
-      var StringUtil = (function() {
-        function StringUtil2() {
-        }
-        StringUtil2.startsWith = function startsWith(text, pattern) {
-          return text.indexOf(pattern) === 0;
-        };
-        StringUtil2.hashCode = function hashCode(text) {
-          var len = text.length;
-          if (len === 0) {
-            return 0;
-          }
-          var hash = 0;
-          for (var i = 0; i < len; i++) {
-            var chr = text.charCodeAt(i);
-            hash = (hash << 5) - hash + chr;
-            hash |= 0;
-          }
-          return MathUtil.smi(hash);
-        };
-        return StringUtil2;
-      })();
-      var ZoneId = (function() {
-        function ZoneId2() {
-        }
-        ZoneId2.systemDefault = function systemDefault() {
-          throw new DateTimeException("not supported operation");
-        };
-        ZoneId2.getAvailableZoneIds = function getAvailableZoneIds() {
-          throw new DateTimeException("not supported operation");
-        };
-        ZoneId2.of = function of(zoneId) {
-          throw new DateTimeException("not supported operation" + zoneId);
-        };
-        ZoneId2.ofOffset = function ofOffset(prefix, offset) {
-          throw new DateTimeException("not supported operation" + prefix + offset);
-        };
-        ZoneId2.from = function from(temporal) {
-          throw new DateTimeException("not supported operation" + temporal);
-        };
-        var _proto = ZoneId2.prototype;
-        _proto.id = function id() {
-          abstractMethodFail("ZoneId.id");
-        };
-        _proto.rules = function rules() {
-          abstractMethodFail("ZoneId.rules");
-        };
-        _proto.normalized = function normalized() {
-          var rules = this.rules();
-          if (rules.isFixedOffset()) {
-            return rules.offset(Instant.EPOCH);
-          }
-          return this;
-        };
-        _proto.equals = function equals(other) {
-          if (this === other) {
-            return true;
-          }
-          if (other instanceof ZoneId2) {
-            return this.id() === other.id();
-          }
-          return false;
-        };
-        _proto.hashCode = function hashCode() {
-          return StringUtil.hashCode(this.id());
-        };
-        _proto.toString = function toString() {
-          return this.id();
-        };
-        _proto.toJSON = function toJSON() {
-          return this.toString();
-        };
-        return ZoneId2;
-      })();
-      var ZoneRules = (function() {
-        function ZoneRules2() {
-        }
-        ZoneRules2.of = function of(offset) {
-          requireNonNull(offset, "offset");
-          return new Fixed(offset);
-        };
-        var _proto = ZoneRules2.prototype;
-        _proto.isFixedOffset = function isFixedOffset() {
-          abstractMethodFail("ZoneRules.isFixedOffset");
-        };
-        _proto.offset = function offset(instantOrLocalDateTime) {
-          if (instantOrLocalDateTime instanceof Instant) {
-            return this.offsetOfInstant(instantOrLocalDateTime);
-          } else {
-            return this.offsetOfLocalDateTime(instantOrLocalDateTime);
-          }
-        };
-        _proto.offsetOfInstant = function offsetOfInstant(instant) {
-          abstractMethodFail("ZoneRules.offsetInstant");
-        };
-        _proto.offsetOfEpochMilli = function offsetOfEpochMilli(epochMilli) {
-          abstractMethodFail("ZoneRules.offsetOfEpochMilli");
-        };
-        _proto.offsetOfLocalDateTime = function offsetOfLocalDateTime(localDateTime) {
-          abstractMethodFail("ZoneRules.offsetLocalDateTime");
-        };
-        _proto.validOffsets = function validOffsets(localDateTime) {
-          abstractMethodFail("ZoneRules.validOffsets");
-        };
-        _proto.transition = function transition(localDateTime) {
-          abstractMethodFail("ZoneRules.transition");
-        };
-        _proto.standardOffset = function standardOffset(instant) {
-          abstractMethodFail("ZoneRules.standardOffset");
-        };
-        _proto.daylightSavings = function daylightSavings(instant) {
-          abstractMethodFail("ZoneRules.daylightSavings");
-        };
-        _proto.isDaylightSavings = function isDaylightSavings(instant) {
-          abstractMethodFail("ZoneRules.isDaylightSavings");
-        };
-        _proto.isValidOffset = function isValidOffset(localDateTime, offset) {
-          abstractMethodFail("ZoneRules.isValidOffset");
-        };
-        _proto.nextTransition = function nextTransition(instant) {
-          abstractMethodFail("ZoneRules.nextTransition");
-        };
-        _proto.previousTransition = function previousTransition(instant) {
-          abstractMethodFail("ZoneRules.previousTransition");
-        };
-        _proto.transitions = function transitions() {
-          abstractMethodFail("ZoneRules.transitions");
-        };
-        _proto.transitionRules = function transitionRules() {
-          abstractMethodFail("ZoneRules.transitionRules");
-        };
-        _proto.toString = function toString() {
-          abstractMethodFail("ZoneRules.toString");
-        };
-        _proto.toJSON = function toJSON() {
-          return this.toString();
-        };
-        return ZoneRules2;
-      })();
-      var Fixed = (function(_ZoneRules) {
-        function Fixed2(offset) {
-          var _this;
-          _this = _ZoneRules.call(this) || this;
-          _this._offset = offset;
-          return _this;
-        }
-        _inheritsLoose(Fixed2, _ZoneRules);
-        var _proto2 = Fixed2.prototype;
-        _proto2.isFixedOffset = function isFixedOffset() {
-          return true;
-        };
-        _proto2.offsetOfInstant = function offsetOfInstant() {
-          return this._offset;
-        };
-        _proto2.offsetOfEpochMilli = function offsetOfEpochMilli() {
-          return this._offset;
-        };
-        _proto2.offsetOfLocalDateTime = function offsetOfLocalDateTime() {
-          return this._offset;
-        };
-        _proto2.validOffsets = function validOffsets() {
-          return [this._offset];
-        };
-        _proto2.transition = function transition() {
-          return null;
-        };
-        _proto2.standardOffset = function standardOffset() {
-          return this._offset;
-        };
-        _proto2.daylightSavings = function daylightSavings() {
-          return Duration.ZERO;
-        };
-        _proto2.isDaylightSavings = function isDaylightSavings() {
-          return false;
-        };
-        _proto2.isValidOffset = function isValidOffset(localDateTime, offset) {
-          return this._offset.equals(offset);
-        };
-        _proto2.nextTransition = function nextTransition() {
-          return null;
-        };
-        _proto2.previousTransition = function previousTransition() {
-          return null;
-        };
-        _proto2.transitions = function transitions() {
-          return [];
-        };
-        _proto2.transitionRules = function transitionRules() {
-          return [];
-        };
-        _proto2.equals = function equals(other) {
-          if (this === other) {
-            return true;
-          }
-          if (other instanceof Fixed2) {
-            return this._offset.equals(other._offset);
-          }
-          return false;
-        };
-        _proto2.toString = function toString() {
-          return "FixedRules:" + this._offset.toString();
-        };
-        return Fixed2;
-      })(ZoneRules);
-      var SECONDS_CACHE = {};
-      var ID_CACHE = {};
-      var ZoneOffset = (function(_ZoneId) {
-        function ZoneOffset2(totalSeconds) {
-          var _this;
-          _this = _ZoneId.call(this) || this;
-          ZoneOffset2._validateTotalSeconds(totalSeconds);
-          _this._totalSeconds = MathUtil.safeToInt(totalSeconds);
-          _this._rules = ZoneRules.of(_this);
-          _this._id = ZoneOffset2._buildId(totalSeconds);
-          return _this;
-        }
-        _inheritsLoose(ZoneOffset2, _ZoneId);
-        var _proto = ZoneOffset2.prototype;
-        _proto.totalSeconds = function totalSeconds() {
-          return this._totalSeconds;
-        };
-        _proto.id = function id() {
-          return this._id;
-        };
-        ZoneOffset2._buildId = function _buildId(totalSeconds) {
-          if (totalSeconds === 0) {
-            return "Z";
-          } else {
-            var absTotalSeconds = Math.abs(totalSeconds);
-            var absHours = MathUtil.intDiv(absTotalSeconds, LocalTime.SECONDS_PER_HOUR);
-            var absMinutes = MathUtil.intMod(MathUtil.intDiv(absTotalSeconds, LocalTime.SECONDS_PER_MINUTE), LocalTime.MINUTES_PER_HOUR);
-            var buf = (totalSeconds < 0 ? "-" : "+") + (absHours < 10 ? "0" : "") + absHours + (absMinutes < 10 ? ":0" : ":") + absMinutes;
-            var absSeconds = MathUtil.intMod(absTotalSeconds, LocalTime.SECONDS_PER_MINUTE);
-            if (absSeconds !== 0) {
-              buf += (absSeconds < 10 ? ":0" : ":") + absSeconds;
-            }
-            return buf;
-          }
-        };
-        ZoneOffset2._validateTotalSeconds = function _validateTotalSeconds(totalSeconds) {
-          if (Math.abs(totalSeconds) > ZoneOffset2.MAX_SECONDS) {
-            throw new DateTimeException("Zone offset not in valid range: -18:00 to +18:00");
-          }
-        };
-        ZoneOffset2._validate = function _validate(hours, minutes, seconds) {
-          if (hours < -18 || hours > 18) {
-            throw new DateTimeException("Zone offset hours not in valid range: value " + hours + " is not in the range -18 to 18");
-          }
-          if (hours > 0) {
-            if (minutes < 0 || seconds < 0) {
-              throw new DateTimeException("Zone offset minutes and seconds must be positive because hours is positive");
-            }
-          } else if (hours < 0) {
-            if (minutes > 0 || seconds > 0) {
-              throw new DateTimeException("Zone offset minutes and seconds must be negative because hours is negative");
-            }
-          } else if (minutes > 0 && seconds < 0 || minutes < 0 && seconds > 0) {
-            throw new DateTimeException("Zone offset minutes and seconds must have the same sign");
-          }
-          if (Math.abs(minutes) > 59) {
-            throw new DateTimeException("Zone offset minutes not in valid range: abs(value) " + Math.abs(minutes) + " is not in the range 0 to 59");
-          }
-          if (Math.abs(seconds) > 59) {
-            throw new DateTimeException("Zone offset seconds not in valid range: abs(value) " + Math.abs(seconds) + " is not in the range 0 to 59");
-          }
-          if (Math.abs(hours) === 18 && (Math.abs(minutes) > 0 || Math.abs(seconds) > 0)) {
-            throw new DateTimeException("Zone offset not in valid range: -18:00 to +18:00");
-          }
-        };
-        ZoneOffset2.of = function of(offsetId) {
-          requireNonNull(offsetId, "offsetId");
-          var offset = ID_CACHE[offsetId];
-          if (offset != null) {
-            return offset;
-          }
-          var hours, minutes, seconds;
-          switch (offsetId.length) {
-            case 2:
-              offsetId = offsetId[0] + "0" + offsetId[1];
-            case 3:
-              hours = ZoneOffset2._parseNumber(offsetId, 1, false);
-              minutes = 0;
-              seconds = 0;
-              break;
-            case 5:
-              hours = ZoneOffset2._parseNumber(offsetId, 1, false);
-              minutes = ZoneOffset2._parseNumber(offsetId, 3, false);
-              seconds = 0;
-              break;
-            case 6:
-              hours = ZoneOffset2._parseNumber(offsetId, 1, false);
-              minutes = ZoneOffset2._parseNumber(offsetId, 4, true);
-              seconds = 0;
-              break;
-            case 7:
-              hours = ZoneOffset2._parseNumber(offsetId, 1, false);
-              minutes = ZoneOffset2._parseNumber(offsetId, 3, false);
-              seconds = ZoneOffset2._parseNumber(offsetId, 5, false);
-              break;
-            case 9:
-              hours = ZoneOffset2._parseNumber(offsetId, 1, false);
-              minutes = ZoneOffset2._parseNumber(offsetId, 4, true);
-              seconds = ZoneOffset2._parseNumber(offsetId, 7, true);
-              break;
-            default:
-              throw new DateTimeException("Invalid ID for ZoneOffset, invalid format: " + offsetId);
-          }
-          var first = offsetId[0];
-          if (first !== "+" && first !== "-") {
-            throw new DateTimeException("Invalid ID for ZoneOffset, plus/minus not found when expected: " + offsetId);
-          }
-          if (first === "-") {
-            return ZoneOffset2.ofHoursMinutesSeconds(-hours, -minutes, -seconds);
-          } else {
-            return ZoneOffset2.ofHoursMinutesSeconds(hours, minutes, seconds);
-          }
-        };
-        ZoneOffset2._parseNumber = function _parseNumber(offsetId, pos, precededByColon) {
-          if (precededByColon && offsetId[pos - 1] !== ":") {
-            throw new DateTimeException("Invalid ID for ZoneOffset, colon not found when expected: " + offsetId);
-          }
-          var ch1 = offsetId[pos];
-          var ch2 = offsetId[pos + 1];
-          if (ch1 < "0" || ch1 > "9" || ch2 < "0" || ch2 > "9") {
-            throw new DateTimeException("Invalid ID for ZoneOffset, non numeric characters found: " + offsetId);
-          }
-          return (ch1.charCodeAt(0) - 48) * 10 + (ch2.charCodeAt(0) - 48);
-        };
-        ZoneOffset2.ofHours = function ofHours(hours) {
-          return ZoneOffset2.ofHoursMinutesSeconds(hours, 0, 0);
-        };
-        ZoneOffset2.ofHoursMinutes = function ofHoursMinutes(hours, minutes) {
-          return ZoneOffset2.ofHoursMinutesSeconds(hours, minutes, 0);
-        };
-        ZoneOffset2.ofHoursMinutesSeconds = function ofHoursMinutesSeconds(hours, minutes, seconds) {
-          ZoneOffset2._validate(hours, minutes, seconds);
-          var totalSeconds = hours * LocalTime.SECONDS_PER_HOUR + minutes * LocalTime.SECONDS_PER_MINUTE + seconds;
-          return ZoneOffset2.ofTotalSeconds(totalSeconds);
-        };
-        ZoneOffset2.ofTotalMinutes = function ofTotalMinutes(totalMinutes) {
-          var totalSeconds = totalMinutes * LocalTime.SECONDS_PER_MINUTE;
-          return ZoneOffset2.ofTotalSeconds(totalSeconds);
-        };
-        ZoneOffset2.ofTotalSeconds = function ofTotalSeconds(totalSeconds) {
-          if (totalSeconds % (15 * LocalTime.SECONDS_PER_MINUTE) === 0) {
-            var totalSecs = totalSeconds;
-            var result = SECONDS_CACHE[totalSecs];
-            if (result == null) {
-              result = new ZoneOffset2(totalSeconds);
-              SECONDS_CACHE[totalSecs] = result;
-              ID_CACHE[result.id()] = result;
-            }
-            return result;
-          } else {
-            return new ZoneOffset2(totalSeconds);
-          }
-        };
-        _proto.rules = function rules() {
-          return this._rules;
-        };
-        _proto.get = function get(field) {
-          return this.getLong(field);
-        };
-        _proto.getLong = function getLong(field) {
-          if (field === ChronoField.OFFSET_SECONDS) {
-            return this._totalSeconds;
-          } else if (field instanceof ChronoField) {
-            throw new DateTimeException("Unsupported field: " + field);
-          }
-          return field.getFrom(this);
-        };
-        _proto.query = function query(_query) {
-          requireNonNull(_query, "query");
-          if (_query === TemporalQueries.offset() || _query === TemporalQueries.zone()) {
-            return this;
-          } else if (_query === TemporalQueries.localDate() || _query === TemporalQueries.localTime() || _query === TemporalQueries.precision() || _query === TemporalQueries.chronology() || _query === TemporalQueries.zoneId()) {
-            return null;
-          }
-          return _query.queryFrom(this);
-        };
-        _proto.adjustInto = function adjustInto(temporal) {
-          return temporal.with(ChronoField.OFFSET_SECONDS, this._totalSeconds);
-        };
-        _proto.compareTo = function compareTo(other) {
-          requireNonNull(other, "other");
-          return other._totalSeconds - this._totalSeconds;
-        };
-        _proto.equals = function equals(obj) {
-          if (this === obj) {
-            return true;
-          }
-          if (obj instanceof ZoneOffset2) {
-            return this._totalSeconds === obj._totalSeconds;
-          }
-          return false;
-        };
-        _proto.hashCode = function hashCode() {
-          return this._totalSeconds;
-        };
-        _proto.toString = function toString() {
-          return this._id;
-        };
-        return ZoneOffset2;
-      })(ZoneId);
-      function _init$f() {
-        ZoneOffset.MAX_SECONDS = 18 * LocalTime.SECONDS_PER_HOUR;
-        ZoneOffset.UTC = ZoneOffset.ofTotalSeconds(0);
-        ZoneOffset.MIN = ZoneOffset.ofTotalSeconds(-ZoneOffset.MAX_SECONDS);
-        ZoneOffset.MAX = ZoneOffset.ofTotalSeconds(ZoneOffset.MAX_SECONDS);
-      }
-      var OffsetTime = (function(_Temporal) {
-        function OffsetTime2(time, offset) {
-          var _this;
-          _this = _Temporal.call(this) || this;
-          requireNonNull(time, "time");
-          requireInstance(time, LocalTime, "time");
-          requireNonNull(offset, "offset");
-          requireInstance(offset, ZoneOffset, "offset");
-          _this._time = time;
-          _this._offset = offset;
-          return _this;
-        }
-        _inheritsLoose(OffsetTime2, _Temporal);
-        OffsetTime2.from = function from(temporal) {
-          requireNonNull(temporal, "temporal");
-          if (temporal instanceof OffsetTime2) {
-            return temporal;
-          } else if (temporal instanceof OffsetDateTime) {
-            return temporal.toOffsetTime();
-          }
-          try {
-            var time = LocalTime.from(temporal);
-            var offset = ZoneOffset.from(temporal);
-            return new OffsetTime2(time, offset);
-          } catch (ex) {
-            throw new DateTimeException("Unable to obtain OffsetTime TemporalAccessor: " + temporal + ", type " + (temporal.constructor != null ? temporal.constructor.name : ""));
-          }
-        };
-        OffsetTime2.now = function now(clockOrZone) {
-          if (arguments.length === 0) {
-            return OffsetTime2._now(Clock.systemDefaultZone());
-          } else if (clockOrZone instanceof Clock) {
-            return OffsetTime2._now(clockOrZone);
-          } else {
-            return OffsetTime2._now(Clock.system(clockOrZone));
-          }
-        };
-        OffsetTime2._now = function _now(clock) {
-          requireNonNull(clock, "clock");
-          var now = clock.instant();
-          return OffsetTime2.ofInstant(now, clock.zone().rules().offset(now));
-        };
-        OffsetTime2.of = function of() {
-          if (arguments.length <= 2) {
-            return OffsetTime2.ofTimeAndOffset.apply(this, arguments);
-          } else {
-            return OffsetTime2.ofNumbers.apply(this, arguments);
-          }
-        };
-        OffsetTime2.ofNumbers = function ofNumbers(hour, minute, second, nanoOfSecond, offset) {
-          var time = LocalTime.of(hour, minute, second, nanoOfSecond);
-          return new OffsetTime2(time, offset);
-        };
-        OffsetTime2.ofTimeAndOffset = function ofTimeAndOffset(time, offset) {
-          return new OffsetTime2(time, offset);
-        };
-        OffsetTime2.ofInstant = function ofInstant(instant, zone) {
-          requireNonNull(instant, "instant");
-          requireInstance(instant, Instant, "instant");
-          requireNonNull(zone, "zone");
-          requireInstance(zone, ZoneId, "zone");
-          var rules = zone.rules();
-          var offset = rules.offset(instant);
-          var secsOfDay = instant.epochSecond() % LocalTime.SECONDS_PER_DAY;
-          secsOfDay = (secsOfDay + offset.totalSeconds()) % LocalTime.SECONDS_PER_DAY;
-          if (secsOfDay < 0) {
-            secsOfDay += LocalTime.SECONDS_PER_DAY;
-          }
-          var time = LocalTime.ofSecondOfDay(secsOfDay, instant.nano());
-          return new OffsetTime2(time, offset);
-        };
-        OffsetTime2.parse = function parse(text, formatter) {
-          if (formatter === void 0) {
-            formatter = DateTimeFormatter.ISO_OFFSET_TIME;
-          }
-          requireNonNull(formatter, "formatter");
-          return formatter.parse(text, OffsetTime2.FROM);
-        };
-        var _proto = OffsetTime2.prototype;
-        _proto.adjustInto = function adjustInto(temporal) {
-          return temporal.with(ChronoField.NANO_OF_DAY, this._time.toNanoOfDay()).with(ChronoField.OFFSET_SECONDS, this.offset().totalSeconds());
-        };
-        _proto.atDate = function atDate(date) {
-          return OffsetDateTime.of(date, this._time, this._offset);
-        };
-        _proto.format = function format(formatter) {
-          requireNonNull(formatter, "formatter");
-          return formatter.format(this, OffsetTime2.FROM);
-        };
-        _proto.get = function get(field) {
-          return _Temporal.prototype.get.call(this, field);
-        };
-        _proto.getLong = function getLong(field) {
-          if (field instanceof ChronoField) {
-            if (field === ChronoField.OFFSET_SECONDS) {
-              return this._offset.totalSeconds();
-            }
-            return this._time.getLong(field);
-          }
-          return field.getFrom(this);
-        };
-        _proto.hour = function hour() {
-          return this._time.hour();
-        };
-        _proto.minute = function minute() {
-          return this._time.minute();
-        };
-        _proto.second = function second() {
-          return this._time.second();
-        };
-        _proto.nano = function nano() {
-          return this._time.nano();
-        };
-        _proto.offset = function offset() {
-          return this._offset;
-        };
-        _proto.isAfter = function isAfter(other) {
-          requireNonNull(other, "other");
-          return this._toEpochNano() > other._toEpochNano();
-        };
-        _proto.isBefore = function isBefore(other) {
-          requireNonNull(other, "other");
-          return this._toEpochNano() < other._toEpochNano();
-        };
-        _proto.isEqual = function isEqual(other) {
-          requireNonNull(other, "other");
-          return this._toEpochNano() === other._toEpochNano();
-        };
-        _proto.isSupported = function isSupported(fieldOrUnit) {
-          if (fieldOrUnit instanceof ChronoField) {
-            return fieldOrUnit.isTimeBased() || fieldOrUnit === ChronoField.OFFSET_SECONDS;
-          } else if (fieldOrUnit instanceof ChronoUnit) {
-            return fieldOrUnit.isTimeBased();
-          }
-          return fieldOrUnit != null && fieldOrUnit.isSupportedBy(this);
-        };
-        _proto.minusHours = function minusHours(hours) {
-          return this._withLocalTimeOffset(this._time.minusHours(hours), this._offset);
-        };
-        _proto.minusMinutes = function minusMinutes(minutes) {
-          return this._withLocalTimeOffset(this._time.minusMinutes(minutes), this._offset);
-        };
-        _proto.minusSeconds = function minusSeconds(seconds) {
-          return this._withLocalTimeOffset(this._time.minusSeconds(seconds), this._offset);
-        };
-        _proto.minusNanos = function minusNanos(nanos) {
-          return this._withLocalTimeOffset(this._time.minusNanos(nanos), this._offset);
-        };
-        _proto._minusAmount = function _minusAmount(amount) {
-          requireNonNull(amount);
-          return amount.subtractFrom(this);
-        };
-        _proto._minusUnit = function _minusUnit(amountToSubtract, unit) {
-          return this.plus(-1 * amountToSubtract, unit);
-        };
-        _proto._plusAmount = function _plusAmount(amount) {
-          requireNonNull(amount);
-          return amount.addTo(this);
-        };
-        _proto._plusUnit = function _plusUnit(amountToAdd, unit) {
-          if (unit instanceof ChronoUnit) {
-            return this._withLocalTimeOffset(this._time.plus(amountToAdd, unit), this._offset);
-          }
-          return unit.addTo(this, amountToAdd);
-        };
-        _proto.plusHours = function plusHours(hours) {
-          return this._withLocalTimeOffset(this._time.plusHours(hours), this._offset);
-        };
-        _proto.plusMinutes = function plusMinutes(minutes) {
-          return this._withLocalTimeOffset(this._time.plusMinutes(minutes), this._offset);
-        };
-        _proto.plusSeconds = function plusSeconds(seconds) {
-          return this._withLocalTimeOffset(this._time.plusSeconds(seconds), this._offset);
-        };
-        _proto.plusNanos = function plusNanos(nanos) {
-          return this._withLocalTimeOffset(this._time.plusNanos(nanos), this._offset);
-        };
-        _proto.query = function query(_query) {
-          requireNonNull(_query, "query");
-          if (_query === TemporalQueries.precision()) {
-            return ChronoUnit.NANOS;
-          } else if (_query === TemporalQueries.offset() || _query === TemporalQueries.zone()) {
-            return this.offset();
-          } else if (_query === TemporalQueries.localTime()) {
-            return this._time;
-          } else if (_query === TemporalQueries.chronology() || _query === TemporalQueries.localDate() || _query === TemporalQueries.zoneId()) {
-            return null;
-          }
-          return _Temporal.prototype.query.call(this, _query);
-        };
-        _proto.range = function range(field) {
-          if (field instanceof ChronoField) {
-            if (field === ChronoField.OFFSET_SECONDS) {
-              return field.range();
-            }
-            return this._time.range(field);
-          }
-          return field.rangeRefinedBy(this);
-        };
-        _proto.toLocalTime = function toLocalTime() {
-          return this._time;
-        };
-        _proto.truncatedTo = function truncatedTo(unit) {
-          return this._withLocalTimeOffset(this._time.truncatedTo(unit), this._offset);
-        };
-        _proto.until = function until(endExclusive, unit) {
-          requireNonNull(endExclusive, "endExclusive");
-          requireNonNull(unit, "unit");
-          var end = OffsetTime2.from(endExclusive);
-          if (unit instanceof ChronoUnit) {
-            var nanosUntil = end._toEpochNano() - this._toEpochNano();
-            switch (unit) {
-              case ChronoUnit.NANOS:
-                return nanosUntil;
-              case ChronoUnit.MICROS:
-                return MathUtil.intDiv(nanosUntil, 1e3);
-              case ChronoUnit.MILLIS:
-                return MathUtil.intDiv(nanosUntil, 1e6);
-              case ChronoUnit.SECONDS:
-                return MathUtil.intDiv(nanosUntil, LocalTime.NANOS_PER_SECOND);
-              case ChronoUnit.MINUTES:
-                return MathUtil.intDiv(nanosUntil, LocalTime.NANOS_PER_MINUTE);
-              case ChronoUnit.HOURS:
-                return MathUtil.intDiv(nanosUntil, LocalTime.NANOS_PER_HOUR);
-              case ChronoUnit.HALF_DAYS:
-                return MathUtil.intDiv(nanosUntil, 12 * LocalTime.NANOS_PER_HOUR);
-            }
-            throw new UnsupportedTemporalTypeException("Unsupported unit: " + unit);
-          }
-          return unit.between(this, end);
-        };
-        _proto.withHour = function withHour(hour) {
-          return this._withLocalTimeOffset(this._time.withHour(hour), this._offset);
-        };
-        _proto.withMinute = function withMinute(minute) {
-          return this._withLocalTimeOffset(this._time.withMinute(minute), this._offset);
-        };
-        _proto.withSecond = function withSecond(second) {
-          return this._withLocalTimeOffset(this._time.withSecond(second), this._offset);
-        };
-        _proto.withNano = function withNano(nano) {
-          return this._withLocalTimeOffset(this._time.withNano(nano), this._offset);
-        };
-        _proto.withOffsetSameInstant = function withOffsetSameInstant(offset) {
-          requireNonNull(offset, "offset");
-          if (offset.equals(this._offset)) {
-            return this;
-          }
-          var difference = offset.totalSeconds() - this._offset.totalSeconds();
-          var adjusted = this._time.plusSeconds(difference);
-          return new OffsetTime2(adjusted, offset);
-        };
-        _proto.withOffsetSameLocal = function withOffsetSameLocal(offset) {
-          return offset != null && offset.equals(this._offset) ? this : new OffsetTime2(this._time, offset);
-        };
-        _proto._toEpochNano = function _toEpochNano() {
-          var nod = this._time.toNanoOfDay();
-          var offsetNanos = this._offset.totalSeconds() * LocalTime.NANOS_PER_SECOND;
-          return nod - offsetNanos;
-        };
-        _proto._withAdjuster = function _withAdjuster(adjuster) {
-          requireNonNull(adjuster, "adjuster");
-          if (adjuster instanceof LocalTime) {
-            return this._withLocalTimeOffset(adjuster, this._offset);
-          } else if (adjuster instanceof ZoneOffset) {
-            return this._withLocalTimeOffset(this._time, adjuster);
-          } else if (adjuster instanceof OffsetTime2) {
-            return adjuster;
-          }
-          return adjuster.adjustInto(this);
-        };
-        _proto._withField = function _withField(field, newValue) {
-          requireNonNull(field, "field");
-          if (field instanceof ChronoField) {
-            if (field === ChronoField.OFFSET_SECONDS) {
-              return this._withLocalTimeOffset(this._time, ZoneOffset.ofTotalSeconds(field.checkValidIntValue(newValue)));
-            }
-            return this._withLocalTimeOffset(this._time.with(field, newValue), this._offset);
-          }
-          return field.adjustInto(this, newValue);
-        };
-        _proto._withLocalTimeOffset = function _withLocalTimeOffset(time, offset) {
-          if (this._time === time && this._offset.equals(offset)) {
-            return this;
-          }
-          return new OffsetTime2(time, offset);
-        };
-        _proto.compareTo = function compareTo(other) {
-          requireNonNull(other, "other");
-          requireInstance(other, OffsetTime2, "other");
-          if (this._offset.equals(other._offset)) {
-            return this._time.compareTo(other._time);
-          }
-          var compare = MathUtil.compareNumbers(this._toEpochNano(), other._toEpochNano());
-          if (compare === 0) {
-            return this._time.compareTo(other._time);
-          }
-          return compare;
-        };
-        _proto.equals = function equals(other) {
-          if (this === other) {
-            return true;
-          }
-          if (other instanceof OffsetTime2) {
-            return this._time.equals(other._time) && this._offset.equals(other._offset);
-          }
-          return false;
-        };
-        _proto.hashCode = function hashCode() {
-          return this._time.hashCode() ^ this._offset.hashCode();
-        };
-        _proto.toString = function toString() {
-          return this._time.toString() + this._offset.toString();
-        };
-        _proto.toJSON = function toJSON() {
-          return this.toString();
-        };
-        return OffsetTime2;
-      })(Temporal);
-      function _init$e() {
-        OffsetTime.MIN = OffsetTime.ofNumbers(0, 0, 0, 0, ZoneOffset.MAX);
-        OffsetTime.MAX = OffsetTime.ofNumbers(23, 59, 59, 999999999, ZoneOffset.MIN);
-        OffsetTime.FROM = createTemporalQuery("OffsetTime.FROM", function(temporal) {
-          return OffsetTime.from(temporal);
-        });
-      }
-      var OffsetDateTime = (function(_Temporal) {
-        function OffsetDateTime2(dateTime, offset) {
-          var _this;
-          _this = _Temporal.call(this) || this;
-          requireNonNull(dateTime, "dateTime");
-          requireInstance(dateTime, LocalDateTime, "dateTime");
-          requireNonNull(offset, "offset");
-          requireInstance(offset, ZoneOffset, "offset");
-          _this._dateTime = dateTime;
-          _this._offset = offset;
-          return _this;
-        }
-        _inheritsLoose(OffsetDateTime2, _Temporal);
-        OffsetDateTime2.from = function from(temporal) {
-          requireNonNull(temporal, "temporal");
-          if (temporal instanceof OffsetDateTime2) {
-            return temporal;
-          }
-          try {
-            var offset = ZoneOffset.from(temporal);
-            try {
-              var ldt = LocalDateTime.from(temporal);
-              return OffsetDateTime2.of(ldt, offset);
-            } catch (_2) {
-              var instant = Instant.from(temporal);
-              return OffsetDateTime2.ofInstant(instant, offset);
-            }
-          } catch (ex) {
-            throw new DateTimeException("Unable to obtain OffsetDateTime TemporalAccessor: " + temporal + ", type " + (temporal.constructor != null ? temporal.constructor.name : ""));
-          }
-        };
-        OffsetDateTime2.now = function now(clockOrZone) {
-          if (arguments.length === 0) {
-            return OffsetDateTime2.now(Clock.systemDefaultZone());
-          } else {
-            requireNonNull(clockOrZone, "clockOrZone");
-            if (clockOrZone instanceof ZoneId) {
-              return OffsetDateTime2.now(Clock.system(clockOrZone));
-            } else if (clockOrZone instanceof Clock) {
-              var _now = clockOrZone.instant();
-              return OffsetDateTime2.ofInstant(_now, clockOrZone.zone().rules().offset(_now));
-            } else {
-              throw new IllegalArgumentException("clockOrZone must be an instance of ZoneId or Clock");
-            }
-          }
-        };
-        OffsetDateTime2.of = function of() {
-          if (arguments.length <= 2) {
-            return OffsetDateTime2.ofDateTime.apply(this, arguments);
-          } else if (arguments.length === 3) {
-            return OffsetDateTime2.ofDateAndTime.apply(this, arguments);
-          } else {
-            return OffsetDateTime2.ofNumbers.apply(this, arguments);
-          }
-        };
-        OffsetDateTime2.ofDateTime = function ofDateTime(dateTime, offset) {
-          return new OffsetDateTime2(dateTime, offset);
-        };
-        OffsetDateTime2.ofDateAndTime = function ofDateAndTime(date, time, offset) {
-          var dt = LocalDateTime.of(date, time);
-          return new OffsetDateTime2(dt, offset);
-        };
-        OffsetDateTime2.ofNumbers = function ofNumbers(year, month, dayOfMonth, hour, minute, second, nanoOfSecond, offset) {
-          if (hour === void 0) {
-            hour = 0;
-          }
-          if (minute === void 0) {
-            minute = 0;
-          }
-          if (second === void 0) {
-            second = 0;
-          }
-          if (nanoOfSecond === void 0) {
-            nanoOfSecond = 0;
-          }
-          var dt = LocalDateTime.of(year, month, dayOfMonth, hour, minute, second, nanoOfSecond);
-          return new OffsetDateTime2(dt, offset);
-        };
-        OffsetDateTime2.ofInstant = function ofInstant(instant, zone) {
-          requireNonNull(instant, "instant");
-          requireNonNull(zone, "zone");
-          var rules = zone.rules();
-          var offset = rules.offset(instant);
-          var ldt = LocalDateTime.ofEpochSecond(instant.epochSecond(), instant.nano(), offset);
-          return new OffsetDateTime2(ldt, offset);
-        };
-        OffsetDateTime2.parse = function parse(text, formatter) {
-          if (formatter === void 0) {
-            formatter = DateTimeFormatter.ISO_OFFSET_DATE_TIME;
-          }
-          requireNonNull(formatter, "formatter");
-          return formatter.parse(text, OffsetDateTime2.FROM);
-        };
-        var _proto = OffsetDateTime2.prototype;
-        _proto.adjustInto = function adjustInto(temporal) {
-          return temporal.with(ChronoField.EPOCH_DAY, this.toLocalDate().toEpochDay()).with(ChronoField.NANO_OF_DAY, this.toLocalTime().toNanoOfDay()).with(ChronoField.OFFSET_SECONDS, this.offset().totalSeconds());
-        };
-        _proto.until = function until(endExclusive, unit) {
-          var end = OffsetDateTime2.from(endExclusive);
-          if (unit instanceof ChronoUnit) {
-            end = end.withOffsetSameInstant(this._offset);
-            return this._dateTime.until(end._dateTime, unit);
-          }
-          return unit.between(this, end);
-        };
-        _proto.atZoneSameInstant = function atZoneSameInstant(zone) {
-          return ZonedDateTime.ofInstant(this._dateTime, this._offset, zone);
-        };
-        _proto.atZoneSimilarLocal = function atZoneSimilarLocal(zone) {
-          return ZonedDateTime.ofLocal(this._dateTime, zone, this._offset);
-        };
-        _proto.query = function query(_query) {
-          requireNonNull(_query, "query");
-          if (_query === TemporalQueries.chronology()) {
-            return IsoChronology.INSTANCE;
-          } else if (_query === TemporalQueries.precision()) {
-            return ChronoUnit.NANOS;
-          } else if (_query === TemporalQueries.offset() || _query === TemporalQueries.zone()) {
-            return this.offset();
-          } else if (_query === TemporalQueries.localDate()) {
-            return this.toLocalDate();
-          } else if (_query === TemporalQueries.localTime()) {
-            return this.toLocalTime();
-          } else if (_query === TemporalQueries.zoneId()) {
-            return null;
-          }
-          return _Temporal.prototype.query.call(this, _query);
-        };
-        _proto.get = function get(field) {
-          if (field instanceof ChronoField) {
-            switch (field) {
-              case ChronoField.INSTANT_SECONDS:
-                throw new DateTimeException("Field too large for an int: " + field);
-              case ChronoField.OFFSET_SECONDS:
-                return this.offset().totalSeconds();
-            }
-            return this._dateTime.get(field);
-          }
-          return _Temporal.prototype.get.call(this, field);
-        };
-        _proto.getLong = function getLong(field) {
-          if (field instanceof ChronoField) {
-            switch (field) {
-              case ChronoField.INSTANT_SECONDS:
-                return this.toEpochSecond();
-              case ChronoField.OFFSET_SECONDS:
-                return this.offset().totalSeconds();
-            }
-            return this._dateTime.getLong(field);
-          }
-          return field.getFrom(this);
-        };
-        _proto.offset = function offset() {
-          return this._offset;
-        };
-        _proto.year = function year() {
-          return this._dateTime.year();
-        };
-        _proto.monthValue = function monthValue() {
-          return this._dateTime.monthValue();
-        };
-        _proto.month = function month() {
-          return this._dateTime.month();
-        };
-        _proto.dayOfMonth = function dayOfMonth() {
-          return this._dateTime.dayOfMonth();
-        };
-        _proto.dayOfYear = function dayOfYear() {
-          return this._dateTime.dayOfYear();
-        };
-        _proto.dayOfWeek = function dayOfWeek() {
-          return this._dateTime.dayOfWeek();
-        };
-        _proto.hour = function hour() {
-          return this._dateTime.hour();
-        };
-        _proto.minute = function minute() {
-          return this._dateTime.minute();
-        };
-        _proto.second = function second() {
-          return this._dateTime.second();
-        };
-        _proto.nano = function nano() {
-          return this._dateTime.nano();
-        };
-        _proto.toLocalDateTime = function toLocalDateTime() {
-          return this._dateTime;
-        };
-        _proto.toLocalDate = function toLocalDate() {
-          return this._dateTime.toLocalDate();
-        };
-        _proto.toLocalTime = function toLocalTime() {
-          return this._dateTime.toLocalTime();
-        };
-        _proto.toOffsetTime = function toOffsetTime() {
-          return OffsetTime.of(this._dateTime.toLocalTime(), this._offset);
-        };
-        _proto.toZonedDateTime = function toZonedDateTime() {
-          return ZonedDateTime.of(this._dateTime, this._offset);
-        };
-        _proto.toInstant = function toInstant() {
-          return this._dateTime.toInstant(this._offset);
-        };
-        _proto.toEpochSecond = function toEpochSecond() {
-          return this._dateTime.toEpochSecond(this._offset);
-        };
-        _proto.isSupported = function isSupported(fieldOrUnit) {
-          if (fieldOrUnit instanceof ChronoField) {
-            return fieldOrUnit.isDateBased() || fieldOrUnit.isTimeBased();
-          }
-          if (fieldOrUnit instanceof ChronoUnit) {
-            return fieldOrUnit.isDateBased() || fieldOrUnit.isTimeBased();
-          }
-          return fieldOrUnit != null && fieldOrUnit.isSupportedBy(this);
-        };
-        _proto.range = function range(field) {
-          if (field instanceof ChronoField) {
-            if (field === ChronoField.INSTANT_SECONDS || field === ChronoField.OFFSET_SECONDS) {
-              return field.range();
-            }
-            return this._dateTime.range(field);
-          }
-          return field.rangeRefinedBy(this);
-        };
-        _proto._withAdjuster = function _withAdjuster(adjuster) {
-          requireNonNull(adjuster);
-          if (adjuster instanceof LocalDate || adjuster instanceof LocalTime || adjuster instanceof LocalDateTime) {
-            return this._withDateTimeOffset(this._dateTime.with(adjuster), this._offset);
-          } else if (adjuster instanceof Instant) {
-            return OffsetDateTime2.ofInstant(adjuster, this._offset);
-          } else if (adjuster instanceof ZoneOffset) {
-            return this._withDateTimeOffset(this._dateTime, adjuster);
-          } else if (adjuster instanceof OffsetDateTime2) {
-            return adjuster;
-          }
-          return adjuster.adjustInto(this);
-        };
-        _proto._withField = function _withField(field, newValue) {
-          requireNonNull(field);
-          if (field instanceof ChronoField) {
-            var f = field;
-            switch (f) {
-              case ChronoField.INSTANT_SECONDS:
-                return OffsetDateTime2.ofInstant(Instant.ofEpochSecond(newValue, this.nano()), this._offset);
-              case ChronoField.OFFSET_SECONDS: {
-                return this._withDateTimeOffset(this._dateTime, ZoneOffset.ofTotalSeconds(f.checkValidIntValue(newValue)));
-              }
-            }
-            return this._withDateTimeOffset(this._dateTime.with(field, newValue), this._offset);
-          }
-          return field.adjustInto(this, newValue);
-        };
-        _proto._withDateTimeOffset = function _withDateTimeOffset(dateTime, offset) {
-          if (this._dateTime === dateTime && this._offset.equals(offset)) {
-            return this;
-          }
-          return new OffsetDateTime2(dateTime, offset);
-        };
-        _proto.withYear = function withYear(year) {
-          return this._withDateTimeOffset(this._dateTime.withYear(year), this._offset);
-        };
-        _proto.withMonth = function withMonth(month) {
-          return this._withDateTimeOffset(this._dateTime.withMonth(month), this._offset);
-        };
-        _proto.withDayOfMonth = function withDayOfMonth(dayOfMonth) {
-          return this._withDateTimeOffset(this._dateTime.withDayOfMonth(dayOfMonth), this._offset);
-        };
-        _proto.withDayOfYear = function withDayOfYear(dayOfYear) {
-          return this._withDateTimeOffset(this._dateTime.withDayOfYear(dayOfYear), this._offset);
-        };
-        _proto.withHour = function withHour(hour) {
-          return this._withDateTimeOffset(this._dateTime.withHour(hour), this._offset);
-        };
-        _proto.withMinute = function withMinute(minute) {
-          return this._withDateTimeOffset(this._dateTime.withMinute(minute), this._offset);
-        };
-        _proto.withSecond = function withSecond(second) {
-          return this._withDateTimeOffset(this._dateTime.withSecond(second), this._offset);
-        };
-        _proto.withNano = function withNano(nanoOfSecond) {
-          return this._withDateTimeOffset(this._dateTime.withNano(nanoOfSecond), this._offset);
-        };
-        _proto.withOffsetSameLocal = function withOffsetSameLocal(offset) {
-          requireNonNull(offset, "offset");
-          return this._withDateTimeOffset(this._dateTime, offset);
-        };
-        _proto.withOffsetSameInstant = function withOffsetSameInstant(offset) {
-          requireNonNull(offset, "offset");
-          if (offset.equals(this._offset)) {
-            return this;
-          }
-          var difference = offset.totalSeconds() - this._offset.totalSeconds();
-          var adjusted = this._dateTime.plusSeconds(difference);
-          return new OffsetDateTime2(adjusted, offset);
-        };
-        _proto.truncatedTo = function truncatedTo(unit) {
-          return this._withDateTimeOffset(this._dateTime.truncatedTo(unit), this._offset);
-        };
-        _proto._plusAmount = function _plusAmount(amount) {
-          requireNonNull(amount, "amount");
-          return amount.addTo(this);
-        };
-        _proto._plusUnit = function _plusUnit(amountToAdd, unit) {
-          if (unit instanceof ChronoUnit) {
-            return this._withDateTimeOffset(this._dateTime.plus(amountToAdd, unit), this._offset);
-          }
-          return unit.addTo(this, amountToAdd);
-        };
-        _proto.plusYears = function plusYears(years) {
-          return this._withDateTimeOffset(this._dateTime.plusYears(years), this._offset);
-        };
-        _proto.plusMonths = function plusMonths(months) {
-          return this._withDateTimeOffset(this._dateTime.plusMonths(months), this._offset);
-        };
-        _proto.plusWeeks = function plusWeeks(weeks) {
-          return this._withDateTimeOffset(this._dateTime.plusWeeks(weeks), this._offset);
-        };
-        _proto.plusDays = function plusDays(days) {
-          return this._withDateTimeOffset(this._dateTime.plusDays(days), this._offset);
-        };
-        _proto.plusHours = function plusHours(hours) {
-          return this._withDateTimeOffset(this._dateTime.plusHours(hours), this._offset);
-        };
-        _proto.plusMinutes = function plusMinutes(minutes) {
-          return this._withDateTimeOffset(this._dateTime.plusMinutes(minutes), this._offset);
-        };
-        _proto.plusSeconds = function plusSeconds(seconds) {
-          return this._withDateTimeOffset(this._dateTime.plusSeconds(seconds), this._offset);
-        };
-        _proto.plusNanos = function plusNanos(nanos) {
-          return this._withDateTimeOffset(this._dateTime.plusNanos(nanos), this._offset);
-        };
-        _proto._minusAmount = function _minusAmount(amount) {
-          requireNonNull(amount);
-          return amount.subtractFrom(this);
-        };
-        _proto._minusUnit = function _minusUnit(amountToSubtract, unit) {
-          return this.plus(-1 * amountToSubtract, unit);
-        };
-        _proto.minusYears = function minusYears(years) {
-          return this._withDateTimeOffset(this._dateTime.minusYears(years), this._offset);
-        };
-        _proto.minusMonths = function minusMonths(months) {
-          return this._withDateTimeOffset(this._dateTime.minusMonths(months), this._offset);
-        };
-        _proto.minusWeeks = function minusWeeks(weeks) {
-          return this._withDateTimeOffset(this._dateTime.minusWeeks(weeks), this._offset);
-        };
-        _proto.minusDays = function minusDays(days) {
-          return this._withDateTimeOffset(this._dateTime.minusDays(days), this._offset);
-        };
-        _proto.minusHours = function minusHours(hours) {
-          return this._withDateTimeOffset(this._dateTime.minusHours(hours), this._offset);
-        };
-        _proto.minusMinutes = function minusMinutes(minutes) {
-          return this._withDateTimeOffset(this._dateTime.minusMinutes(minutes), this._offset);
-        };
-        _proto.minusSeconds = function minusSeconds(seconds) {
-          return this._withDateTimeOffset(this._dateTime.minusSeconds(seconds), this._offset);
-        };
-        _proto.minusNanos = function minusNanos(nanos) {
-          return this._withDateTimeOffset(this._dateTime.minusNanos(nanos), this._offset);
-        };
-        _proto.compareTo = function compareTo(other) {
-          requireNonNull(other, "other");
-          requireInstance(other, OffsetDateTime2, "other");
-          if (this.offset().equals(other.offset())) {
-            return this.toLocalDateTime().compareTo(other.toLocalDateTime());
-          }
-          var cmp = MathUtil.compareNumbers(this.toEpochSecond(), other.toEpochSecond());
-          if (cmp === 0) {
-            cmp = this.toLocalTime().nano() - other.toLocalTime().nano();
-            if (cmp === 0) {
-              cmp = this.toLocalDateTime().compareTo(other.toLocalDateTime());
-            }
-          }
-          return cmp;
-        };
-        _proto.isAfter = function isAfter(other) {
-          requireNonNull(other, "other");
-          var thisEpochSec = this.toEpochSecond();
-          var otherEpochSec = other.toEpochSecond();
-          return thisEpochSec > otherEpochSec || thisEpochSec === otherEpochSec && this.toLocalTime().nano() > other.toLocalTime().nano();
-        };
-        _proto.isBefore = function isBefore(other) {
-          requireNonNull(other, "other");
-          var thisEpochSec = this.toEpochSecond();
-          var otherEpochSec = other.toEpochSecond();
-          return thisEpochSec < otherEpochSec || thisEpochSec === otherEpochSec && this.toLocalTime().nano() < other.toLocalTime().nano();
-        };
-        _proto.isEqual = function isEqual(other) {
-          requireNonNull(other, "other");
-          return this.toEpochSecond() === other.toEpochSecond() && this.toLocalTime().nano() === other.toLocalTime().nano();
-        };
-        _proto.equals = function equals(other) {
-          if (this === other) {
-            return true;
-          }
-          if (other instanceof OffsetDateTime2) {
-            return this._dateTime.equals(other._dateTime) && this._offset.equals(other._offset);
-          }
-          return false;
-        };
-        _proto.hashCode = function hashCode() {
-          return this._dateTime.hashCode() ^ this._offset.hashCode();
-        };
-        _proto.toString = function toString() {
-          return this._dateTime.toString() + this._offset.toString();
-        };
-        _proto.toJSON = function toJSON() {
-          return this.toString();
-        };
-        _proto.format = function format(formatter) {
-          requireNonNull(formatter, "formatter");
-          return formatter.format(this);
-        };
-        return OffsetDateTime2;
-      })(Temporal);
-      function _init$d() {
-        OffsetDateTime.MIN = LocalDateTime.MIN.atOffset(ZoneOffset.MAX);
-        OffsetDateTime.MAX = LocalDateTime.MAX.atOffset(ZoneOffset.MIN);
-        OffsetDateTime.FROM = createTemporalQuery("OffsetDateTime.FROM", function(temporal) {
-          return OffsetDateTime.from(temporal);
-        });
-      }
-      var ChronoZonedDateTime = (function(_Temporal) {
-        function ChronoZonedDateTime2() {
-          return _Temporal.apply(this, arguments) || this;
-        }
-        _inheritsLoose(ChronoZonedDateTime2, _Temporal);
-        var _proto = ChronoZonedDateTime2.prototype;
-        _proto.query = function query(_query) {
-          if (_query === TemporalQueries.zoneId() || _query === TemporalQueries.zone()) {
-            return this.zone();
-          } else if (_query === TemporalQueries.chronology()) {
-            return this.toLocalDate().chronology();
-          } else if (_query === TemporalQueries.precision()) {
-            return ChronoUnit.NANOS;
-          } else if (_query === TemporalQueries.offset()) {
-            return this.offset();
-          } else if (_query === TemporalQueries.localDate()) {
-            return LocalDate.ofEpochDay(this.toLocalDate().toEpochDay());
-          } else if (_query === TemporalQueries.localTime()) {
-            return this.toLocalTime();
-          }
-          return _Temporal.prototype.query.call(this, _query);
-        };
-        _proto.format = function format(formatter) {
-          requireNonNull(formatter, "formatter");
-          return formatter.format(this);
-        };
-        _proto.toInstant = function toInstant() {
-          return Instant.ofEpochSecond(this.toEpochSecond(), this.toLocalTime().nano());
-        };
-        _proto.toEpochSecond = function toEpochSecond() {
-          var epochDay = this.toLocalDate().toEpochDay();
-          var secs = epochDay * 86400 + this.toLocalTime().toSecondOfDay();
-          secs -= this.offset().totalSeconds();
-          return secs;
-        };
-        _proto.compareTo = function compareTo(other) {
-          requireNonNull(other, "other");
-          var cmp = MathUtil.compareNumbers(this.toEpochSecond(), other.toEpochSecond());
-          if (cmp === 0) {
-            cmp = this.toLocalTime().nano() - other.toLocalTime().nano();
-            if (cmp === 0) {
-              cmp = this.toLocalDateTime().compareTo(other.toLocalDateTime());
-              if (cmp === 0) {
-                cmp = strcmp(this.zone().id(), other.zone().id());
-              }
-            }
-          }
-          return cmp;
-        };
-        _proto.isAfter = function isAfter(other) {
-          requireNonNull(other, "other");
-          var thisEpochSec = this.toEpochSecond();
-          var otherEpochSec = other.toEpochSecond();
-          return thisEpochSec > otherEpochSec || thisEpochSec === otherEpochSec && this.toLocalTime().nano() > other.toLocalTime().nano();
-        };
-        _proto.isBefore = function isBefore(other) {
-          requireNonNull(other, "other");
-          var thisEpochSec = this.toEpochSecond();
-          var otherEpochSec = other.toEpochSecond();
-          return thisEpochSec < otherEpochSec || thisEpochSec === otherEpochSec && this.toLocalTime().nano() < other.toLocalTime().nano();
-        };
-        _proto.isEqual = function isEqual(other) {
-          requireNonNull(other, "other");
-          return this.toEpochSecond() === other.toEpochSecond() && this.toLocalTime().nano() === other.toLocalTime().nano();
-        };
-        _proto.equals = function equals(other) {
-          if (this === other) {
-            return true;
-          }
-          if (other instanceof ChronoZonedDateTime2) {
-            return this.compareTo(other) === 0;
-          }
-          return false;
-        };
-        return ChronoZonedDateTime2;
-      })(Temporal);
-      function strcmp(a, b) {
-        if (a < b) {
-          return -1;
-        }
-        if (a > b) {
-          return 1;
-        }
-        return 0;
-      }
-      var ZonedDateTime = (function(_ChronoZonedDateTime) {
-        function ZonedDateTime2(dateTime, offset, zone) {
-          var _this;
-          requireNonNull(dateTime, "dateTime");
-          requireNonNull(offset, "offset");
-          requireNonNull(zone, "zone");
-          _this = _ChronoZonedDateTime.call(this) || this;
-          _this._dateTime = dateTime;
-          _this._offset = offset;
-          _this._zone = zone;
-          return _this;
-        }
-        _inheritsLoose(ZonedDateTime2, _ChronoZonedDateTime);
-        ZonedDateTime2.now = function now(clockOrZone) {
-          var clock;
-          if (clockOrZone instanceof ZoneId) {
-            clock = Clock.system(clockOrZone);
-          } else {
-            clock = clockOrZone == null ? Clock.systemDefaultZone() : clockOrZone;
-          }
-          return ZonedDateTime2.ofInstant(clock.instant(), clock.zone());
-        };
-        ZonedDateTime2.of = function of() {
-          if (arguments.length <= 2) {
-            return ZonedDateTime2.of2.apply(this, arguments);
-          } else if (arguments.length === 3 && arguments[0] instanceof LocalDate) {
-            return ZonedDateTime2.of3.apply(this, arguments);
-          } else {
-            return ZonedDateTime2.of8.apply(this, arguments);
-          }
-        };
-        ZonedDateTime2.of3 = function of3(date, time, zone) {
-          return ZonedDateTime2.of2(LocalDateTime.of(date, time), zone);
-        };
-        ZonedDateTime2.of2 = function of2(localDateTime, zone) {
-          return ZonedDateTime2.ofLocal(localDateTime, zone, null);
-        };
-        ZonedDateTime2.of8 = function of8(year, month, dayOfMonth, hour, minute, second, nanoOfSecond, zone) {
-          var dt = LocalDateTime.of(year, month, dayOfMonth, hour, minute, second, nanoOfSecond);
-          return ZonedDateTime2.ofLocal(dt, zone, null);
-        };
-        ZonedDateTime2.ofLocal = function ofLocal(localDateTime, zone, preferredOffset) {
-          requireNonNull(localDateTime, "localDateTime");
-          requireNonNull(zone, "zone");
-          if (zone instanceof ZoneOffset) {
-            return new ZonedDateTime2(localDateTime, zone, zone);
-          }
-          var offset = null;
-          var rules = zone.rules();
-          var validOffsets = rules.validOffsets(localDateTime);
-          if (validOffsets.length === 1) {
-            offset = validOffsets[0];
-          } else if (validOffsets.length === 0) {
-            var trans = rules.transition(localDateTime);
-            localDateTime = localDateTime.plusSeconds(trans.duration().seconds());
-            offset = trans.offsetAfter();
-          } else {
-            if (preferredOffset != null && validOffsets.some(function(validOffset) {
-              return validOffset.equals(preferredOffset);
-            })) {
-              offset = preferredOffset;
-            } else {
-              offset = requireNonNull(validOffsets[0], "offset");
-            }
-          }
-          return new ZonedDateTime2(localDateTime, offset, zone);
-        };
-        ZonedDateTime2.ofInstant = function ofInstant() {
-          if (arguments.length === 2) {
-            return ZonedDateTime2.ofInstant2.apply(this, arguments);
-          } else {
-            return ZonedDateTime2.ofInstant3.apply(this, arguments);
-          }
-        };
-        ZonedDateTime2.ofInstant2 = function ofInstant2(instant, zone) {
-          requireNonNull(instant, "instant");
-          requireNonNull(zone, "zone");
-          return ZonedDateTime2._create(instant.epochSecond(), instant.nano(), zone);
-        };
-        ZonedDateTime2.ofInstant3 = function ofInstant3(localDateTime, offset, zone) {
-          requireNonNull(localDateTime, "localDateTime");
-          requireNonNull(offset, "offset");
-          requireNonNull(zone, "zone");
-          return ZonedDateTime2._create(localDateTime.toEpochSecond(offset), localDateTime.nano(), zone);
-        };
-        ZonedDateTime2._create = function _create(epochSecond, nanoOfSecond, zone) {
-          var rules = zone.rules();
-          var instant = Instant.ofEpochSecond(epochSecond, nanoOfSecond);
-          var offset = rules.offset(instant);
-          var ldt = LocalDateTime.ofEpochSecond(epochSecond, nanoOfSecond, offset);
-          return new ZonedDateTime2(ldt, offset, zone);
-        };
-        ZonedDateTime2.ofStrict = function ofStrict(localDateTime, offset, zone) {
-          requireNonNull(localDateTime, "localDateTime");
-          requireNonNull(offset, "offset");
-          requireNonNull(zone, "zone");
-          var rules = zone.rules();
-          if (rules.isValidOffset(localDateTime, offset) === false) {
-            var trans = rules.transition(localDateTime);
-            if (trans != null && trans.isGap()) {
-              throw new DateTimeException("LocalDateTime " + localDateTime + " does not exist in zone " + zone + " due to a gap in the local time-line, typically caused by daylight savings");
-            }
-            throw new DateTimeException('ZoneOffset "' + offset + '" is not valid for LocalDateTime "' + localDateTime + '" in zone "' + zone + '"');
-          }
-          return new ZonedDateTime2(localDateTime, offset, zone);
-        };
-        ZonedDateTime2.ofLenient = function ofLenient(localDateTime, offset, zone) {
-          requireNonNull(localDateTime, "localDateTime");
-          requireNonNull(offset, "offset");
-          requireNonNull(zone, "zone");
-          if (zone instanceof ZoneOffset && offset.equals(zone) === false) {
-            throw new IllegalArgumentException("ZoneId must match ZoneOffset");
-          }
-          return new ZonedDateTime2(localDateTime, offset, zone);
-        };
-        ZonedDateTime2.from = function from(temporal) {
-          requireNonNull(temporal, "temporal");
-          if (temporal instanceof ZonedDateTime2) {
-            return temporal;
-          }
-          var zone = ZoneId.from(temporal);
-          if (temporal.isSupported(ChronoField.INSTANT_SECONDS)) {
-            var zdt = ZonedDateTime2._from(temporal, zone);
-            if (zdt != null) return zdt;
-          }
-          var ldt = LocalDateTime.from(temporal);
-          return ZonedDateTime2.of2(ldt, zone);
-        };
-        ZonedDateTime2._from = function _from(temporal, zone) {
-          try {
-            return ZonedDateTime2.__from(temporal, zone);
-          } catch (ex) {
-            if (!(ex instanceof DateTimeException)) throw ex;
-          }
-        };
-        ZonedDateTime2.__from = function __from(temporal, zone) {
-          var epochSecond = temporal.getLong(ChronoField.INSTANT_SECONDS);
-          var nanoOfSecond = temporal.get(ChronoField.NANO_OF_SECOND);
-          return ZonedDateTime2._create(epochSecond, nanoOfSecond, zone);
-        };
-        ZonedDateTime2.parse = function parse(text, formatter) {
-          if (formatter === void 0) {
-            formatter = DateTimeFormatter.ISO_ZONED_DATE_TIME;
-          }
-          requireNonNull(formatter, "formatter");
-          return formatter.parse(text, ZonedDateTime2.FROM);
-        };
-        var _proto = ZonedDateTime2.prototype;
-        _proto._resolveLocal = function _resolveLocal(newDateTime) {
-          requireNonNull(newDateTime, "newDateTime");
-          return ZonedDateTime2.ofLocal(newDateTime, this._zone, this._offset);
-        };
-        _proto._resolveInstant = function _resolveInstant(newDateTime) {
-          return ZonedDateTime2.ofInstant3(newDateTime, this._offset, this._zone);
-        };
-        _proto._resolveOffset = function _resolveOffset(offset) {
-          if (offset.equals(this._offset) === false && this._zone.rules().isValidOffset(this._dateTime, offset)) {
-            return new ZonedDateTime2(this._dateTime, offset, this._zone);
-          }
-          return this;
-        };
-        _proto.isSupported = function isSupported(fieldOrUnit) {
-          if (fieldOrUnit instanceof ChronoField) {
-            return true;
-          } else if (fieldOrUnit instanceof ChronoUnit) {
-            return fieldOrUnit.isDateBased() || fieldOrUnit.isTimeBased();
-          }
-          return fieldOrUnit != null && fieldOrUnit.isSupportedBy(this);
-        };
-        _proto.range = function range(field) {
-          if (field instanceof ChronoField) {
-            if (field === ChronoField.INSTANT_SECONDS || field === ChronoField.OFFSET_SECONDS) {
-              return field.range();
-            }
-            return this._dateTime.range(field);
-          }
-          return field.rangeRefinedBy(this);
-        };
-        _proto.get = function get(field) {
-          return this.getLong(field);
-        };
-        _proto.getLong = function getLong(field) {
-          if (field instanceof ChronoField) {
-            switch (field) {
-              case ChronoField.INSTANT_SECONDS:
-                return this.toEpochSecond();
-              case ChronoField.OFFSET_SECONDS:
-                return this._offset.totalSeconds();
-            }
-            return this._dateTime.getLong(field);
-          }
-          requireNonNull(field, "field");
-          return field.getFrom(this);
-        };
-        _proto.offset = function offset() {
-          return this._offset;
-        };
-        _proto.withEarlierOffsetAtOverlap = function withEarlierOffsetAtOverlap() {
-          var trans = this._zone.rules().transition(this._dateTime);
-          if (trans != null && trans.isOverlap()) {
-            var earlierOffset = trans.offsetBefore();
-            if (earlierOffset.equals(this._offset) === false) {
-              return new ZonedDateTime2(this._dateTime, earlierOffset, this._zone);
-            }
-          }
-          return this;
-        };
-        _proto.withLaterOffsetAtOverlap = function withLaterOffsetAtOverlap() {
-          var trans = this._zone.rules().transition(this.toLocalDateTime());
-          if (trans != null) {
-            var laterOffset = trans.offsetAfter();
-            if (laterOffset.equals(this._offset) === false) {
-              return new ZonedDateTime2(this._dateTime, laterOffset, this._zone);
-            }
-          }
-          return this;
-        };
-        _proto.zone = function zone() {
-          return this._zone;
-        };
-        _proto.withZoneSameLocal = function withZoneSameLocal(zone) {
-          requireNonNull(zone, "zone");
-          return this._zone.equals(zone) ? this : ZonedDateTime2.ofLocal(this._dateTime, zone, this._offset);
-        };
-        _proto.withZoneSameInstant = function withZoneSameInstant(zone) {
-          requireNonNull(zone, "zone");
-          return this._zone.equals(zone) ? this : ZonedDateTime2._create(this._dateTime.toEpochSecond(this._offset), this._dateTime.nano(), zone);
-        };
-        _proto.withFixedOffsetZone = function withFixedOffsetZone() {
-          return this._zone.equals(this._offset) ? this : new ZonedDateTime2(this._dateTime, this._offset, this._offset);
-        };
-        _proto.year = function year() {
-          return this._dateTime.year();
-        };
-        _proto.monthValue = function monthValue() {
-          return this._dateTime.monthValue();
-        };
-        _proto.month = function month() {
-          return this._dateTime.month();
-        };
-        _proto.dayOfMonth = function dayOfMonth() {
-          return this._dateTime.dayOfMonth();
-        };
-        _proto.dayOfYear = function dayOfYear() {
-          return this._dateTime.dayOfYear();
-        };
-        _proto.dayOfWeek = function dayOfWeek() {
-          return this._dateTime.dayOfWeek();
-        };
-        _proto.hour = function hour() {
-          return this._dateTime.hour();
-        };
-        _proto.minute = function minute() {
-          return this._dateTime.minute();
-        };
-        _proto.second = function second() {
-          return this._dateTime.second();
-        };
-        _proto.nano = function nano() {
-          return this._dateTime.nano();
-        };
-        _proto._withAdjuster = function _withAdjuster(adjuster) {
-          if (adjuster instanceof LocalDate) {
-            return this._resolveLocal(LocalDateTime.of(adjuster, this._dateTime.toLocalTime()));
-          } else if (adjuster instanceof LocalTime) {
-            return this._resolveLocal(LocalDateTime.of(this._dateTime.toLocalDate(), adjuster));
-          } else if (adjuster instanceof LocalDateTime) {
-            return this._resolveLocal(adjuster);
-          } else if (adjuster instanceof Instant) {
-            var instant = adjuster;
-            return ZonedDateTime2._create(instant.epochSecond(), instant.nano(), this._zone);
-          } else if (adjuster instanceof ZoneOffset) {
-            return this._resolveOffset(adjuster);
-          }
-          return _ChronoZonedDateTime.prototype._withAdjuster.call(this, adjuster);
-        };
-        _proto._withField = function _withField(field, newValue) {
-          if (field instanceof ChronoField) {
-            switch (field) {
-              case ChronoField.INSTANT_SECONDS:
-                return ZonedDateTime2._create(newValue, this.nano(), this._zone);
-              case ChronoField.OFFSET_SECONDS: {
-                var offset = ZoneOffset.ofTotalSeconds(field.checkValidIntValue(newValue));
-                return this._resolveOffset(offset);
-              }
-            }
-            return this._resolveLocal(this._dateTime.with(field, newValue));
-          }
-          return field.adjustInto(this, newValue);
-        };
-        _proto.withYear = function withYear(year) {
-          return this._resolveLocal(this._dateTime.withYear(year));
-        };
-        _proto.withMonth = function withMonth(month) {
-          return this._resolveLocal(this._dateTime.withMonth(month));
-        };
-        _proto.withDayOfMonth = function withDayOfMonth(dayOfMonth) {
-          return this._resolveLocal(this._dateTime.withDayOfMonth(dayOfMonth));
-        };
-        _proto.withDayOfYear = function withDayOfYear(dayOfYear) {
-          return this._resolveLocal(this._dateTime.withDayOfYear(dayOfYear));
-        };
-        _proto.withHour = function withHour(hour) {
-          return this._resolveLocal(this._dateTime.withHour(hour));
-        };
-        _proto.withMinute = function withMinute(minute) {
-          return this._resolveLocal(this._dateTime.withMinute(minute));
-        };
-        _proto.withSecond = function withSecond(second) {
-          return this._resolveLocal(this._dateTime.withSecond(second));
-        };
-        _proto.withNano = function withNano(nanoOfSecond) {
-          return this._resolveLocal(this._dateTime.withNano(nanoOfSecond));
-        };
-        _proto.truncatedTo = function truncatedTo(unit) {
-          return this._resolveLocal(this._dateTime.truncatedTo(unit));
-        };
-        _proto._plusUnit = function _plusUnit(amountToAdd, unit) {
-          if (unit instanceof ChronoUnit) {
-            if (unit.isDateBased()) {
-              return this._resolveLocal(this._dateTime.plus(amountToAdd, unit));
-            } else {
-              return this._resolveInstant(this._dateTime.plus(amountToAdd, unit));
-            }
-          }
-          requireNonNull(unit, "unit");
-          return unit.addTo(this, amountToAdd);
-        };
-        _proto.plusYears = function plusYears(years) {
-          return this._resolveLocal(this._dateTime.plusYears(years));
-        };
-        _proto.plusMonths = function plusMonths(months) {
-          return this._resolveLocal(this._dateTime.plusMonths(months));
-        };
-        _proto.plusWeeks = function plusWeeks(weeks) {
-          return this._resolveLocal(this._dateTime.plusWeeks(weeks));
-        };
-        _proto.plusDays = function plusDays(days) {
-          return this._resolveLocal(this._dateTime.plusDays(days));
-        };
-        _proto.plusHours = function plusHours(hours) {
-          return this._resolveInstant(this._dateTime.plusHours(hours));
-        };
-        _proto.plusMinutes = function plusMinutes(minutes) {
-          return this._resolveInstant(this._dateTime.plusMinutes(minutes));
-        };
-        _proto.plusSeconds = function plusSeconds(seconds) {
-          return this._resolveInstant(this._dateTime.plusSeconds(seconds));
-        };
-        _proto.plusNanos = function plusNanos(nanos) {
-          return this._resolveInstant(this._dateTime.plusNanos(nanos));
-        };
-        _proto._minusUnit = function _minusUnit(amountToSubtract, unit) {
-          return this._plusUnit(-1 * amountToSubtract, unit);
-        };
-        _proto.minusYears = function minusYears(years) {
-          return this.plusYears(-1 * years);
-        };
-        _proto.minusMonths = function minusMonths(months) {
-          return this.plusMonths(-1 * months);
-        };
-        _proto.minusWeeks = function minusWeeks(weeks) {
-          return this.plusWeeks(-1 * weeks);
-        };
-        _proto.minusDays = function minusDays(days) {
-          return this.plusDays(-1 * days);
-        };
-        _proto.minusHours = function minusHours(hours) {
-          return this.plusHours(-1 * hours);
-        };
-        _proto.minusMinutes = function minusMinutes(minutes) {
-          return this.plusMinutes(-1 * minutes);
-        };
-        _proto.minusSeconds = function minusSeconds(seconds) {
-          return this.plusSeconds(-1 * seconds);
-        };
-        _proto.minusNanos = function minusNanos(nanos) {
-          return this.plusNanos(-1 * nanos);
-        };
-        _proto.query = function query(_query) {
-          if (_query === TemporalQueries.localDate()) {
-            return this.toLocalDate();
-          }
-          requireNonNull(_query, "query");
-          return _ChronoZonedDateTime.prototype.query.call(this, _query);
-        };
-        _proto.until = function until(endExclusive, unit) {
-          var end = ZonedDateTime2.from(endExclusive);
-          if (unit instanceof ChronoUnit) {
-            end = end.withZoneSameInstant(this._zone);
-            if (unit.isDateBased()) {
-              return this._dateTime.until(end._dateTime, unit);
-            } else {
-              var difference = this._offset.totalSeconds() - end._offset.totalSeconds();
-              var adjustedEnd = end._dateTime.plusSeconds(difference);
-              return this._dateTime.until(adjustedEnd, unit);
-            }
-          }
-          return unit.between(this, end);
-        };
-        _proto.toLocalDateTime = function toLocalDateTime() {
-          return this._dateTime;
-        };
-        _proto.toLocalDate = function toLocalDate() {
-          return this._dateTime.toLocalDate();
-        };
-        _proto.toLocalTime = function toLocalTime() {
-          return this._dateTime.toLocalTime();
-        };
-        _proto.toOffsetDateTime = function toOffsetDateTime() {
-          return OffsetDateTime.of(this._dateTime, this._offset);
-        };
-        _proto.equals = function equals(other) {
-          if (this === other) {
-            return true;
-          }
-          if (other instanceof ZonedDateTime2) {
-            return this._dateTime.equals(other._dateTime) && this._offset.equals(other._offset) && this._zone.equals(other._zone);
-          }
-          return false;
-        };
-        _proto.hashCode = function hashCode() {
-          return MathUtil.hashCode(this._dateTime.hashCode(), this._offset.hashCode(), this._zone.hashCode());
-        };
-        _proto.toString = function toString() {
-          var str = this._dateTime.toString() + this._offset.toString();
-          if (this._offset !== this._zone) {
-            str += "[" + this._zone.toString() + "]";
-          }
-          return str;
-        };
-        _proto.toJSON = function toJSON() {
-          return this.toString();
-        };
-        _proto.format = function format(formatter) {
-          return _ChronoZonedDateTime.prototype.format.call(this, formatter);
-        };
-        return ZonedDateTime2;
-      })(ChronoZonedDateTime);
-      function _init$c() {
-        ZonedDateTime.FROM = createTemporalQuery("ZonedDateTime.FROM", function(temporal) {
-          return ZonedDateTime.from(temporal);
-        });
-      }
-      var DateTimeBuilder = (function(_TemporalAccessor) {
-        function DateTimeBuilder2() {
-          var _this;
-          _this = _TemporalAccessor.call(this) || this;
-          _this.fieldValues = new EnumMap();
-          _this.chrono = null;
-          _this.zone = null;
-          _this.date = null;
-          _this.time = null;
-          _this.leapSecond = false;
-          _this.excessDays = null;
-          return _this;
-        }
-        _inheritsLoose(DateTimeBuilder2, _TemporalAccessor);
-        DateTimeBuilder2.create = function create(field, value) {
-          var dtb = new DateTimeBuilder2();
-          dtb._addFieldValue(field, value);
-          return dtb;
-        };
-        var _proto = DateTimeBuilder2.prototype;
-        _proto.getFieldValue0 = function getFieldValue0(field) {
-          return this.fieldValues.get(field);
-        };
-        _proto._addFieldValue = function _addFieldValue(field, value) {
-          requireNonNull(field, "field");
-          var old = this.getFieldValue0(field);
-          if (old != null && old !== value) {
-            throw new DateTimeException("Conflict found: " + field + " " + old + " differs from " + field + " " + value + ": " + this);
-          }
-          return this._putFieldValue0(field, value);
-        };
-        _proto._putFieldValue0 = function _putFieldValue0(field, value) {
-          this.fieldValues.put(field, value);
-          return this;
-        };
-        _proto.resolve = function resolve(resolverStyle, resolverFields) {
-          if (resolverFields != null) {
-            this.fieldValues.retainAll(resolverFields);
-          }
-          this._mergeInstantFields();
-          this._resolveFields(resolverStyle);
-          this._mergeDate(resolverStyle);
-          this._mergeTime(resolverStyle);
-          this._resolveTimeInferZeroes(resolverStyle);
-          this._crossCheck();
-          if (this.excessDays != null && this.excessDays.isZero() === false && this.date != null && this.time != null) {
-            this.date = this.date.plus(this.excessDays);
-            this.excessDays = Period.ZERO;
-          }
-          this._resolveFractional();
-          this._resolveInstant();
-          return this;
-        };
-        _proto._resolveFields = function _resolveFields(resolverStyle) {
-          var resolved = false;
-          for (var _i = 0, _arr = [IsoFields.WEEK_OF_WEEK_BASED_YEAR, IsoFields.DAY_OF_QUARTER]; _i < _arr.length; _i++) {
-            var field = _arr[_i];
-            if (this.fieldValues.containsKey(field)) {
-              var date = field.resolve(this.fieldValues, this, resolverStyle);
-              if (date != null) {
-                this._checkDate(date);
-                resolved = true;
-              }
-            }
-          }
-          return resolved;
-        };
-        _proto._mergeDate = function _mergeDate(resolverStyle) {
-          this._checkDate(IsoChronology.INSTANCE.resolveDate(this.fieldValues, resolverStyle));
-        };
-        _proto._checkDate = function _checkDate(date) {
-          if (date != null) {
-            this._addObject(date);
-            for (var fieldName in this.fieldValues.keySet()) {
-              var field = ChronoField.byName(fieldName);
-              if (field) {
-                if (this.fieldValues.get(field) !== void 0) {
-                  if (field.isDateBased()) {
-                    var val1 = void 0;
-                    try {
-                      val1 = date.getLong(field);
-                    } catch (ex) {
-                      if (ex instanceof DateTimeException) {
-                        continue;
-                      } else {
-                        throw ex;
-                      }
-                    }
-                    var val2 = this.fieldValues.get(field);
-                    if (val1 !== val2) {
-                      throw new DateTimeException("Conflict found: Field " + field + " " + val1 + " differs from " + field + " " + val2 + " derived from " + date);
-                    }
-                  }
-                }
-              }
-            }
-          }
-        };
-        _proto._mergeTime = function _mergeTime(resolverStyle) {
-          if (this.fieldValues.containsKey(ChronoField.CLOCK_HOUR_OF_DAY)) {
-            var ch = this.fieldValues.remove(ChronoField.CLOCK_HOUR_OF_DAY);
-            if (resolverStyle !== ResolverStyle.LENIENT) {
-              if (resolverStyle === ResolverStyle.SMART && ch === 0) ;
-              else {
-                ChronoField.CLOCK_HOUR_OF_DAY.checkValidValue(ch);
-              }
-            }
-            this._addFieldValue(ChronoField.HOUR_OF_DAY, ch === 24 ? 0 : ch);
-          }
-          if (this.fieldValues.containsKey(ChronoField.CLOCK_HOUR_OF_AMPM)) {
-            var _ch = this.fieldValues.remove(ChronoField.CLOCK_HOUR_OF_AMPM);
-            if (resolverStyle !== ResolverStyle.LENIENT) {
-              if (resolverStyle === ResolverStyle.SMART && _ch === 0) ;
-              else {
-                ChronoField.CLOCK_HOUR_OF_AMPM.checkValidValue(_ch);
-              }
-            }
-            this._addFieldValue(ChronoField.HOUR_OF_AMPM, _ch === 12 ? 0 : _ch);
-          }
-          if (resolverStyle !== ResolverStyle.LENIENT) {
-            if (this.fieldValues.containsKey(ChronoField.AMPM_OF_DAY)) {
-              ChronoField.AMPM_OF_DAY.checkValidValue(this.fieldValues.get(ChronoField.AMPM_OF_DAY));
-            }
-            if (this.fieldValues.containsKey(ChronoField.HOUR_OF_AMPM)) {
-              ChronoField.HOUR_OF_AMPM.checkValidValue(this.fieldValues.get(ChronoField.HOUR_OF_AMPM));
-            }
-          }
-          if (this.fieldValues.containsKey(ChronoField.AMPM_OF_DAY) && this.fieldValues.containsKey(ChronoField.HOUR_OF_AMPM)) {
-            var ap = this.fieldValues.remove(ChronoField.AMPM_OF_DAY);
-            var hap = this.fieldValues.remove(ChronoField.HOUR_OF_AMPM);
-            this._addFieldValue(ChronoField.HOUR_OF_DAY, ap * 12 + hap);
-          }
-          if (this.fieldValues.containsKey(ChronoField.NANO_OF_DAY)) {
-            var nod = this.fieldValues.remove(ChronoField.NANO_OF_DAY);
-            if (resolverStyle !== ResolverStyle.LENIENT) {
-              ChronoField.NANO_OF_DAY.checkValidValue(nod);
-            }
-            this._addFieldValue(ChronoField.SECOND_OF_DAY, MathUtil.intDiv(nod, 1e9));
-            this._addFieldValue(ChronoField.NANO_OF_SECOND, MathUtil.intMod(nod, 1e9));
-          }
-          if (this.fieldValues.containsKey(ChronoField.MICRO_OF_DAY)) {
-            var cod = this.fieldValues.remove(ChronoField.MICRO_OF_DAY);
-            if (resolverStyle !== ResolverStyle.LENIENT) {
-              ChronoField.MICRO_OF_DAY.checkValidValue(cod);
-            }
-            this._addFieldValue(ChronoField.SECOND_OF_DAY, MathUtil.intDiv(cod, 1e6));
-            this._addFieldValue(ChronoField.MICRO_OF_SECOND, MathUtil.intMod(cod, 1e6));
-          }
-          if (this.fieldValues.containsKey(ChronoField.MILLI_OF_DAY)) {
-            var lod = this.fieldValues.remove(ChronoField.MILLI_OF_DAY);
-            if (resolverStyle !== ResolverStyle.LENIENT) {
-              ChronoField.MILLI_OF_DAY.checkValidValue(lod);
-            }
-            this._addFieldValue(ChronoField.SECOND_OF_DAY, MathUtil.intDiv(lod, 1e3));
-            this._addFieldValue(ChronoField.MILLI_OF_SECOND, MathUtil.intMod(lod, 1e3));
-          }
-          if (this.fieldValues.containsKey(ChronoField.SECOND_OF_DAY)) {
-            var sod = this.fieldValues.remove(ChronoField.SECOND_OF_DAY);
-            if (resolverStyle !== ResolverStyle.LENIENT) {
-              ChronoField.SECOND_OF_DAY.checkValidValue(sod);
-            }
-            this._addFieldValue(ChronoField.HOUR_OF_DAY, MathUtil.intDiv(sod, 3600));
-            this._addFieldValue(ChronoField.MINUTE_OF_HOUR, MathUtil.intMod(MathUtil.intDiv(sod, 60), 60));
-            this._addFieldValue(ChronoField.SECOND_OF_MINUTE, MathUtil.intMod(sod, 60));
-          }
-          if (this.fieldValues.containsKey(ChronoField.MINUTE_OF_DAY)) {
-            var mod = this.fieldValues.remove(ChronoField.MINUTE_OF_DAY);
-            if (resolverStyle !== ResolverStyle.LENIENT) {
-              ChronoField.MINUTE_OF_DAY.checkValidValue(mod);
-            }
-            this._addFieldValue(ChronoField.HOUR_OF_DAY, MathUtil.intDiv(mod, 60));
-            this._addFieldValue(ChronoField.MINUTE_OF_HOUR, MathUtil.intMod(mod, 60));
-          }
-          if (resolverStyle !== ResolverStyle.LENIENT) {
-            if (this.fieldValues.containsKey(ChronoField.MILLI_OF_SECOND)) {
-              ChronoField.MILLI_OF_SECOND.checkValidValue(this.fieldValues.get(ChronoField.MILLI_OF_SECOND));
-            }
-            if (this.fieldValues.containsKey(ChronoField.MICRO_OF_SECOND)) {
-              ChronoField.MICRO_OF_SECOND.checkValidValue(this.fieldValues.get(ChronoField.MICRO_OF_SECOND));
-            }
-          }
-          if (this.fieldValues.containsKey(ChronoField.MILLI_OF_SECOND) && this.fieldValues.containsKey(ChronoField.MICRO_OF_SECOND)) {
-            var los = this.fieldValues.remove(ChronoField.MILLI_OF_SECOND);
-            var cos = this.fieldValues.get(ChronoField.MICRO_OF_SECOND);
-            this._putFieldValue0(ChronoField.MICRO_OF_SECOND, los * 1e3 + MathUtil.intMod(cos, 1e3));
-          }
-          if (this.fieldValues.containsKey(ChronoField.MICRO_OF_SECOND) && this.fieldValues.containsKey(ChronoField.NANO_OF_SECOND)) {
-            var nos = this.fieldValues.get(ChronoField.NANO_OF_SECOND);
-            this._putFieldValue0(ChronoField.MICRO_OF_SECOND, MathUtil.intDiv(nos, 1e3));
-            this.fieldValues.remove(ChronoField.MICRO_OF_SECOND);
-          }
-          if (this.fieldValues.containsKey(ChronoField.MILLI_OF_SECOND) && this.fieldValues.containsKey(ChronoField.NANO_OF_SECOND)) {
-            var _nos = this.fieldValues.get(ChronoField.NANO_OF_SECOND);
-            this._putFieldValue0(ChronoField.MILLI_OF_SECOND, MathUtil.intDiv(_nos, 1e6));
-            this.fieldValues.remove(ChronoField.MILLI_OF_SECOND);
-          }
-          if (this.fieldValues.containsKey(ChronoField.MICRO_OF_SECOND)) {
-            var _cos = this.fieldValues.remove(ChronoField.MICRO_OF_SECOND);
-            this._putFieldValue0(ChronoField.NANO_OF_SECOND, _cos * 1e3);
-          } else if (this.fieldValues.containsKey(ChronoField.MILLI_OF_SECOND)) {
-            var _los = this.fieldValues.remove(ChronoField.MILLI_OF_SECOND);
-            this._putFieldValue0(ChronoField.NANO_OF_SECOND, _los * 1e6);
-          }
-        };
-        _proto._resolveTimeInferZeroes = function _resolveTimeInferZeroes(resolverStyle) {
-          var hod = this.fieldValues.get(ChronoField.HOUR_OF_DAY);
-          var moh = this.fieldValues.get(ChronoField.MINUTE_OF_HOUR);
-          var som = this.fieldValues.get(ChronoField.SECOND_OF_MINUTE);
-          var nos = this.fieldValues.get(ChronoField.NANO_OF_SECOND);
-          if (hod == null) {
-            return;
-          }
-          if (moh == null && (som != null || nos != null)) {
-            return;
-          }
-          if (moh != null && som == null && nos != null) {
-            return;
-          }
-          if (resolverStyle !== ResolverStyle.LENIENT) {
-            if (hod != null) {
-              if (resolverStyle === ResolverStyle.SMART && hod === 24 && (moh == null || moh === 0) && (som == null || som === 0) && (nos == null || nos === 0)) {
-                hod = 0;
-                this.excessDays = Period.ofDays(1);
-              }
-              var hodVal = ChronoField.HOUR_OF_DAY.checkValidIntValue(hod);
-              if (moh != null) {
-                var mohVal = ChronoField.MINUTE_OF_HOUR.checkValidIntValue(moh);
-                if (som != null) {
-                  var somVal = ChronoField.SECOND_OF_MINUTE.checkValidIntValue(som);
-                  if (nos != null) {
-                    var nosVal = ChronoField.NANO_OF_SECOND.checkValidIntValue(nos);
-                    this._addObject(LocalTime.of(hodVal, mohVal, somVal, nosVal));
-                  } else {
-                    this._addObject(LocalTime.of(hodVal, mohVal, somVal));
-                  }
-                } else {
-                  if (nos == null) {
-                    this._addObject(LocalTime.of(hodVal, mohVal));
-                  }
-                }
-              } else {
-                if (som == null && nos == null) {
-                  this._addObject(LocalTime.of(hodVal, 0));
-                }
-              }
-            }
-          } else {
-            if (hod != null) {
-              var _hodVal = hod;
-              if (moh != null) {
-                if (som != null) {
-                  if (nos == null) {
-                    nos = 0;
-                  }
-                  var totalNanos = MathUtil.safeMultiply(_hodVal, 36e11);
-                  totalNanos = MathUtil.safeAdd(totalNanos, MathUtil.safeMultiply(moh, 6e10));
-                  totalNanos = MathUtil.safeAdd(totalNanos, MathUtil.safeMultiply(som, 1e9));
-                  totalNanos = MathUtil.safeAdd(totalNanos, nos);
-                  var excessDays = MathUtil.floorDiv(totalNanos, 864e11);
-                  var nod = MathUtil.floorMod(totalNanos, 864e11);
-                  this._addObject(LocalTime.ofNanoOfDay(nod));
-                  this.excessDays = Period.ofDays(excessDays);
-                } else {
-                  var totalSecs = MathUtil.safeMultiply(_hodVal, 3600);
-                  totalSecs = MathUtil.safeAdd(totalSecs, MathUtil.safeMultiply(moh, 60));
-                  var _excessDays = MathUtil.floorDiv(totalSecs, 86400);
-                  var sod = MathUtil.floorMod(totalSecs, 86400);
-                  this._addObject(LocalTime.ofSecondOfDay(sod));
-                  this.excessDays = Period.ofDays(_excessDays);
-                }
-              } else {
-                var _excessDays2 = MathUtil.safeToInt(MathUtil.floorDiv(_hodVal, 24));
-                _hodVal = MathUtil.floorMod(_hodVal, 24);
-                this._addObject(LocalTime.of(_hodVal, 0));
-                this.excessDays = Period.ofDays(_excessDays2);
-              }
-            }
-          }
-          this.fieldValues.remove(ChronoField.HOUR_OF_DAY);
-          this.fieldValues.remove(ChronoField.MINUTE_OF_HOUR);
-          this.fieldValues.remove(ChronoField.SECOND_OF_MINUTE);
-          this.fieldValues.remove(ChronoField.NANO_OF_SECOND);
-        };
-        _proto._addObject = function _addObject(dateOrTime) {
-          if (dateOrTime instanceof ChronoLocalDate) {
-            this.date = dateOrTime;
-          } else if (dateOrTime instanceof LocalTime) {
-            this.time = dateOrTime;
-          }
-        };
-        _proto._mergeInstantFields = function _mergeInstantFields() {
-          if (this.fieldValues.containsKey(ChronoField.INSTANT_SECONDS)) {
-            if (this.zone != null) {
-              this._mergeInstantFields0(this.zone);
-            } else {
-              var offsetSecs = this.fieldValues.get(ChronoField.OFFSET_SECONDS);
-              if (offsetSecs != null) {
-                this._mergeInstantFields0(ZoneOffset.ofTotalSeconds(offsetSecs));
-              }
-            }
-          }
-        };
-        _proto._mergeInstantFields0 = function _mergeInstantFields0(selectedZone) {
-          var instant = Instant.ofEpochSecond(this.fieldValues.remove(ChronoField.INSTANT_SECONDS));
-          var zdt = ZonedDateTime.ofInstant(instant, selectedZone);
-          if (this.date == null) {
-            this._addObject(zdt.toLocalDate());
-          } else {
-            this._resolveMakeChanges(ChronoField.INSTANT_SECONDS, zdt.toLocalDate());
-          }
-          this._addFieldValue(ChronoField.SECOND_OF_DAY, zdt.toLocalTime().toSecondOfDay());
-        };
-        _proto._resolveMakeChanges = function _resolveMakeChanges(targetField, date) {
-          var epochDay = date.toEpochDay();
-          var old = this.fieldValues.get(ChronoField.EPOCH_DAY);
-          this.fieldValues.put(ChronoField.EPOCH_DAY, epochDay);
-          if (old != null && old !== epochDay) {
-            throw new DateTimeException("Conflict found: " + LocalDate.ofEpochDay(old) + " differs from " + LocalDate.ofEpochDay(epochDay) + " while resolving  " + targetField);
-          }
-        };
-        _proto._crossCheck = function _crossCheck() {
-          if (this.date != null && this.time != null) {
-            this._crossCheck0(this.date.atTime(this.time));
-          } else if (this.date != null) {
-            this._crossCheck0(this.date);
-          } else if (this.time != null) {
-            this._crossCheck0(this.time);
-          }
-        };
-        _proto._crossCheck0 = function _crossCheck0(temporal) {
-          for (var fieldName in this.fieldValues.keySet()) {
-            var field = ChronoField.byName(fieldName);
-            if (field && this.fieldValues.get(field) !== void 0) {
-              if (temporal.isSupported(field)) {
-                var temporalValue = void 0;
-                try {
-                  temporalValue = temporal.getLong(field);
-                } catch (ex) {
-                  if (ex instanceof DateTimeException) {
-                    continue;
-                  }
-                  throw ex;
-                }
-                var value = this.fieldValues.get(field);
-                if (temporalValue !== value) {
-                  throw new DateTimeException("Cross check failed: " + field + " " + temporalValue + " vs " + field + " " + value);
-                }
-                this.fieldValues.remove(field);
-              }
-            }
-          }
-        };
-        _proto._resolveFractional = function _resolveFractional() {
-          if (this.time == null && (this.fieldValues.containsKey(ChronoField.INSTANT_SECONDS) || this.fieldValues.containsKey(ChronoField.SECOND_OF_DAY) || this.fieldValues.containsKey(ChronoField.SECOND_OF_MINUTE))) {
-            if (this.fieldValues.containsKey(ChronoField.NANO_OF_SECOND)) {
-              var nos = this.fieldValues.get(ChronoField.NANO_OF_SECOND);
-              this.fieldValues.put(ChronoField.MICRO_OF_SECOND, MathUtil.intDiv(nos, 1e3));
-              this.fieldValues.put(ChronoField.MILLI_OF_SECOND, MathUtil.intDiv(nos, 1e6));
-            } else {
-              this.fieldValues.put(ChronoField.NANO_OF_SECOND, 0);
-              this.fieldValues.put(ChronoField.MICRO_OF_SECOND, 0);
-              this.fieldValues.put(ChronoField.MILLI_OF_SECOND, 0);
-            }
-          }
-        };
-        _proto._resolveInstant = function _resolveInstant() {
-          if (this.date != null && this.time != null) {
-            var offsetSecs = this.fieldValues.get(ChronoField.OFFSET_SECONDS);
-            if (offsetSecs != null) {
-              var offset = ZoneOffset.ofTotalSeconds(offsetSecs);
-              var instant = this.date.atTime(this.time).atZone(offset).getLong(ChronoField.INSTANT_SECONDS);
-              this.fieldValues.put(ChronoField.INSTANT_SECONDS, instant);
-            } else if (this.zone != null) {
-              var _instant = this.date.atTime(this.time).atZone(this.zone).getLong(ChronoField.INSTANT_SECONDS);
-              this.fieldValues.put(ChronoField.INSTANT_SECONDS, _instant);
-            }
-          }
-        };
-        _proto.build = function build(type) {
-          return type.queryFrom(this);
-        };
-        _proto.isSupported = function isSupported(field) {
-          if (field == null) {
-            return false;
-          }
-          return this.fieldValues.containsKey(field) && this.fieldValues.get(field) !== void 0 || this.date != null && this.date.isSupported(field) || this.time != null && this.time.isSupported(field);
-        };
-        _proto.getLong = function getLong(field) {
-          requireNonNull(field, "field");
-          var value = this.getFieldValue0(field);
-          if (value == null) {
-            if (this.date != null && this.date.isSupported(field)) {
-              return this.date.getLong(field);
-            }
-            if (this.time != null && this.time.isSupported(field)) {
-              return this.time.getLong(field);
-            }
-            throw new DateTimeException("Field not found: " + field);
-          }
-          return value;
-        };
-        _proto.query = function query(_query) {
-          if (_query === TemporalQueries.zoneId()) {
-            return this.zone;
-          } else if (_query === TemporalQueries.chronology()) {
-            return this.chrono;
-          } else if (_query === TemporalQueries.localDate()) {
-            return this.date != null ? LocalDate.from(this.date) : null;
-          } else if (_query === TemporalQueries.localTime()) {
-            return this.time;
-          } else if (_query === TemporalQueries.zone() || _query === TemporalQueries.offset()) {
-            return _query.queryFrom(this);
-          } else if (_query === TemporalQueries.precision()) {
-            return null;
-          }
-          return _query.queryFrom(this);
-        };
-        return DateTimeBuilder2;
-      })(TemporalAccessor);
-      var DateTimeParseContext = (function() {
-        function DateTimeParseContext2() {
-          if (arguments.length === 1) {
-            if (arguments[0] instanceof DateTimeParseContext2) {
-              this._constructorSelf.apply(this, arguments);
-              return;
-            } else {
-              this._constructorFormatter.apply(this, arguments);
-            }
-          } else {
-            this._constructorParam.apply(this, arguments);
-          }
-          this._caseSensitive = true;
-          this._strict = true;
-          this._parsed = [new Parsed(this)];
-        }
-        var _proto = DateTimeParseContext2.prototype;
-        _proto._constructorParam = function _constructorParam(locale, symbols, chronology) {
-          this._locale = locale;
-          this._symbols = symbols;
-          this._overrideChronology = chronology;
-        };
-        _proto._constructorFormatter = function _constructorFormatter(formatter) {
-          this._locale = formatter.locale();
-          this._symbols = formatter.decimalStyle();
-          this._overrideChronology = formatter.chronology();
-        };
-        _proto._constructorSelf = function _constructorSelf(other) {
-          this._locale = other._locale;
-          this._symbols = other._symbols;
-          this._overrideChronology = other._overrideChronology;
-          this._overrideZone = other._overrideZone;
-          this._caseSensitive = other._caseSensitive;
-          this._strict = other._strict;
-          this._parsed = [new Parsed(this)];
-        };
-        _proto.copy = function copy() {
-          return new DateTimeParseContext2(this);
-        };
-        _proto.symbols = function symbols() {
-          return this._symbols;
-        };
-        _proto.isStrict = function isStrict() {
-          return this._strict;
-        };
-        _proto.setStrict = function setStrict(strict) {
-          this._strict = strict;
-        };
-        _proto.locale = function locale() {
-          return this._locale;
-        };
-        _proto.setLocale = function setLocale(locale) {
-          this._locale = locale;
-        };
-        _proto.startOptional = function startOptional() {
-          this._parsed.push(this.currentParsed().copy());
-        };
-        _proto.endOptional = function endOptional(successful) {
-          if (successful) {
-            this._parsed.splice(this._parsed.length - 2, 1);
-          } else {
-            this._parsed.splice(this._parsed.length - 1, 1);
-          }
-        };
-        _proto.isCaseSensitive = function isCaseSensitive() {
-          return this._caseSensitive;
-        };
-        _proto.setCaseSensitive = function setCaseSensitive(caseSensitive) {
-          this._caseSensitive = caseSensitive;
-        };
-        _proto.subSequenceEquals = function subSequenceEquals(cs1, offset1, cs2, offset2, length) {
-          if (offset1 + length > cs1.length || offset2 + length > cs2.length) {
-            return false;
-          }
-          if (!this.isCaseSensitive()) {
-            cs1 = cs1.toLowerCase();
-            cs2 = cs2.toLowerCase();
-          }
-          for (var i = 0; i < length; i++) {
-            var ch1 = cs1[offset1 + i];
-            var ch2 = cs2[offset2 + i];
-            if (ch1 !== ch2) {
-              return false;
-            }
-          }
-          return true;
-        };
-        _proto.charEquals = function charEquals(ch1, ch2) {
-          if (this.isCaseSensitive()) {
-            return ch1 === ch2;
-          }
-          return this.charEqualsIgnoreCase(ch1, ch2);
-        };
-        _proto.charEqualsIgnoreCase = function charEqualsIgnoreCase(c1, c2) {
-          return c1 === c2 || c1.toLowerCase() === c2.toLowerCase();
-        };
-        _proto.setParsedField = function setParsedField(field, value, errorPos, successPos) {
-          var currentParsedFieldValues = this.currentParsed().fieldValues;
-          var old = currentParsedFieldValues.get(field);
-          currentParsedFieldValues.set(field, value);
-          return old != null && old !== value ? ~errorPos : successPos;
-        };
-        _proto.setParsedZone = function setParsedZone(zone) {
-          requireNonNull(zone, "zone");
-          this.currentParsed().zone = zone;
-        };
-        _proto.getParsed = function getParsed(field) {
-          return this.currentParsed().fieldValues.get(field);
-        };
-        _proto.toParsed = function toParsed() {
-          return this.currentParsed();
-        };
-        _proto.currentParsed = function currentParsed() {
-          return this._parsed[this._parsed.length - 1];
-        };
-        _proto.setParsedLeapSecond = function setParsedLeapSecond() {
-          this.currentParsed().leapSecond = true;
-        };
-        _proto.getEffectiveChronology = function getEffectiveChronology() {
-          var chrono = this.currentParsed().chrono;
-          if (chrono == null) {
-            chrono = this._overrideChronology;
-            if (chrono == null) {
-              chrono = IsoChronology.INSTANCE;
-            }
-          }
-          return chrono;
-        };
-        return DateTimeParseContext2;
-      })();
-      var Parsed = (function(_Temporal) {
-        function Parsed2(dateTimeParseContext) {
-          var _this;
-          _this = _Temporal.call(this) || this;
-          _this.chrono = null;
-          _this.zone = null;
-          _this.fieldValues = new EnumMap();
-          _this.leapSecond = false;
-          _this.excessDays = Period.ZERO;
-          _this.dateTimeParseContext = dateTimeParseContext;
-          return _this;
-        }
-        _inheritsLoose(Parsed2, _Temporal);
-        var _proto2 = Parsed2.prototype;
-        _proto2.copy = function copy() {
-          var cloned = new Parsed2();
-          cloned.chrono = this.chrono;
-          cloned.zone = this.zone;
-          cloned.fieldValues.putAll(this.fieldValues);
-          cloned.leapSecond = this.leapSecond;
-          cloned.dateTimeParseContext = this.dateTimeParseContext;
-          return cloned;
-        };
-        _proto2.toString = function toString() {
-          return this.fieldValues + ", " + this.chrono + ", " + this.zone;
-        };
-        _proto2.isSupported = function isSupported(field) {
-          return this.fieldValues.containsKey(field);
-        };
-        _proto2.get = function get(field) {
-          var val = this.fieldValues.get(field);
-          assert(val != null);
-          return val;
-        };
-        _proto2.query = function query(_query) {
-          if (_query === TemporalQueries.chronology()) {
-            return this.chrono;
-          }
-          if (_query === TemporalQueries.zoneId() || _query === TemporalQueries.zone()) {
-            return this.zone;
-          }
-          return _Temporal.prototype.query.call(this, _query);
-        };
-        _proto2.toBuilder = function toBuilder() {
-          var builder = new DateTimeBuilder();
-          builder.fieldValues.putAll(this.fieldValues);
-          builder.chrono = this.dateTimeParseContext.getEffectiveChronology();
-          if (this.zone != null) {
-            builder.zone = this.zone;
-          } else {
-            builder.zone = this.overrideZone;
-          }
-          builder.leapSecond = this.leapSecond;
-          builder.excessDays = this.excessDays;
-          return builder;
-        };
-        return Parsed2;
-      })(Temporal);
-      var DateTimePrintContext = (function() {
-        function DateTimePrintContext2(temporal, localeOrFormatter, symbols) {
-          if (arguments.length === 2 && arguments[1] instanceof DateTimeFormatter) {
-            this._temporal = DateTimePrintContext2.adjust(temporal, localeOrFormatter);
-            this._locale = localeOrFormatter.locale();
-            this._symbols = localeOrFormatter.decimalStyle();
-          } else {
-            this._temporal = temporal;
-            this._locale = localeOrFormatter;
-            this._symbols = symbols;
-          }
-          this._optional = 0;
-        }
-        DateTimePrintContext2.adjust = function adjust(temporal, formatter) {
-          return temporal;
-        };
-        var _proto = DateTimePrintContext2.prototype;
-        _proto.symbols = function symbols() {
-          return this._symbols;
-        };
-        _proto.startOptional = function startOptional() {
-          this._optional++;
-        };
-        _proto.endOptional = function endOptional() {
-          this._optional--;
-        };
-        _proto.getValueQuery = function getValueQuery(query) {
-          var result = this._temporal.query(query);
-          if (result == null && this._optional === 0) {
-            throw new DateTimeException("Unable to extract value: " + this._temporal);
-          }
-          return result;
-        };
-        _proto.getValue = function getValue(field) {
-          try {
-            return this._temporal.getLong(field);
-          } catch (ex) {
-            if (ex instanceof DateTimeException && this._optional > 0) {
-              return null;
-            }
-            throw ex;
-          }
-        };
-        _proto.temporal = function temporal() {
-          return this._temporal;
-        };
-        _proto.locale = function locale() {
-          return this._locale;
-        };
-        _proto.setDateTime = function setDateTime(temporal) {
-          this._temporal = temporal;
-        };
-        _proto.setLocale = function setLocale(locale) {
-          this._locale = locale;
-        };
-        return DateTimePrintContext2;
-      })();
-      var DecimalStyle = (function() {
-        function DecimalStyle2(zeroChar, positiveSignChar, negativeSignChar, decimalPointChar) {
-          this._zeroDigit = zeroChar;
-          this._zeroDigitCharCode = zeroChar.charCodeAt(0);
-          this._positiveSign = positiveSignChar;
-          this._negativeSign = negativeSignChar;
-          this._decimalSeparator = decimalPointChar;
-        }
-        var _proto = DecimalStyle2.prototype;
-        _proto.positiveSign = function positiveSign() {
-          return this._positiveSign;
-        };
-        _proto.withPositiveSign = function withPositiveSign(positiveSign) {
-          if (positiveSign === this._positiveSign) {
-            return this;
-          }
-          return new DecimalStyle2(this._zeroDigit, positiveSign, this._negativeSign, this._decimalSeparator);
-        };
-        _proto.negativeSign = function negativeSign() {
-          return this._negativeSign;
-        };
-        _proto.withNegativeSign = function withNegativeSign(negativeSign) {
-          if (negativeSign === this._negativeSign) {
-            return this;
-          }
-          return new DecimalStyle2(this._zeroDigit, this._positiveSign, negativeSign, this._decimalSeparator);
-        };
-        _proto.zeroDigit = function zeroDigit() {
-          return this._zeroDigit;
-        };
-        _proto.withZeroDigit = function withZeroDigit(zeroDigit) {
-          if (zeroDigit === this._zeroDigit) {
-            return this;
-          }
-          return new DecimalStyle2(zeroDigit, this._positiveSign, this._negativeSign, this._decimalSeparator);
-        };
-        _proto.decimalSeparator = function decimalSeparator() {
-          return this._decimalSeparator;
-        };
-        _proto.withDecimalSeparator = function withDecimalSeparator(decimalSeparator) {
-          if (decimalSeparator === this._decimalSeparator) {
-            return this;
-          }
-          return new DecimalStyle2(this._zeroDigit, this._positiveSign, this._negativeSign, decimalSeparator);
-        };
-        _proto.convertToDigit = function convertToDigit(char) {
-          var val = char.charCodeAt(0) - this._zeroDigitCharCode;
-          return val >= 0 && val <= 9 ? val : -1;
-        };
-        _proto.convertNumberToI18N = function convertNumberToI18N(numericText) {
-          if (this._zeroDigit === "0") {
-            return numericText;
-          }
-          var diff = this._zeroDigitCharCode - "0".charCodeAt(0);
-          var convertedText = "";
-          for (var i = 0; i < numericText.length; i++) {
-            convertedText += String.fromCharCode(numericText.charCodeAt(i) + diff);
-          }
-          return convertedText;
-        };
-        _proto.equals = function equals(other) {
-          if (this === other) {
-            return true;
-          }
-          if (other instanceof DecimalStyle2) {
-            return this._zeroDigit === other._zeroDigit && this._positiveSign === other._positiveSign && this._negativeSign === other._negativeSign && this._decimalSeparator === other._decimalSeparator;
-          }
-          return false;
-        };
-        _proto.hashCode = function hashCode() {
-          return this._zeroDigit + this._positiveSign + this._negativeSign + this._decimalSeparator;
-        };
-        _proto.toString = function toString() {
-          return "DecimalStyle[" + this._zeroDigit + this._positiveSign + this._negativeSign + this._decimalSeparator + "]";
-        };
-        DecimalStyle2.of = function of() {
-          throw new Error("not yet supported");
-        };
-        DecimalStyle2.availableLocales = function availableLocales() {
-          throw new Error("not yet supported");
-        };
-        return DecimalStyle2;
-      })();
-      DecimalStyle.STANDARD = new DecimalStyle("0", "+", "-", ".");
-      var SignStyle = (function(_Enum) {
-        function SignStyle2() {
-          return _Enum.apply(this, arguments) || this;
-        }
-        _inheritsLoose(SignStyle2, _Enum);
-        var _proto = SignStyle2.prototype;
-        _proto.parse = function parse(positive, strict, fixedWidth) {
-          switch (this) {
-            case SignStyle2.NORMAL:
-              return !positive || !strict;
-            case SignStyle2.ALWAYS:
-            case SignStyle2.EXCEEDS_PAD:
-              return true;
-            default:
-              return !strict && !fixedWidth;
-          }
-        };
-        return SignStyle2;
-      })(Enum);
-      SignStyle.NORMAL = new SignStyle("NORMAL");
-      SignStyle.NEVER = new SignStyle("NEVER");
-      SignStyle.ALWAYS = new SignStyle("ALWAYS");
-      SignStyle.EXCEEDS_PAD = new SignStyle("EXCEEDS_PAD");
-      SignStyle.NOT_NEGATIVE = new SignStyle("NOT_NEGATIVE");
-      var TextStyle = (function(_Enum) {
-        function TextStyle2() {
-          return _Enum.apply(this, arguments) || this;
-        }
-        _inheritsLoose(TextStyle2, _Enum);
-        var _proto = TextStyle2.prototype;
-        _proto.isStandalone = function isStandalone() {
-          switch (this) {
-            case TextStyle2.FULL_STANDALONE:
-            case TextStyle2.SHORT_STANDALONE:
-            case TextStyle2.NARROW_STANDALONE:
-              return true;
-            default:
-              return false;
-          }
-        };
-        _proto.asStandalone = function asStandalone() {
-          switch (this) {
-            case TextStyle2.FULL:
-              return TextStyle2.FULL_STANDALONE;
-            case TextStyle2.SHORT:
-              return TextStyle2.SHORT_STANDALONE;
-            case TextStyle2.NARROW:
-              return TextStyle2.NARROW_STANDALONE;
-            default:
-              return this;
-          }
-        };
-        _proto.asNormal = function asNormal() {
-          switch (this) {
-            case TextStyle2.FULL_STANDALONE:
-              return TextStyle2.FULL;
-            case TextStyle2.SHORT_STANDALONE:
-              return TextStyle2.SHORT;
-            case TextStyle2.NARROW_STANDALONE:
-              return TextStyle2.NARROW;
-            default:
-              return this;
-          }
-        };
-        return TextStyle2;
-      })(Enum);
-      TextStyle.FULL = new TextStyle("FULL");
-      TextStyle.FULL_STANDALONE = new TextStyle("FULL_STANDALONE");
-      TextStyle.SHORT = new TextStyle("SHORT");
-      TextStyle.SHORT_STANDALONE = new TextStyle("SHORT_STANDALONE");
-      TextStyle.NARROW = new TextStyle("NARROW");
-      TextStyle.NARROW_STANDALONE = new TextStyle("NARROW_STANDALONE");
-      var CharLiteralPrinterParser = (function() {
-        function CharLiteralPrinterParser2(literal) {
-          if (literal.length > 1) {
-            throw new IllegalArgumentException('invalid literal, too long: "' + literal + '"');
-          }
-          this._literal = literal;
-        }
-        var _proto = CharLiteralPrinterParser2.prototype;
-        _proto.print = function print(context, buf) {
-          buf.append(this._literal);
-          return true;
-        };
-        _proto.parse = function parse(context, text, position) {
-          var length = text.length;
-          if (position === length) {
-            return ~position;
-          }
-          var ch = text.charAt(position);
-          if (context.charEquals(this._literal, ch) === false) {
-            return ~position;
-          }
-          return position + this._literal.length;
-        };
-        _proto.toString = function toString() {
-          if (this._literal === "'") {
-            return "''";
-          }
-          return "'" + this._literal + "'";
-        };
-        return CharLiteralPrinterParser2;
-      })();
-      var CompositePrinterParser = (function() {
-        function CompositePrinterParser2(printerParsers, optional) {
-          this._printerParsers = printerParsers;
-          this._optional = optional;
-        }
-        var _proto = CompositePrinterParser2.prototype;
-        _proto.withOptional = function withOptional(optional) {
-          if (optional === this._optional) {
-            return this;
-          }
-          return new CompositePrinterParser2(this._printerParsers, optional);
-        };
-        _proto.print = function print(context, buf) {
-          var length = buf.length();
-          if (this._optional) {
-            context.startOptional();
-          }
-          try {
-            for (var i = 0; i < this._printerParsers.length; i++) {
-              var pp = this._printerParsers[i];
-              if (pp.print(context, buf) === false) {
-                buf.setLength(length);
-                return true;
-              }
-            }
-          } finally {
-            if (this._optional) {
-              context.endOptional();
-            }
-          }
-          return true;
-        };
-        _proto.parse = function parse(context, text, position) {
-          if (this._optional) {
-            context.startOptional();
-            var pos = position;
-            for (var i = 0; i < this._printerParsers.length; i++) {
-              var pp = this._printerParsers[i];
-              pos = pp.parse(context, text, pos);
-              if (pos < 0) {
-                context.endOptional(false);
-                return position;
-              }
-            }
-            context.endOptional(true);
-            return pos;
-          } else {
-            for (var _i = 0; _i < this._printerParsers.length; _i++) {
-              var _pp = this._printerParsers[_i];
-              position = _pp.parse(context, text, position);
-              if (position < 0) {
-                break;
-              }
-            }
-            return position;
-          }
-        };
-        _proto.toString = function toString() {
-          var buf = "";
-          if (this._printerParsers != null) {
-            buf += this._optional ? "[" : "(";
-            for (var i = 0; i < this._printerParsers.length; i++) {
-              var pp = this._printerParsers[i];
-              buf += pp.toString();
-            }
-            buf += this._optional ? "]" : ")";
-          }
-          return buf;
-        };
-        return CompositePrinterParser2;
-      })();
-      var FractionPrinterParser = (function() {
-        function FractionPrinterParser2(field, minWidth, maxWidth, decimalPoint) {
-          requireNonNull(field, "field");
-          if (field.range().isFixed() === false) {
-            throw new IllegalArgumentException("Field must have a fixed set of values: " + field);
-          }
-          if (minWidth < 0 || minWidth > 9) {
-            throw new IllegalArgumentException("Minimum width must be from 0 to 9 inclusive but was " + minWidth);
-          }
-          if (maxWidth < 1 || maxWidth > 9) {
-            throw new IllegalArgumentException("Maximum width must be from 1 to 9 inclusive but was " + maxWidth);
-          }
-          if (maxWidth < minWidth) {
-            throw new IllegalArgumentException("Maximum width must exceed or equal the minimum width but " + maxWidth + " < " + minWidth);
-          }
-          this.field = field;
-          this.minWidth = minWidth;
-          this.maxWidth = maxWidth;
-          this.decimalPoint = decimalPoint;
-        }
-        var _proto = FractionPrinterParser2.prototype;
-        _proto.print = function print(context, buf) {
-          var value = context.getValue(this.field);
-          if (value === null) {
-            return false;
-          }
-          var symbols = context.symbols();
-          if (value === 0) {
-            if (this.minWidth > 0) {
-              if (this.decimalPoint) {
-                buf.append(symbols.decimalSeparator());
-              }
-              for (var i = 0; i < this.minWidth; i++) {
-                buf.append(symbols.zeroDigit());
-              }
-            }
-          } else {
-            var fraction = this.convertToFraction(value, symbols.zeroDigit());
-            var outputScale = Math.min(Math.max(fraction.length, this.minWidth), this.maxWidth);
-            fraction = fraction.substr(0, outputScale);
-            if (fraction * 1 > 0) {
-              while (fraction.length > this.minWidth && fraction[fraction.length - 1] === "0") {
-                fraction = fraction.substr(0, fraction.length - 1);
-              }
-            }
-            var str = fraction;
-            str = symbols.convertNumberToI18N(str);
-            if (this.decimalPoint) {
-              buf.append(symbols.decimalSeparator());
-            }
-            buf.append(str);
-          }
-          return true;
-        };
-        _proto.parse = function parse(context, text, position) {
-          var effectiveMin = context.isStrict() ? this.minWidth : 0;
-          var effectiveMax = context.isStrict() ? this.maxWidth : 9;
-          var length = text.length;
-          if (position === length) {
-            return effectiveMin > 0 ? ~position : position;
-          }
-          if (this.decimalPoint) {
-            if (text[position] !== context.symbols().decimalSeparator()) {
-              return effectiveMin > 0 ? ~position : position;
-            }
-            position++;
-          }
-          var minEndPos = position + effectiveMin;
-          if (minEndPos > length) {
-            return ~position;
-          }
-          var maxEndPos = Math.min(position + effectiveMax, length);
-          var total = 0;
-          var pos = position;
-          while (pos < maxEndPos) {
-            var ch = text.charAt(pos++);
-            var digit = context.symbols().convertToDigit(ch);
-            if (digit < 0) {
-              if (pos < minEndPos) {
-                return ~position;
-              }
-              pos--;
-              break;
-            }
-            total = total * 10 + digit;
-          }
-          var moveLeft = pos - position;
-          var scale = Math.pow(10, moveLeft);
-          var value = this.convertFromFraction(total, scale);
-          return context.setParsedField(this.field, value, position, pos);
-        };
-        _proto.convertToFraction = function convertToFraction(value, zeroDigit) {
-          var range = this.field.range();
-          range.checkValidValue(value, this.field);
-          var _min = range.minimum();
-          var _range = range.maximum() - _min + 1;
-          var _value = value - _min;
-          var _scaled = MathUtil.intDiv(_value * 1e9, _range);
-          var fraction = "" + _scaled;
-          while (fraction.length < 9) {
-            fraction = zeroDigit + fraction;
-          }
-          return fraction;
-        };
-        _proto.convertFromFraction = function convertFromFraction(total, scale) {
-          var range = this.field.range();
-          var _min = range.minimum();
-          var _range = range.maximum() - _min + 1;
-          var _value = MathUtil.intDiv(total * _range, scale);
-          return _value;
-        };
-        _proto.toString = function toString() {
-          var decimal = this.decimalPoint ? ",DecimalPoint" : "";
-          return "Fraction(" + this.field + "," + this.minWidth + "," + this.maxWidth + decimal + ")";
-        };
-        return FractionPrinterParser2;
-      })();
-      var MAX_WIDTH$1 = 15;
-      var EXCEED_POINTS = [0, 10, 100, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9];
-      var NumberPrinterParser = (function() {
-        function NumberPrinterParser2(field, minWidth, maxWidth, signStyle, subsequentWidth) {
-          if (subsequentWidth === void 0) {
-            subsequentWidth = 0;
-          }
-          this._field = field;
-          this._minWidth = minWidth;
-          this._maxWidth = maxWidth;
-          this._signStyle = signStyle;
-          this._subsequentWidth = subsequentWidth;
-        }
-        var _proto = NumberPrinterParser2.prototype;
-        _proto.field = function field() {
-          return this._field;
-        };
-        _proto.minWidth = function minWidth() {
-          return this._minWidth;
-        };
-        _proto.maxWidth = function maxWidth() {
-          return this._maxWidth;
-        };
-        _proto.signStyle = function signStyle() {
-          return this._signStyle;
-        };
-        _proto.withFixedWidth = function withFixedWidth() {
-          if (this._subsequentWidth === -1) {
-            return this;
-          }
-          return new NumberPrinterParser2(this._field, this._minWidth, this._maxWidth, this._signStyle, -1);
-        };
-        _proto.withSubsequentWidth = function withSubsequentWidth(subsequentWidth) {
-          return new NumberPrinterParser2(this._field, this._minWidth, this._maxWidth, this._signStyle, this._subsequentWidth + subsequentWidth);
-        };
-        _proto._isFixedWidth = function _isFixedWidth() {
-          return this._subsequentWidth === -1 || this._subsequentWidth > 0 && this._minWidth === this._maxWidth && this._signStyle === SignStyle.NOT_NEGATIVE;
-        };
-        _proto.print = function print(context, buf) {
-          var contextValue = context.getValue(this._field);
-          if (contextValue == null) {
-            return false;
-          }
-          var value = this._getValue(context, contextValue);
-          var symbols = context.symbols();
-          var str = "" + Math.abs(value);
-          if (str.length > this._maxWidth) {
-            throw new DateTimeException("Field " + this._field + " cannot be printed as the value " + value + " exceeds the maximum print width of " + this._maxWidth);
-          }
-          str = symbols.convertNumberToI18N(str);
-          if (value >= 0) {
-            switch (this._signStyle) {
-              case SignStyle.EXCEEDS_PAD:
-                if (this._minWidth < MAX_WIDTH$1 && value >= EXCEED_POINTS[this._minWidth]) {
-                  buf.append(symbols.positiveSign());
-                }
-                break;
-              case SignStyle.ALWAYS:
-                buf.append(symbols.positiveSign());
-                break;
-            }
-          } else {
-            switch (this._signStyle) {
-              case SignStyle.NORMAL:
-              case SignStyle.EXCEEDS_PAD:
-              case SignStyle.ALWAYS:
-                buf.append(symbols.negativeSign());
-                break;
-              case SignStyle.NOT_NEGATIVE:
-                throw new DateTimeException("Field " + this._field + " cannot be printed as the value " + value + " cannot be negative according to the SignStyle");
-            }
-          }
-          for (var i = 0; i < this._minWidth - str.length; i++) {
-            buf.append(symbols.zeroDigit());
-          }
-          buf.append(str);
-          return true;
-        };
-        _proto.parse = function parse(context, text, position) {
-          var length = text.length;
-          if (position === length) {
-            return ~position;
-          }
-          assert(position >= 0 && position < length);
-          var sign = text.charAt(position);
-          var negative = false;
-          var positive = false;
-          if (sign === context.symbols().positiveSign()) {
-            if (this._signStyle.parse(true, context.isStrict(), this._minWidth === this._maxWidth) === false) {
-              return ~position;
-            }
-            positive = true;
-            position++;
-          } else if (sign === context.symbols().negativeSign()) {
-            if (this._signStyle.parse(false, context.isStrict(), this._minWidth === this._maxWidth) === false) {
-              return ~position;
-            }
-            negative = true;
-            position++;
-          } else {
-            if (this._signStyle === SignStyle.ALWAYS && context.isStrict()) {
-              return ~position;
-            }
-          }
-          var effMinWidth = context.isStrict() || this._isFixedWidth() ? this._minWidth : 1;
-          var minEndPos = position + effMinWidth;
-          if (minEndPos > length) {
-            return ~position;
-          }
-          var effMaxWidth = (context.isStrict() || this._isFixedWidth() ? this._maxWidth : 9) + Math.max(this._subsequentWidth, 0);
-          var total = 0;
-          var pos = position;
-          for (var pass = 0; pass < 2; pass++) {
-            var maxEndPos = Math.min(pos + effMaxWidth, length);
-            while (pos < maxEndPos) {
-              var ch = text.charAt(pos++);
-              var digit = context.symbols().convertToDigit(ch);
-              if (digit < 0) {
-                pos--;
-                if (pos < minEndPos) {
-                  return ~position;
-                }
-                break;
-              }
-              if (pos - position > MAX_WIDTH$1) {
-                throw new ArithmeticException("number text exceeds length");
-              } else {
-                total = total * 10 + digit;
-              }
-            }
-            if (this._subsequentWidth > 0 && pass === 0) {
-              var parseLen = pos - position;
-              effMaxWidth = Math.max(effMinWidth, parseLen - this._subsequentWidth);
-              pos = position;
-              total = 0;
-            } else {
-              break;
-            }
-          }
-          if (negative) {
-            if (total === 0 && context.isStrict()) {
-              return ~(position - 1);
-            }
-            if (total !== 0) {
-              total = -total;
-            }
-          } else if (this._signStyle === SignStyle.EXCEEDS_PAD && context.isStrict()) {
-            var _parseLen = pos - position;
-            if (positive) {
-              if (_parseLen <= this._minWidth) {
-                return ~(position - 1);
-              }
-            } else {
-              if (_parseLen > this._minWidth) {
-                return ~position;
-              }
-            }
-          }
-          return this._setValue(context, total, position, pos);
-        };
-        _proto._getValue = function _getValue(context, value) {
-          return value;
-        };
-        _proto._setValue = function _setValue(context, value, errorPos, successPos) {
-          return context.setParsedField(this._field, value, errorPos, successPos);
-        };
-        _proto.toString = function toString() {
-          if (this._minWidth === 1 && this._maxWidth === MAX_WIDTH$1 && this._signStyle === SignStyle.NORMAL) {
-            return "Value(" + this._field + ")";
-          }
-          if (this._minWidth === this._maxWidth && this._signStyle === SignStyle.NOT_NEGATIVE) {
-            return "Value(" + this._field + "," + this._minWidth + ")";
-          }
-          return "Value(" + this._field + "," + this._minWidth + "," + this._maxWidth + "," + this._signStyle + ")";
-        };
-        return NumberPrinterParser2;
-      })();
-      var ReducedPrinterParser = (function(_NumberPrinterParser) {
-        function ReducedPrinterParser2(field, width, maxWidth, baseValue, baseDate) {
-          var _this;
-          _this = _NumberPrinterParser.call(this, field, width, maxWidth, SignStyle.NOT_NEGATIVE) || this;
-          if (width < 1 || width > 10) {
-            throw new IllegalArgumentException("The width must be from 1 to 10 inclusive but was " + width);
-          }
-          if (maxWidth < 1 || maxWidth > 10) {
-            throw new IllegalArgumentException("The maxWidth must be from 1 to 10 inclusive but was " + maxWidth);
-          }
-          if (maxWidth < width) {
-            throw new IllegalArgumentException("The maxWidth must be greater than the width");
-          }
-          if (baseDate === null) {
-            if (field.range().isValidValue(baseValue) === false) {
-              throw new IllegalArgumentException("The base value must be within the range of the field");
-            }
-            if (baseValue + EXCEED_POINTS[width] > MathUtil.MAX_SAFE_INTEGER) {
-              throw new DateTimeException("Unable to add printer-parser as the range exceeds the capacity of an int");
-            }
-          }
-          _this._baseValue = baseValue;
-          _this._baseDate = baseDate;
-          return _this;
-        }
-        _inheritsLoose(ReducedPrinterParser2, _NumberPrinterParser);
-        var _proto2 = ReducedPrinterParser2.prototype;
-        _proto2._getValue = function _getValue(context, value) {
-          var absValue = Math.abs(value);
-          var baseValue = this._baseValue;
-          if (this._baseDate !== null) {
-            context.temporal();
-            var chrono = IsoChronology.INSTANCE;
-            baseValue = chrono.date(this._baseDate).get(this._field);
-          }
-          if (value >= baseValue && value < baseValue + EXCEED_POINTS[this._minWidth]) {
-            return absValue % EXCEED_POINTS[this._minWidth];
-          }
-          return absValue % EXCEED_POINTS[this._maxWidth];
-        };
-        _proto2._setValue = function _setValue(context, value, errorPos, successPos) {
-          var baseValue = this._baseValue;
-          if (this._baseDate != null) {
-            var chrono = context.getEffectiveChronology();
-            baseValue = chrono.date(this._baseDate).get(this._field);
-          }
-          var parseLen = successPos - errorPos;
-          if (parseLen === this._minWidth && value >= 0) {
-            var range = EXCEED_POINTS[this._minWidth];
-            var lastPart = baseValue % range;
-            var basePart = baseValue - lastPart;
-            if (baseValue > 0) {
-              value = basePart + value;
-            } else {
-              value = basePart - value;
-            }
-            if (value < baseValue) {
-              value += range;
-            }
-          }
-          return context.setParsedField(this._field, value, errorPos, successPos);
-        };
-        _proto2.withFixedWidth = function withFixedWidth() {
-          if (this._subsequentWidth === -1) {
-            return this;
-          }
-          return new ReducedPrinterParser2(this._field, this._minWidth, this._maxWidth, this._baseValue, this._baseDate);
-        };
-        _proto2.withSubsequentWidth = function withSubsequentWidth(subsequentWidth) {
-          return new ReducedPrinterParser2(this._field, this._minWidth, this._maxWidth, this._baseValue, this._baseDate, this._subsequentWidth + subsequentWidth);
-        };
-        _proto2.isFixedWidth = function isFixedWidth(context) {
-          if (context.isStrict() === false) {
-            return false;
-          }
-          return _NumberPrinterParser.prototype.isFixedWidth.call(this, context);
-        };
-        _proto2.toString = function toString() {
-          return "ReducedValue(" + this._field + "," + this._minWidth + "," + this._maxWidth + "," + (this._baseDate != null ? this._baseDate : this._baseValue) + ")";
-        };
-        return ReducedPrinterParser2;
-      })(NumberPrinterParser);
-      var PATTERNS = ["+HH", "+HHmm", "+HH:mm", "+HHMM", "+HH:MM", "+HHMMss", "+HH:MM:ss", "+HHMMSS", "+HH:MM:SS"];
-      var OffsetIdPrinterParser = (function() {
-        function OffsetIdPrinterParser2(noOffsetText, pattern) {
-          requireNonNull(noOffsetText, "noOffsetText");
-          requireNonNull(pattern, "pattern");
-          this.noOffsetText = noOffsetText;
-          this.type = this._checkPattern(pattern);
-        }
-        var _proto = OffsetIdPrinterParser2.prototype;
-        _proto._checkPattern = function _checkPattern(pattern) {
-          for (var i = 0; i < PATTERNS.length; i++) {
-            if (PATTERNS[i] === pattern) {
-              return i;
-            }
-          }
-          throw new IllegalArgumentException("Invalid zone offset pattern: " + pattern);
-        };
-        _proto.print = function print(context, buf) {
-          var offsetSecs = context.getValue(ChronoField.OFFSET_SECONDS);
-          if (offsetSecs == null) {
-            return false;
-          }
-          var totalSecs = MathUtil.safeToInt(offsetSecs);
-          if (totalSecs === 0) {
-            buf.append(this.noOffsetText);
-          } else {
-            var absHours = Math.abs(MathUtil.intMod(MathUtil.intDiv(totalSecs, 3600), 100));
-            var absMinutes = Math.abs(MathUtil.intMod(MathUtil.intDiv(totalSecs, 60), 60));
-            var absSeconds = Math.abs(MathUtil.intMod(totalSecs, 60));
-            var bufPos = buf.length();
-            var output = absHours;
-            buf.append(totalSecs < 0 ? "-" : "+").appendChar(MathUtil.intDiv(absHours, 10) + "0").appendChar(MathUtil.intMod(absHours, 10) + "0");
-            if (this.type >= 3 || this.type >= 1 && absMinutes > 0) {
-              buf.append(this.type % 2 === 0 ? ":" : "").appendChar(MathUtil.intDiv(absMinutes, 10) + "0").appendChar(absMinutes % 10 + "0");
-              output += absMinutes;
-              if (this.type >= 7 || this.type >= 5 && absSeconds > 0) {
-                buf.append(this.type % 2 === 0 ? ":" : "").appendChar(MathUtil.intDiv(absSeconds, 10) + "0").appendChar(absSeconds % 10 + "0");
-                output += absSeconds;
-              }
-            }
-            if (output === 0) {
-              buf.setLength(bufPos);
-              buf.append(this.noOffsetText);
-            }
-          }
-          return true;
-        };
-        _proto.parse = function parse(context, text, position) {
-          var length = text.length;
-          var noOffsetLen = this.noOffsetText.length;
-          if (noOffsetLen === 0) {
-            if (position === length) {
-              return context.setParsedField(ChronoField.OFFSET_SECONDS, 0, position, position);
-            }
-          } else {
-            if (position === length) {
-              return ~position;
-            }
-            if (context.subSequenceEquals(text, position, this.noOffsetText, 0, noOffsetLen)) {
-              return context.setParsedField(ChronoField.OFFSET_SECONDS, 0, position, position + noOffsetLen);
-            }
-          }
-          var sign = text[position];
-          if (sign === "+" || sign === "-") {
-            var negative = sign === "-" ? -1 : 1;
-            var array = [0, 0, 0, 0];
-            array[0] = position + 1;
-            if ((this._parseNumber(array, 1, text, true) || this._parseNumber(array, 2, text, this.type >= 3) || this._parseNumber(array, 3, text, false)) === false) {
-              var offsetSecs = MathUtil.safeZero(negative * (array[1] * 3600 + array[2] * 60 + array[3]));
-              return context.setParsedField(ChronoField.OFFSET_SECONDS, offsetSecs, position, array[0]);
-            }
-          }
-          if (noOffsetLen === 0) {
-            return context.setParsedField(ChronoField.OFFSET_SECONDS, 0, position, position + noOffsetLen);
-          }
-          return ~position;
-        };
-        _proto._parseNumber = function _parseNumber(array, arrayIndex, parseText, required) {
-          if ((this.type + 3) / 2 < arrayIndex) {
-            return false;
-          }
-          var pos = array[0];
-          if (this.type % 2 === 0 && arrayIndex > 1) {
-            if (pos + 1 > parseText.length || parseText[pos] !== ":") {
-              return required;
-            }
-            pos++;
-          }
-          if (pos + 2 > parseText.length) {
-            return required;
-          }
-          var ch1 = parseText[pos++];
-          var ch2 = parseText[pos++];
-          if (ch1 < "0" || ch1 > "9" || ch2 < "0" || ch2 > "9") {
-            return required;
-          }
-          var value = (ch1.charCodeAt(0) - 48) * 10 + (ch2.charCodeAt(0) - 48);
-          if (value < 0 || value > 59) {
-            return required;
-          }
-          array[arrayIndex] = value;
-          array[0] = pos;
-          return false;
-        };
-        _proto.toString = function toString() {
-          var converted = this.noOffsetText.replace("'", "''");
-          return "Offset(" + PATTERNS[this.type] + ",'" + converted + "')";
-        };
-        return OffsetIdPrinterParser2;
-      })();
-      OffsetIdPrinterParser.INSTANCE_ID = new OffsetIdPrinterParser("Z", "+HH:MM:ss");
-      OffsetIdPrinterParser.PATTERNS = PATTERNS;
-      var PadPrinterParserDecorator = (function() {
-        function PadPrinterParserDecorator2(printerParser, padWidth, padChar) {
-          this._printerParser = printerParser;
-          this._padWidth = padWidth;
-          this._padChar = padChar;
-        }
-        var _proto = PadPrinterParserDecorator2.prototype;
-        _proto.print = function print(context, buf) {
-          var preLen = buf.length();
-          if (this._printerParser.print(context, buf) === false) {
-            return false;
-          }
-          var len = buf.length() - preLen;
-          if (len > this._padWidth) {
-            throw new DateTimeException("Cannot print as output of " + len + " characters exceeds pad width of " + this._padWidth);
-          }
-          for (var i = 0; i < this._padWidth - len; i++) {
-            buf.insert(preLen, this._padChar);
-          }
-          return true;
-        };
-        _proto.parse = function parse(context, text, position) {
-          var strict = context.isStrict();
-          var caseSensitive = context.isCaseSensitive();
-          assert(!(position > text.length));
-          assert(position >= 0);
-          if (position === text.length) {
-            return ~position;
-          }
-          var endPos = position + this._padWidth;
-          if (endPos > text.length) {
-            if (strict) {
-              return ~position;
-            }
-            endPos = text.length;
-          }
-          var pos = position;
-          while (pos < endPos && (caseSensitive ? text[pos] === this._padChar : context.charEquals(text[pos], this._padChar))) {
-            pos++;
-          }
-          text = text.substring(0, endPos);
-          var resultPos = this._printerParser.parse(context, text, pos);
-          if (resultPos !== endPos && strict) {
-            return ~(position + pos);
-          }
-          return resultPos;
-        };
-        _proto.toString = function toString() {
-          return "Pad(" + this._printerParser + "," + this._padWidth + (this._padChar === " " ? ")" : ",'" + this._padChar + "')");
-        };
-        return PadPrinterParserDecorator2;
-      })();
-      var SettingsParser = (function(_Enum) {
-        function SettingsParser2() {
-          return _Enum.apply(this, arguments) || this;
-        }
-        _inheritsLoose(SettingsParser2, _Enum);
-        var _proto = SettingsParser2.prototype;
-        _proto.print = function print() {
-          return true;
-        };
-        _proto.parse = function parse(context, text, position) {
-          switch (this) {
-            case SettingsParser2.SENSITIVE:
-              context.setCaseSensitive(true);
-              break;
-            case SettingsParser2.INSENSITIVE:
-              context.setCaseSensitive(false);
-              break;
-            case SettingsParser2.STRICT:
-              context.setStrict(true);
-              break;
-            case SettingsParser2.LENIENT:
-              context.setStrict(false);
-              break;
-          }
-          return position;
-        };
-        _proto.toString = function toString() {
-          switch (this) {
-            case SettingsParser2.SENSITIVE:
-              return "ParseCaseSensitive(true)";
-            case SettingsParser2.INSENSITIVE:
-              return "ParseCaseSensitive(false)";
-            case SettingsParser2.STRICT:
-              return "ParseStrict(true)";
-            case SettingsParser2.LENIENT:
-              return "ParseStrict(false)";
-          }
-        };
-        return SettingsParser2;
-      })(Enum);
-      SettingsParser.SENSITIVE = new SettingsParser("SENSITIVE");
-      SettingsParser.INSENSITIVE = new SettingsParser("INSENSITIVE");
-      SettingsParser.STRICT = new SettingsParser("STRICT");
-      SettingsParser.LENIENT = new SettingsParser("LENIENT");
-      var StringLiteralPrinterParser = (function() {
-        function StringLiteralPrinterParser2(literal) {
-          this._literal = literal;
-        }
-        var _proto = StringLiteralPrinterParser2.prototype;
-        _proto.print = function print(context, buf) {
-          buf.append(this._literal);
-          return true;
-        };
-        _proto.parse = function parse(context, text, position) {
-          var length = text.length;
-          assert(!(position > length || position < 0));
-          if (context.subSequenceEquals(text, position, this._literal, 0, this._literal.length) === false) {
-            return ~position;
-          }
-          return position + this._literal.length;
-        };
-        _proto.toString = function toString() {
-          var converted = this._literal.replace("'", "''");
-          return "'" + converted + "'";
-        };
-        return StringLiteralPrinterParser2;
-      })();
-      var ZoneRulesProvider = (function() {
-        function ZoneRulesProvider2() {
-        }
-        ZoneRulesProvider2.getRules = function getRules(_zoneId) {
-          throw new DateTimeException("@js-joda/timezone not imported");
-        };
-        ZoneRulesProvider2.getAvailableZoneIds = function getAvailableZoneIds() {
-          return [];
-        };
-        return ZoneRulesProvider2;
-      })();
-      var ZoneRegion = (function(_ZoneId) {
-        function ZoneRegion2(id, rules) {
-          var _this;
-          _this = _ZoneId.call(this) || this;
-          _this._id = id;
-          _this._rules = rules;
-          return _this;
-        }
-        _inheritsLoose(ZoneRegion2, _ZoneId);
-        ZoneRegion2.ofId = function ofId(zoneId) {
-          var rules = ZoneRulesProvider.getRules(zoneId);
-          return new ZoneRegion2(zoneId, rules);
-        };
-        var _proto = ZoneRegion2.prototype;
-        _proto.id = function id() {
-          return this._id;
-        };
-        _proto.rules = function rules() {
-          return this._rules;
-        };
-        return ZoneRegion2;
-      })(ZoneId);
-      var ZoneIdPrinterParser = (function() {
-        function ZoneIdPrinterParser2(query, description) {
-          this.query = query;
-          this.description = description;
-        }
-        var _proto = ZoneIdPrinterParser2.prototype;
-        _proto.print = function print(context, buf) {
-          var zone = context.getValueQuery(this.query);
-          if (zone == null) {
-            return false;
-          }
-          buf.append(zone.id());
-          return true;
-        };
-        _proto.parse = function parse(context, text, position) {
-          var length = text.length;
-          if (position > length) {
-            return ~position;
-          }
-          if (position === length) {
-            return ~position;
-          }
-          var region = this._parseRegion(text, position);
-          var fixedEndPos = this._parseFixedId(context, text, position);
-          var fixedLength = fixedEndPos >= 0 ? fixedEndPos - position : 0;
-          if (region != null && region.parseLength > fixedLength) {
-            context.setParsedZone(ZoneRegion.ofId(region.parsedZoneId));
-            return position + region.parseLength;
-          }
-          return fixedEndPos;
-        };
-        _proto._parseRegion = function _parseRegion(text, position) {
-          var availableZoneIds = ZoneRulesProvider.getAvailableZoneIds();
-          if (availableZoneIds.length === 0) {
-            return null;
-          }
-          if (zoneIdTree.size !== availableZoneIds.length) {
-            zoneIdTree = ZoneIdTree.createTreeMap(availableZoneIds);
-          }
-          var maxParseLength = text.length - position;
-          var treeMap = zoneIdTree.treeMap;
-          var parsedZoneId = null;
-          var parseLength = 0;
-          while (treeMap != null) {
-            var parsedSubZoneId = text.substr(position, Math.min(treeMap.length, maxParseLength));
-            treeMap = treeMap.get(parsedSubZoneId);
-            if (treeMap != null && treeMap.isLeaf) {
-              parsedZoneId = parsedSubZoneId;
-              parseLength = treeMap.length;
-            }
-          }
-          if (parsedZoneId == null) {
-            return null;
-          }
-          return {
-            parsedZoneId,
-            parseLength
-          };
-        };
-        _proto._parseFixedId = function _parseFixedId(context, text, position) {
-          var length = text.length;
-          var nextChar = text.charAt(position);
-          if (nextChar === "+" || nextChar === "-") {
-            var newContext = context.copy();
-            var endPos = OffsetIdPrinterParser.INSTANCE_ID.parse(newContext, text, position);
-            if (endPos < 0) {
-              return endPos;
-            }
-            var offset = newContext.getParsed(ChronoField.OFFSET_SECONDS);
-            context.setParsedZone(ZoneOffset.ofTotalSeconds(offset));
-            return endPos;
-          } else if (length >= position + 2) {
-            var nextNextChar = text.charAt(position + 1);
-            if (context.charEquals(nextChar, "U") && context.charEquals(nextNextChar, "T")) {
-              if (length >= position + 3 && context.charEquals(text.charAt(position + 2), "C")) {
-                return this._parsePrefixedOffset(context, text, position, position + 3);
-              }
-              return this._parsePrefixedOffset(context, text, position, position + 2);
-            } else if (context.charEquals(nextChar, "G") && length >= position + 3 && context.charEquals(nextNextChar, "M") && context.charEquals(text.charAt(position + 2), "T")) {
-              return this._parsePrefixedOffset(context, text, position, position + 3);
-            }
-          }
-          if (text.substr(position, 6) === "SYSTEM") {
-            context.setParsedZone(ZoneId.systemDefault());
-            return position + 6;
-          }
-          if (context.charEquals(nextChar, "Z")) {
-            context.setParsedZone(ZoneOffset.UTC);
-            return position + 1;
-          }
-          return ~position;
-        };
-        _proto._parsePrefixedOffset = function _parsePrefixedOffset(context, text, prefixPos, position) {
-          var prefix = text.substring(prefixPos, position).toUpperCase();
-          var newContext = context.copy();
-          if (position < text.length && context.charEquals(text.charAt(position), "Z")) {
-            context.setParsedZone(ZoneId.ofOffset(prefix, ZoneOffset.UTC));
-            return position;
-          }
-          var endPos = OffsetIdPrinterParser.INSTANCE_ID.parse(newContext, text, position);
-          if (endPos < 0) {
-            context.setParsedZone(ZoneId.ofOffset(prefix, ZoneOffset.UTC));
-            return position;
-          }
-          var offsetSecs = newContext.getParsed(ChronoField.OFFSET_SECONDS);
-          var offset = ZoneOffset.ofTotalSeconds(offsetSecs);
-          context.setParsedZone(ZoneId.ofOffset(prefix, offset));
-          return endPos;
-        };
-        _proto.toString = function toString() {
-          return this.description;
-        };
-        return ZoneIdPrinterParser2;
-      })();
-      var ZoneIdTree = (function() {
-        function ZoneIdTree2(size, treeMap) {
-          this.size = size;
-          this.treeMap = treeMap;
-        }
-        ZoneIdTree2.createTreeMap = function createTreeMap(availableZoneIds) {
-          var sortedZoneIds = availableZoneIds.sort(function(a, b) {
-            return a.length - b.length;
-          });
-          var treeMap = new ZoneIdTreeMap(sortedZoneIds[0].length, false);
-          for (var i = 0; i < sortedZoneIds.length; i++) {
-            treeMap.add(sortedZoneIds[i]);
-          }
-          return new ZoneIdTree2(sortedZoneIds.length, treeMap);
-        };
-        return ZoneIdTree2;
-      })();
-      var ZoneIdTreeMap = (function() {
-        function ZoneIdTreeMap2(length, isLeaf) {
-          if (length === void 0) {
-            length = 0;
-          }
-          if (isLeaf === void 0) {
-            isLeaf = false;
-          }
-          this.length = length;
-          this.isLeaf = isLeaf;
-          this._treeMap = {};
-        }
-        var _proto2 = ZoneIdTreeMap2.prototype;
-        _proto2.add = function add(zoneId) {
-          var idLength = zoneId.length;
-          if (idLength === this.length) {
-            this._treeMap[zoneId] = new ZoneIdTreeMap2(idLength, true);
-          } else if (idLength > this.length) {
-            var subZoneId = zoneId.substr(0, this.length);
-            var subTreeMap = this._treeMap[subZoneId];
-            if (subTreeMap == null) {
-              subTreeMap = new ZoneIdTreeMap2(idLength, false);
-              this._treeMap[subZoneId] = subTreeMap;
-            }
-            subTreeMap.add(zoneId);
-          }
-        };
-        _proto2.get = function get(zoneId) {
-          return this._treeMap[zoneId];
-        };
-        return ZoneIdTreeMap2;
-      })();
-      var zoneIdTree = new ZoneIdTree([]);
-      var MAX_WIDTH = 15;
-      var DateTimeFormatterBuilder = (function() {
-        function DateTimeFormatterBuilder2() {
-          this._active = this;
-          this._parent = null;
-          this._printerParsers = [];
-          this._optional = false;
-          this._padNextWidth = 0;
-          this._padNextChar = null;
-          this._valueParserIndex = -1;
-        }
-        DateTimeFormatterBuilder2._of = function _of(parent, optional) {
-          requireNonNull(parent, "parent");
-          requireNonNull(optional, "optional");
-          var dtFormatterBuilder = new DateTimeFormatterBuilder2();
-          dtFormatterBuilder._parent = parent;
-          dtFormatterBuilder._optional = optional;
-          return dtFormatterBuilder;
-        };
-        var _proto = DateTimeFormatterBuilder2.prototype;
-        _proto.parseCaseSensitive = function parseCaseSensitive() {
-          this._appendInternalPrinterParser(SettingsParser.SENSITIVE);
-          return this;
-        };
-        _proto.parseCaseInsensitive = function parseCaseInsensitive() {
-          this._appendInternalPrinterParser(SettingsParser.INSENSITIVE);
-          return this;
-        };
-        _proto.parseStrict = function parseStrict() {
-          this._appendInternalPrinterParser(SettingsParser.STRICT);
-          return this;
-        };
-        _proto.parseLenient = function parseLenient() {
-          this._appendInternalPrinterParser(SettingsParser.LENIENT);
-          return this;
-        };
-        _proto.parseDefaulting = function parseDefaulting(field, value) {
-          requireNonNull(field);
-          this._appendInternal(new DefaultingParser(field, value));
-          return this;
-        };
-        _proto.appendValue = function appendValue() {
-          if (arguments.length === 1) {
-            return this._appendValue1.apply(this, arguments);
-          } else if (arguments.length === 2) {
-            return this._appendValue2.apply(this, arguments);
-          } else {
-            return this._appendValue4.apply(this, arguments);
-          }
-        };
-        _proto._appendValue1 = function _appendValue1(field) {
-          requireNonNull(field);
-          this._appendValuePrinterParser(new NumberPrinterParser(field, 1, MAX_WIDTH, SignStyle.NORMAL));
-          return this;
-        };
-        _proto._appendValue2 = function _appendValue2(field, width) {
-          requireNonNull(field);
-          if (width < 1 || width > MAX_WIDTH) {
-            throw new IllegalArgumentException("The width must be from 1 to " + MAX_WIDTH + " inclusive but was " + width);
-          }
-          var pp = new NumberPrinterParser(field, width, width, SignStyle.NOT_NEGATIVE);
-          this._appendValuePrinterParser(pp);
-          return this;
-        };
-        _proto._appendValue4 = function _appendValue4(field, minWidth, maxWidth, signStyle) {
-          requireNonNull(field);
-          requireNonNull(signStyle);
-          if (minWidth === maxWidth && signStyle === SignStyle.NOT_NEGATIVE) {
-            return this._appendValue2(field, maxWidth);
-          }
-          if (minWidth < 1 || minWidth > MAX_WIDTH) {
-            throw new IllegalArgumentException("The minimum width must be from 1 to " + MAX_WIDTH + " inclusive but was " + minWidth);
-          }
-          if (maxWidth < 1 || maxWidth > MAX_WIDTH) {
-            throw new IllegalArgumentException("The minimum width must be from 1 to " + MAX_WIDTH + " inclusive but was " + maxWidth);
-          }
-          if (maxWidth < minWidth) {
-            throw new IllegalArgumentException("The maximum width must exceed or equal the minimum width but " + maxWidth + " < " + minWidth);
-          }
-          var pp = new NumberPrinterParser(field, minWidth, maxWidth, signStyle);
-          this._appendValuePrinterParser(pp);
-          return this;
-        };
-        _proto.appendValueReduced = function appendValueReduced() {
-          if (arguments.length === 4 && arguments[3] instanceof ChronoLocalDate) {
-            return this._appendValueReducedFieldWidthMaxWidthBaseDate.apply(this, arguments);
-          } else {
-            return this._appendValueReducedFieldWidthMaxWidthBaseValue.apply(this, arguments);
-          }
-        };
-        _proto._appendValueReducedFieldWidthMaxWidthBaseValue = function _appendValueReducedFieldWidthMaxWidthBaseValue(field, width, maxWidth, baseValue) {
-          requireNonNull(field, "field");
-          var pp = new ReducedPrinterParser(field, width, maxWidth, baseValue, null);
-          this._appendValuePrinterParser(pp);
-          return this;
-        };
-        _proto._appendValueReducedFieldWidthMaxWidthBaseDate = function _appendValueReducedFieldWidthMaxWidthBaseDate(field, width, maxWidth, baseDate) {
-          requireNonNull(field, "field");
-          requireNonNull(baseDate, "baseDate");
-          requireInstance(baseDate, ChronoLocalDate, "baseDate");
-          var pp = new ReducedPrinterParser(field, width, maxWidth, 0, baseDate);
-          this._appendValuePrinterParser(pp);
-          return this;
-        };
-        _proto._appendValuePrinterParser = function _appendValuePrinterParser(pp) {
-          assert(pp != null);
-          if (this._active._valueParserIndex >= 0 && this._active._printerParsers[this._active._valueParserIndex] instanceof NumberPrinterParser) {
-            var activeValueParser = this._active._valueParserIndex;
-            var basePP = this._active._printerParsers[activeValueParser];
-            if (pp.minWidth() === pp.maxWidth() && pp.signStyle() === SignStyle.NOT_NEGATIVE) {
-              basePP = basePP.withSubsequentWidth(pp.maxWidth());
-              this._appendInternal(pp.withFixedWidth());
-              this._active._valueParserIndex = activeValueParser;
-            } else {
-              basePP = basePP.withFixedWidth();
-              this._active._valueParserIndex = this._appendInternal(pp);
-            }
-            this._active._printerParsers[activeValueParser] = basePP;
-          } else {
-            this._active._valueParserIndex = this._appendInternal(pp);
-          }
-          return this;
-        };
-        _proto.appendFraction = function appendFraction(field, minWidth, maxWidth, decimalPoint) {
-          this._appendInternal(new FractionPrinterParser(field, minWidth, maxWidth, decimalPoint));
-          return this;
-        };
-        _proto.appendInstant = function appendInstant(fractionalDigits) {
-          if (fractionalDigits === void 0) {
-            fractionalDigits = -2;
-          }
-          if (fractionalDigits < -2 || fractionalDigits > 9) {
-            throw new IllegalArgumentException("Invalid fractional digits: " + fractionalDigits);
-          }
-          this._appendInternal(new InstantPrinterParser(fractionalDigits));
-          return this;
-        };
-        _proto.appendOffsetId = function appendOffsetId() {
-          this._appendInternal(OffsetIdPrinterParser.INSTANCE_ID);
-          return this;
-        };
-        _proto.appendOffset = function appendOffset(pattern, noOffsetText) {
-          this._appendInternalPrinterParser(new OffsetIdPrinterParser(noOffsetText, pattern));
-          return this;
-        };
-        _proto.appendZoneId = function appendZoneId() {
-          this._appendInternal(new ZoneIdPrinterParser(TemporalQueries.zoneId(), "ZoneId()"));
-          return this;
-        };
-        _proto.appendPattern = function appendPattern(pattern) {
-          requireNonNull(pattern, "pattern");
-          this._parsePattern(pattern);
-          return this;
-        };
-        _proto.appendZoneText = function appendZoneText() {
-          throw new IllegalArgumentException("Pattern using (localized) text not implemented, use @js-joda/locale plugin!");
-        };
-        _proto.appendText = function appendText() {
-          throw new IllegalArgumentException("Pattern using (localized) text not implemented, use @js-joda/locale plugin!");
-        };
-        _proto.appendLocalizedOffset = function appendLocalizedOffset() {
-          throw new IllegalArgumentException("Pattern using (localized) text not implemented, use @js-joda/locale plugin!");
-        };
-        _proto.appendWeekField = function appendWeekField() {
-          throw new IllegalArgumentException("Pattern using (localized) text not implemented, use @js-joda/locale plugin!");
-        };
-        _proto._parsePattern = function _parsePattern(pattern) {
-          var FIELD_MAP = {
-            "G": ChronoField.ERA,
-            "y": ChronoField.YEAR_OF_ERA,
-            "u": ChronoField.YEAR,
-            "Q": IsoFields.QUARTER_OF_YEAR,
-            "q": IsoFields.QUARTER_OF_YEAR,
-            "M": ChronoField.MONTH_OF_YEAR,
-            "L": ChronoField.MONTH_OF_YEAR,
-            "D": ChronoField.DAY_OF_YEAR,
-            "d": ChronoField.DAY_OF_MONTH,
-            "F": ChronoField.ALIGNED_DAY_OF_WEEK_IN_MONTH,
-            "E": ChronoField.DAY_OF_WEEK,
-            "c": ChronoField.DAY_OF_WEEK,
-            "e": ChronoField.DAY_OF_WEEK,
-            "a": ChronoField.AMPM_OF_DAY,
-            "H": ChronoField.HOUR_OF_DAY,
-            "k": ChronoField.CLOCK_HOUR_OF_DAY,
-            "K": ChronoField.HOUR_OF_AMPM,
-            "h": ChronoField.CLOCK_HOUR_OF_AMPM,
-            "m": ChronoField.MINUTE_OF_HOUR,
-            "s": ChronoField.SECOND_OF_MINUTE,
-            "S": ChronoField.NANO_OF_SECOND,
-            "A": ChronoField.MILLI_OF_DAY,
-            "n": ChronoField.NANO_OF_SECOND,
-            "N": ChronoField.NANO_OF_DAY
-          };
-          for (var pos = 0; pos < pattern.length; pos++) {
-            var cur = pattern.charAt(pos);
-            if (cur >= "A" && cur <= "Z" || cur >= "a" && cur <= "z") {
-              var start = pos++;
-              for (; pos < pattern.length && pattern.charAt(pos) === cur; pos++) ;
-              var count = pos - start;
-              if (cur === "p") {
-                var pad = 0;
-                if (pos < pattern.length) {
-                  cur = pattern.charAt(pos);
-                  if (cur >= "A" && cur <= "Z" || cur >= "a" && cur <= "z") {
-                    pad = count;
-                    start = pos++;
-                    for (; pos < pattern.length && pattern.charAt(pos) === cur; pos++) ;
-                    count = pos - start;
-                  }
-                }
-                if (pad === 0) {
-                  throw new IllegalArgumentException("Pad letter 'p' must be followed by valid pad pattern: " + pattern);
-                }
-                this.padNext(pad);
-              }
-              var field = FIELD_MAP[cur];
-              if (field != null) {
-                this._parseField(cur, count, field);
-              } else if (cur === "z") {
-                if (count > 4) {
-                  throw new IllegalArgumentException("Too many pattern letters: " + cur);
-                } else if (count === 4) {
-                  this.appendZoneText(TextStyle.FULL);
-                } else {
-                  this.appendZoneText(TextStyle.SHORT);
-                }
-              } else if (cur === "V") {
-                if (count !== 2) {
-                  throw new IllegalArgumentException("Pattern letter count must be 2: " + cur);
-                }
-                this.appendZoneId();
-              } else if (cur === "Z") {
-                if (count < 4) {
-                  this.appendOffset("+HHMM", "+0000");
-                } else if (count === 4) {
-                  this.appendLocalizedOffset(TextStyle.FULL);
-                } else if (count === 5) {
-                  this.appendOffset("+HH:MM:ss", "Z");
-                } else {
-                  throw new IllegalArgumentException("Too many pattern letters: " + cur);
-                }
-              } else if (cur === "O") {
-                if (count === 1) {
-                  this.appendLocalizedOffset(TextStyle.SHORT);
-                } else if (count === 4) {
-                  this.appendLocalizedOffset(TextStyle.FULL);
-                } else {
-                  throw new IllegalArgumentException("Pattern letter count must be 1 or 4: " + cur);
-                }
-              } else if (cur === "X") {
-                if (count > 5) {
-                  throw new IllegalArgumentException("Too many pattern letters: " + cur);
-                }
-                this.appendOffset(OffsetIdPrinterParser.PATTERNS[count + (count === 1 ? 0 : 1)], "Z");
-              } else if (cur === "x") {
-                if (count > 5) {
-                  throw new IllegalArgumentException("Too many pattern letters: " + cur);
-                }
-                var zero = count === 1 ? "+00" : count % 2 === 0 ? "+0000" : "+00:00";
-                this.appendOffset(OffsetIdPrinterParser.PATTERNS[count + (count === 1 ? 0 : 1)], zero);
-              } else if (cur === "W") {
-                if (count > 1) {
-                  throw new IllegalArgumentException("Too many pattern letters: " + cur);
-                }
-                this.appendWeekField("W", count);
-              } else if (cur === "w") {
-                if (count > 2) {
-                  throw new IllegalArgumentException("Too many pattern letters: " + cur);
-                }
-                this.appendWeekField("w", count);
-              } else if (cur === "Y") {
-                this.appendWeekField("Y", count);
-              } else {
-                throw new IllegalArgumentException("Unknown pattern letter: " + cur);
-              }
-              pos--;
-            } else if (cur === "'") {
-              var _start = pos++;
-              for (; pos < pattern.length; pos++) {
-                if (pattern.charAt(pos) === "'") {
-                  if (pos + 1 < pattern.length && pattern.charAt(pos + 1) === "'") {
-                    pos++;
-                  } else {
-                    break;
-                  }
-                }
-              }
-              if (pos >= pattern.length) {
-                throw new IllegalArgumentException("Pattern ends with an incomplete string literal: " + pattern);
-              }
-              var str = pattern.substring(_start + 1, pos);
-              if (str.length === 0) {
-                this.appendLiteral("'");
-              } else {
-                this.appendLiteral(str.replace("''", "'"));
-              }
-            } else if (cur === "[") {
-              this.optionalStart();
-            } else if (cur === "]") {
-              if (this._active._parent === null) {
-                throw new IllegalArgumentException("Pattern invalid as it contains ] without previous [");
-              }
-              this.optionalEnd();
-            } else if (cur === "{" || cur === "}" || cur === "#") {
-              throw new IllegalArgumentException("Pattern includes reserved character: '" + cur + "'");
-            } else {
-              this.appendLiteral(cur);
-            }
-          }
-        };
-        _proto._parseField = function _parseField(cur, count, field) {
-          switch (cur) {
-            case "u":
-            case "y":
-              if (count === 2) {
-                this.appendValueReduced(field, 2, 2, ReducedPrinterParser.BASE_DATE);
-              } else if (count < 4) {
-                this.appendValue(field, count, MAX_WIDTH, SignStyle.NORMAL);
-              } else {
-                this.appendValue(field, count, MAX_WIDTH, SignStyle.EXCEEDS_PAD);
-              }
-              break;
-            case "M":
-            case "Q":
-              switch (count) {
-                case 1:
-                  this.appendValue(field);
-                  break;
-                case 2:
-                  this.appendValue(field, 2);
-                  break;
-                case 3:
-                  this.appendText(field, TextStyle.SHORT);
-                  break;
-                case 4:
-                  this.appendText(field, TextStyle.FULL);
-                  break;
-                case 5:
-                  this.appendText(field, TextStyle.NARROW);
-                  break;
-                default:
-                  throw new IllegalArgumentException("Too many pattern letters: " + cur);
-              }
-              break;
-            case "L":
-            case "q":
-              switch (count) {
-                case 1:
-                  this.appendValue(field);
-                  break;
-                case 2:
-                  this.appendValue(field, 2);
-                  break;
-                case 3:
-                  this.appendText(field, TextStyle.SHORT_STANDALONE);
-                  break;
-                case 4:
-                  this.appendText(field, TextStyle.FULL_STANDALONE);
-                  break;
-                case 5:
-                  this.appendText(field, TextStyle.NARROW_STANDALONE);
-                  break;
-                default:
-                  throw new IllegalArgumentException("Too many pattern letters: " + cur);
-              }
-              break;
-            case "e":
-              switch (count) {
-                case 1:
-                case 2:
-                  this.appendWeekField("e", count);
-                  break;
-                case 3:
-                  this.appendText(field, TextStyle.SHORT);
-                  break;
-                case 4:
-                  this.appendText(field, TextStyle.FULL);
-                  break;
-                case 5:
-                  this.appendText(field, TextStyle.NARROW);
-                  break;
-                default:
-                  throw new IllegalArgumentException("Too many pattern letters: " + cur);
-              }
-              break;
-            case "c":
-              switch (count) {
-                case 1:
-                  this.appendWeekField("c", count);
-                  break;
-                case 2:
-                  throw new IllegalArgumentException("Invalid number of pattern letters: " + cur);
-                case 3:
-                  this.appendText(field, TextStyle.SHORT_STANDALONE);
-                  break;
-                case 4:
-                  this.appendText(field, TextStyle.FULL_STANDALONE);
-                  break;
-                case 5:
-                  this.appendText(field, TextStyle.NARROW_STANDALONE);
-                  break;
-                default:
-                  throw new IllegalArgumentException("Too many pattern letters: " + cur);
-              }
-              break;
-            case "a":
-              if (count === 1) {
-                this.appendText(field, TextStyle.SHORT);
-              } else {
-                throw new IllegalArgumentException("Too many pattern letters: " + cur);
-              }
-              break;
-            case "E":
-            case "G":
-              switch (count) {
-                case 1:
-                case 2:
-                case 3:
-                  this.appendText(field, TextStyle.SHORT);
-                  break;
-                case 4:
-                  this.appendText(field, TextStyle.FULL);
-                  break;
-                case 5:
-                  this.appendText(field, TextStyle.NARROW);
-                  break;
-                default:
-                  throw new IllegalArgumentException("Too many pattern letters: " + cur);
-              }
-              break;
-            case "S":
-              this.appendFraction(ChronoField.NANO_OF_SECOND, count, count, false);
-              break;
-            case "F":
-              if (count === 1) {
-                this.appendValue(field);
-              } else {
-                throw new IllegalArgumentException("Too many pattern letters: " + cur);
-              }
-              break;
-            case "d":
-            case "h":
-            case "H":
-            case "k":
-            case "K":
-            case "m":
-            case "s":
-              if (count === 1) {
-                this.appendValue(field);
-              } else if (count === 2) {
-                this.appendValue(field, count);
-              } else {
-                throw new IllegalArgumentException("Too many pattern letters: " + cur);
-              }
-              break;
-            case "D":
-              if (count === 1) {
-                this.appendValue(field);
-              } else if (count <= 3) {
-                this.appendValue(field, count);
-              } else {
-                throw new IllegalArgumentException("Too many pattern letters: " + cur);
-              }
-              break;
-            default:
-              if (count === 1) {
-                this.appendValue(field);
-              } else {
-                this.appendValue(field, count);
-              }
-              break;
-          }
-        };
-        _proto.padNext = function padNext() {
-          if (arguments.length === 1) {
-            return this._padNext1.apply(this, arguments);
-          } else {
-            return this._padNext2.apply(this, arguments);
-          }
-        };
-        _proto._padNext1 = function _padNext1(padWidth) {
-          return this._padNext2(padWidth, " ");
-        };
-        _proto._padNext2 = function _padNext2(padWidth, padChar) {
-          if (padWidth < 1) {
-            throw new IllegalArgumentException("The pad width must be at least one but was " + padWidth);
-          }
-          this._active._padNextWidth = padWidth;
-          this._active._padNextChar = padChar;
-          this._active._valueParserIndex = -1;
-          return this;
-        };
-        _proto.optionalStart = function optionalStart() {
-          this._active._valueParserIndex = -1;
-          this._active = DateTimeFormatterBuilder2._of(this._active, true);
-          return this;
-        };
-        _proto.optionalEnd = function optionalEnd() {
-          if (this._active._parent == null) {
-            throw new IllegalStateException("Cannot call optionalEnd() as there was no previous call to optionalStart()");
-          }
-          if (this._active._printerParsers.length > 0) {
-            var cpp = new CompositePrinterParser(this._active._printerParsers, this._active._optional);
-            this._active = this._active._parent;
-            this._appendInternal(cpp);
-          } else {
-            this._active = this._active._parent;
-          }
-          return this;
-        };
-        _proto._appendInternal = function _appendInternal(pp) {
-          assert(pp != null);
-          if (this._active._padNextWidth > 0) {
-            if (pp != null) {
-              pp = new PadPrinterParserDecorator(pp, this._active._padNextWidth, this._active._padNextChar);
-            }
-            this._active._padNextWidth = 0;
-            this._active._padNextChar = 0;
-          }
-          this._active._printerParsers.push(pp);
-          this._active._valueParserIndex = -1;
-          return this._active._printerParsers.length - 1;
-        };
-        _proto.appendLiteral = function appendLiteral(literal) {
-          assert(literal != null);
-          if (literal.length > 0) {
-            if (literal.length === 1) {
-              this._appendInternalPrinterParser(new CharLiteralPrinterParser(literal.charAt(0)));
-            } else {
-              this._appendInternalPrinterParser(new StringLiteralPrinterParser(literal));
-            }
-          }
-          return this;
-        };
-        _proto._appendInternalPrinterParser = function _appendInternalPrinterParser(pp) {
-          assert(pp != null);
-          if (this._active._padNextWidth > 0) {
-            if (pp != null) {
-              pp = new PadPrinterParserDecorator(pp, this._active._padNextWidth, this._active._padNextChar);
-            }
-            this._active._padNextWidth = 0;
-            this._active._padNextChar = 0;
-          }
-          this._active._printerParsers.push(pp);
-          this._active._valueParserIndex = -1;
-          return this._active._printerParsers.length - 1;
-        };
-        _proto.append = function append(formatter) {
-          requireNonNull(formatter, "formatter");
-          this._appendInternal(formatter._toPrinterParser(false));
-          return this;
-        };
-        _proto.toFormatter = function toFormatter(resolverStyle) {
-          if (resolverStyle === void 0) {
-            resolverStyle = ResolverStyle.SMART;
-          }
-          while (this._active._parent != null) {
-            this.optionalEnd();
-          }
-          var pp = new CompositePrinterParser(this._printerParsers, false);
-          return new DateTimeFormatter(pp, null, DecimalStyle.STANDARD, resolverStyle, null, null, null);
-        };
-        return DateTimeFormatterBuilder2;
-      })();
-      var SECONDS_PER_10000_YEARS = 146097 * 25 * 86400;
-      var SECONDS_0000_TO_1970 = (146097 * 5 - (30 * 365 + 7)) * 86400;
-      var InstantPrinterParser = (function() {
-        function InstantPrinterParser2(fractionalDigits) {
-          this.fractionalDigits = fractionalDigits;
-        }
-        var _proto2 = InstantPrinterParser2.prototype;
-        _proto2.print = function print(context, buf) {
-          var inSecs = context.getValue(ChronoField.INSTANT_SECONDS);
-          var inNanos = 0;
-          if (context.temporal().isSupported(ChronoField.NANO_OF_SECOND)) {
-            inNanos = context.temporal().getLong(ChronoField.NANO_OF_SECOND);
-          }
-          if (inSecs == null) {
-            return false;
-          }
-          var inSec = inSecs;
-          var inNano = ChronoField.NANO_OF_SECOND.checkValidIntValue(inNanos);
-          if (inSec >= -SECONDS_0000_TO_1970) {
-            var zeroSecs = inSec - SECONDS_PER_10000_YEARS + SECONDS_0000_TO_1970;
-            var hi = MathUtil.floorDiv(zeroSecs, SECONDS_PER_10000_YEARS) + 1;
-            var lo = MathUtil.floorMod(zeroSecs, SECONDS_PER_10000_YEARS);
-            var ldt = LocalDateTime.ofEpochSecond(lo - SECONDS_0000_TO_1970, 0, ZoneOffset.UTC);
-            if (hi > 0) {
-              buf.append("+").append(hi);
-            }
-            buf.append(ldt.toString());
-            if (ldt.second() === 0) {
-              buf.append(":00");
-            }
-          } else {
-            var _zeroSecs = inSec + SECONDS_0000_TO_1970;
-            var _hi = MathUtil.intDiv(_zeroSecs, SECONDS_PER_10000_YEARS);
-            var _lo = MathUtil.intMod(_zeroSecs, SECONDS_PER_10000_YEARS);
-            var _ldt = LocalDateTime.ofEpochSecond(_lo - SECONDS_0000_TO_1970, 0, ZoneOffset.UTC);
-            var pos = buf.length();
-            buf.append(_ldt.toString());
-            if (_ldt.second() === 0) {
-              buf.append(":00");
-            }
-            if (_hi < 0) {
-              if (_ldt.year() === -1e4) {
-                buf.replace(pos, pos + 2, "" + (_hi - 1));
-              } else if (_lo === 0) {
-                buf.insert(pos, _hi);
-              } else {
-                buf.insert(pos + 1, Math.abs(_hi));
-              }
-            }
-          }
-          if (this.fractionalDigits === -2) {
-            if (inNano !== 0) {
-              buf.append(".");
-              if (MathUtil.intMod(inNano, 1e6) === 0) {
-                buf.append(("" + (MathUtil.intDiv(inNano, 1e6) + 1e3)).substring(1));
-              } else if (MathUtil.intMod(inNano, 1e3) === 0) {
-                buf.append(("" + (MathUtil.intDiv(inNano, 1e3) + 1e6)).substring(1));
-              } else {
-                buf.append(("" + (inNano + 1e9)).substring(1));
-              }
-            }
-          } else if (this.fractionalDigits > 0 || this.fractionalDigits === -1 && inNano > 0) {
-            buf.append(".");
-            var div = 1e8;
-            for (var i = 0; this.fractionalDigits === -1 && inNano > 0 || i < this.fractionalDigits; i++) {
-              var digit = MathUtil.intDiv(inNano, div);
-              buf.append(digit);
-              inNano = inNano - digit * div;
-              div = MathUtil.intDiv(div, 10);
-            }
-          }
-          buf.append("Z");
-          return true;
-        };
-        _proto2.parse = function parse(context, text, position) {
-          var newContext = context.copy();
-          var minDigits = this.fractionalDigits < 0 ? 0 : this.fractionalDigits;
-          var maxDigits = this.fractionalDigits < 0 ? 9 : this.fractionalDigits;
-          var parser = new DateTimeFormatterBuilder().append(DateTimeFormatter.ISO_LOCAL_DATE).appendLiteral("T").appendValue(ChronoField.HOUR_OF_DAY, 2).appendLiteral(":").appendValue(ChronoField.MINUTE_OF_HOUR, 2).appendLiteral(":").appendValue(ChronoField.SECOND_OF_MINUTE, 2).appendFraction(ChronoField.NANO_OF_SECOND, minDigits, maxDigits, true).appendOffsetId().toFormatter()._toPrinterParser(false);
-          var pos = parser.parse(newContext, text, position);
-          if (pos < 0) {
-            return pos;
-          }
-          var yearParsed = newContext.getParsed(ChronoField.YEAR);
-          var month = newContext.getParsed(ChronoField.MONTH_OF_YEAR);
-          var day = newContext.getParsed(ChronoField.DAY_OF_MONTH);
-          var hour = newContext.getParsed(ChronoField.HOUR_OF_DAY);
-          var min = newContext.getParsed(ChronoField.MINUTE_OF_HOUR);
-          var secVal = newContext.getParsed(ChronoField.SECOND_OF_MINUTE);
-          var nanoVal = newContext.getParsed(ChronoField.NANO_OF_SECOND);
-          var offsetSecs = newContext.getParsed(ChronoField.OFFSET_SECONDS);
-          var offset = offsetSecs != null ? offsetSecs : 0;
-          var sec = secVal != null ? secVal : 0;
-          var nano = nanoVal != null ? nanoVal : 0;
-          var year = MathUtil.intMod(yearParsed, 1e4);
-          var days = 0;
-          if (hour === 24 && min === 0 && sec === 0 && nano === 0) {
-            hour = 0;
-            days = 1;
-          } else if (hour === 23 && min === 59 && sec === 60) {
-            context.setParsedLeapSecond();
-            sec = 59;
-          }
-          var instantSecs;
-          try {
-            var ldt = LocalDateTime.of(year, month, day, hour, min, sec, 0).plusDays(days);
-            instantSecs = ldt.toEpochSecond(ZoneOffset.ofTotalSeconds(offset));
-            instantSecs += MathUtil.safeMultiply(MathUtil.intDiv(yearParsed, 1e4), SECONDS_PER_10000_YEARS);
-          } catch (ex) {
-            return ~position;
-          }
-          var successPos = pos;
-          successPos = context.setParsedField(ChronoField.INSTANT_SECONDS, instantSecs, position, successPos);
-          return context.setParsedField(ChronoField.NANO_OF_SECOND, nano, position, successPos);
-        };
-        _proto2.toString = function toString() {
-          return "Instant()";
-        };
-        return InstantPrinterParser2;
-      })();
-      var DefaultingParser = (function() {
-        function DefaultingParser2(field, value) {
-          this._field = field;
-          this._value = value;
-        }
-        var _proto3 = DefaultingParser2.prototype;
-        _proto3.print = function print() {
-          return true;
-        };
-        _proto3.parse = function parse(context, text, position) {
-          if (context.getParsed(this._field) == null) {
-            context.setParsedField(this._field, this._value, position, position);
-          }
-          return position;
-        };
-        return DefaultingParser2;
-      })();
-      function _init$b() {
-        ReducedPrinterParser.BASE_DATE = LocalDate.of(2e3, 1, 1);
-        DateTimeFormatterBuilder.CompositePrinterParser = CompositePrinterParser;
-        DateTimeFormatterBuilder.PadPrinterParserDecorator = PadPrinterParserDecorator;
-        DateTimeFormatterBuilder.SettingsParser = SettingsParser;
-        DateTimeFormatterBuilder.CharLiteralPrinterParser = StringLiteralPrinterParser;
-        DateTimeFormatterBuilder.StringLiteralPrinterParser = StringLiteralPrinterParser;
-        DateTimeFormatterBuilder.CharLiteralPrinterParser = CharLiteralPrinterParser;
-        DateTimeFormatterBuilder.NumberPrinterParser = NumberPrinterParser;
-        DateTimeFormatterBuilder.ReducedPrinterParser = ReducedPrinterParser;
-        DateTimeFormatterBuilder.FractionPrinterParser = FractionPrinterParser;
-        DateTimeFormatterBuilder.OffsetIdPrinterParser = OffsetIdPrinterParser;
-        DateTimeFormatterBuilder.ZoneIdPrinterParser = ZoneIdPrinterParser;
-      }
-      var StringBuilder = (function() {
-        function StringBuilder2() {
-          this._str = "";
-        }
-        var _proto = StringBuilder2.prototype;
-        _proto.append = function append(str) {
-          this._str += str;
-          return this;
-        };
-        _proto.appendChar = function appendChar(str) {
-          this._str += str[0];
-          return this;
-        };
-        _proto.insert = function insert(offset, str) {
-          this._str = this._str.slice(0, offset) + str + this._str.slice(offset);
-          return this;
-        };
-        _proto.replace = function replace(start, end, str) {
-          this._str = this._str.slice(0, start) + str + this._str.slice(end);
-          return this;
-        };
-        _proto.length = function length() {
-          return this._str.length;
-        };
-        _proto.setLength = function setLength(length) {
-          this._str = this._str.slice(0, length);
-          return this;
-        };
-        _proto.toString = function toString() {
-          return this._str;
-        };
-        return StringBuilder2;
-      })();
-      var DateTimeFormatter = (function() {
-        function DateTimeFormatter2(printerParser, locale, decimalStyle, resolverStyle, resolverFields, chrono, zone) {
-          if (chrono === void 0) {
-            chrono = IsoChronology.INSTANCE;
-          }
-          assert(printerParser != null);
-          assert(decimalStyle != null);
-          assert(resolverStyle != null);
-          this._printerParser = printerParser;
-          this._locale = locale;
-          this._decimalStyle = decimalStyle;
-          this._resolverStyle = resolverStyle;
-          this._resolverFields = resolverFields;
-          this._chrono = chrono;
-          this._zone = zone;
-        }
-        DateTimeFormatter2.parsedExcessDays = function parsedExcessDays() {
-          return DateTimeFormatter2.PARSED_EXCESS_DAYS;
-        };
-        DateTimeFormatter2.parsedLeapSecond = function parsedLeapSecond() {
-          return DateTimeFormatter2.PARSED_LEAP_SECOND;
-        };
-        DateTimeFormatter2.ofPattern = function ofPattern(pattern) {
-          return new DateTimeFormatterBuilder().appendPattern(pattern).toFormatter();
-        };
-        var _proto = DateTimeFormatter2.prototype;
-        _proto.locale = function locale() {
-          return this._locale;
-        };
-        _proto.decimalStyle = function decimalStyle() {
-          return this._decimalStyle;
-        };
-        _proto.chronology = function chronology() {
-          return this._chrono;
-        };
-        _proto.withChronology = function withChronology(chrono) {
-          if (this._chrono != null && this._chrono.equals(chrono)) {
-            return this;
-          }
-          return new DateTimeFormatter2(this._printerParser, this._locale, this._decimalStyle, this._resolverStyle, this._resolverFields, chrono, this._zone);
-        };
-        _proto.withLocale = function withLocale() {
-          return this;
-        };
-        _proto.withResolverStyle = function withResolverStyle(resolverStyle) {
-          requireNonNull(resolverStyle, "resolverStyle");
-          if (resolverStyle.equals(this._resolverStyle)) {
-            return this;
-          }
-          return new DateTimeFormatter2(this._printerParser, this._locale, this._decimalStyle, resolverStyle, this._resolverFields, this._chrono, this._zone);
-        };
-        _proto.format = function format(temporal) {
-          var buf = new StringBuilder(32);
-          this._formatTo(temporal, buf);
-          return buf.toString();
-        };
-        _proto._formatTo = function _formatTo(temporal, appendable) {
-          requireNonNull(temporal, "temporal");
-          requireNonNull(appendable, "appendable");
-          var context = new DateTimePrintContext(temporal, this);
-          this._printerParser.print(context, appendable);
-        };
-        _proto.parse = function parse(text, type) {
-          if (arguments.length === 1) {
-            return this.parse1(text);
-          } else {
-            return this.parse2(text, type);
-          }
-        };
-        _proto.parse1 = function parse1(text) {
-          requireNonNull(text, "text");
-          try {
-            return this._parseToBuilder(text, null).resolve(this._resolverStyle, this._resolverFields);
-          } catch (ex) {
-            if (ex instanceof DateTimeParseException) {
-              throw ex;
-            } else {
-              throw this._createError(text, ex);
-            }
-          }
-        };
-        _proto.parse2 = function parse2(text, type) {
-          requireNonNull(text, "text");
-          requireNonNull(type, "type");
-          try {
-            var builder = this._parseToBuilder(text, null).resolve(this._resolverStyle, this._resolverFields);
-            return builder.build(type);
-          } catch (ex) {
-            if (ex instanceof DateTimeParseException) {
-              throw ex;
-            } else {
-              throw this._createError(text, ex);
-            }
-          }
-        };
-        _proto._createError = function _createError(text, ex) {
-          var abbr = "";
-          if (text.length > 64) {
-            abbr = text.substring(0, 64) + "...";
-          } else {
-            abbr = text;
-          }
-          return new DateTimeParseException("Text '" + abbr + "' could not be parsed: " + ex.message, text, 0, ex);
-        };
-        _proto._parseToBuilder = function _parseToBuilder(text, position) {
-          var pos = position != null ? position : new ParsePosition(0);
-          var result = this._parseUnresolved0(text, pos);
-          if (result == null || pos.getErrorIndex() >= 0 || position == null && pos.getIndex() < text.length) {
-            var abbr = "";
-            if (text.length > 64) {
-              abbr = text.substr(0, 64).toString() + "...";
-            } else {
-              abbr = text;
-            }
-            if (pos.getErrorIndex() >= 0) {
-              throw new DateTimeParseException("Text '" + abbr + "' could not be parsed at index " + pos.getErrorIndex(), text, pos.getErrorIndex());
-            } else {
-              throw new DateTimeParseException("Text '" + abbr + "' could not be parsed, unparsed text found at index " + pos.getIndex(), text, pos.getIndex());
-            }
-          }
-          return result.toBuilder();
-        };
-        _proto.parseUnresolved = function parseUnresolved(text, position) {
-          return this._parseUnresolved0(text, position);
-        };
-        _proto._parseUnresolved0 = function _parseUnresolved0(text, position) {
-          assert(text != null, "text", NullPointerException);
-          assert(position != null, "position", NullPointerException);
-          var context = new DateTimeParseContext(this);
-          var pos = position.getIndex();
-          pos = this._printerParser.parse(context, text, pos);
-          if (pos < 0) {
-            position.setErrorIndex(~pos);
-            return null;
-          }
-          position.setIndex(pos);
-          return context.toParsed();
-        };
-        _proto._toPrinterParser = function _toPrinterParser(optional) {
-          return this._printerParser.withOptional(optional);
-        };
-        _proto.toString = function toString() {
-          var pattern = this._printerParser.toString();
-          return pattern.indexOf("[") === 0 ? pattern : pattern.substring(1, pattern.length - 1);
-        };
-        return DateTimeFormatter2;
-      })();
-      function _init$a() {
-        DateTimeFormatter.ISO_LOCAL_DATE = new DateTimeFormatterBuilder().appendValue(ChronoField.YEAR, 4, 10, SignStyle.EXCEEDS_PAD).appendLiteral("-").appendValue(ChronoField.MONTH_OF_YEAR, 2).appendLiteral("-").appendValue(ChronoField.DAY_OF_MONTH, 2).toFormatter(ResolverStyle.STRICT).withChronology(IsoChronology.INSTANCE);
-        DateTimeFormatter.ISO_LOCAL_TIME = new DateTimeFormatterBuilder().appendValue(ChronoField.HOUR_OF_DAY, 2).appendLiteral(":").appendValue(ChronoField.MINUTE_OF_HOUR, 2).optionalStart().appendLiteral(":").appendValue(ChronoField.SECOND_OF_MINUTE, 2).optionalStart().appendFraction(ChronoField.NANO_OF_SECOND, 0, 9, true).toFormatter(ResolverStyle.STRICT);
-        DateTimeFormatter.ISO_LOCAL_DATE_TIME = new DateTimeFormatterBuilder().parseCaseInsensitive().append(DateTimeFormatter.ISO_LOCAL_DATE).appendLiteral("T").append(DateTimeFormatter.ISO_LOCAL_TIME).toFormatter(ResolverStyle.STRICT).withChronology(IsoChronology.INSTANCE);
-        DateTimeFormatter.ISO_INSTANT = new DateTimeFormatterBuilder().parseCaseInsensitive().appendInstant().toFormatter(ResolverStyle.STRICT);
-        DateTimeFormatter.ISO_OFFSET_DATE_TIME = new DateTimeFormatterBuilder().parseCaseInsensitive().append(DateTimeFormatter.ISO_LOCAL_DATE_TIME).appendOffsetId().toFormatter(ResolverStyle.STRICT).withChronology(IsoChronology.INSTANCE);
-        DateTimeFormatter.ISO_ZONED_DATE_TIME = new DateTimeFormatterBuilder().append(DateTimeFormatter.ISO_OFFSET_DATE_TIME).optionalStart().appendLiteral("[").parseCaseSensitive().appendZoneId().appendLiteral("]").toFormatter(ResolverStyle.STRICT).withChronology(IsoChronology.INSTANCE);
-        DateTimeFormatter.BASIC_ISO_DATE = new DateTimeFormatterBuilder().appendValue(ChronoField.YEAR, 4, 10, SignStyle.EXCEEDS_PAD).appendValue(ChronoField.MONTH_OF_YEAR, 2).appendValue(ChronoField.DAY_OF_MONTH, 2).toFormatter(ResolverStyle.STRICT).withChronology(IsoChronology.INSTANCE);
-        DateTimeFormatter.ISO_OFFSET_DATE = new DateTimeFormatterBuilder().parseCaseInsensitive().append(DateTimeFormatter.ISO_LOCAL_DATE).appendOffsetId().toFormatter(ResolverStyle.STRICT).withChronology(IsoChronology.INSTANCE);
-        DateTimeFormatter.ISO_OFFSET_TIME = new DateTimeFormatterBuilder().parseCaseInsensitive().append(DateTimeFormatter.ISO_LOCAL_TIME).appendOffsetId().toFormatter(ResolverStyle.STRICT).withChronology(IsoChronology.INSTANCE);
-        DateTimeFormatter.ISO_ORDINAL_DATE = new DateTimeFormatterBuilder().appendValue(ChronoField.YEAR, 4, 10, SignStyle.EXCEEDS_PAD).appendLiteral("-").appendValue(ChronoField.DAY_OF_YEAR).toFormatter(ResolverStyle.STRICT);
-        DateTimeFormatter.ISO_WEEK_DATE = new DateTimeFormatterBuilder().parseCaseInsensitive().appendValue(IsoFields.WEEK_BASED_YEAR, 4, 10, SignStyle.EXCEEDS_PAD).appendLiteral("-W").appendValue(IsoFields.WEEK_OF_WEEK_BASED_YEAR, 2).appendLiteral("-").appendValue(ChronoField.DAY_OF_WEEK, 1).toFormatter(ResolverStyle.STRICT).withChronology(IsoChronology.INSTANCE);
-        DateTimeFormatter.ISO_DATE = new DateTimeFormatterBuilder().parseCaseInsensitive().append(DateTimeFormatter.ISO_LOCAL_DATE).optionalStart().appendOffsetId().optionalEnd().toFormatter(ResolverStyle.STRICT).withChronology(IsoChronology.INSTANCE);
-        DateTimeFormatter.ISO_TIME = new DateTimeFormatterBuilder().parseCaseInsensitive().append(DateTimeFormatter.ISO_LOCAL_TIME).optionalStart().appendOffsetId().optionalEnd().toFormatter(ResolverStyle.STRICT);
-        DateTimeFormatter.ISO_DATE_TIME = new DateTimeFormatterBuilder().append(DateTimeFormatter.ISO_LOCAL_DATE_TIME).optionalStart().appendOffsetId().optionalEnd().toFormatter(ResolverStyle.STRICT).withChronology(IsoChronology.INSTANCE);
-        DateTimeFormatter.PARSED_EXCESS_DAYS = createTemporalQuery("PARSED_EXCESS_DAYS", function(temporal) {
-          if (temporal instanceof DateTimeBuilder) {
-            return temporal.excessDays;
-          } else {
-            return Period.ZERO;
-          }
-        });
-        DateTimeFormatter.PARSED_LEAP_SECOND = createTemporalQuery("PARSED_LEAP_SECOND", function(temporal) {
-          if (temporal instanceof DateTimeBuilder) {
-            return temporal.leapSecond;
-          } else {
-            return false;
-          }
-        });
-      }
-      var MonthDay = (function(_TemporalAccessor) {
-        function MonthDay2(month, dayOfMonth) {
-          var _this;
-          _this = _TemporalAccessor.call(this) || this;
-          _this._month = MathUtil.safeToInt(month);
-          _this._day = MathUtil.safeToInt(dayOfMonth);
-          return _this;
-        }
-        _inheritsLoose(MonthDay2, _TemporalAccessor);
-        MonthDay2.now = function now(zoneIdOrClock) {
-          if (arguments.length === 0) {
-            return MonthDay2.now0();
-          } else if (arguments.length === 1 && zoneIdOrClock instanceof ZoneId) {
-            return MonthDay2.nowZoneId(zoneIdOrClock);
-          } else {
-            return MonthDay2.nowClock(zoneIdOrClock);
-          }
-        };
-        MonthDay2.now0 = function now0() {
-          return this.nowClock(Clock.systemDefaultZone());
-        };
-        MonthDay2.nowZoneId = function nowZoneId(zone) {
-          requireNonNull(zone, "zone");
-          return this.nowClock(Clock.system(zone));
-        };
-        MonthDay2.nowClock = function nowClock(clock) {
-          requireNonNull(clock, "clock");
-          var now = LocalDate.now(clock);
-          return MonthDay2.of(now.month(), now.dayOfMonth());
-        };
-        MonthDay2.of = function of(monthOrNumber, number) {
-          if (arguments.length === 2 && monthOrNumber instanceof Month) {
-            return MonthDay2.ofMonthNumber(monthOrNumber, number);
-          } else {
-            return MonthDay2.ofNumberNumber(monthOrNumber, number);
-          }
-        };
-        MonthDay2.ofMonthNumber = function ofMonthNumber(month, dayOfMonth) {
-          requireNonNull(month, "month");
-          ChronoField.DAY_OF_MONTH.checkValidValue(dayOfMonth);
-          if (dayOfMonth > month.maxLength()) {
-            throw new DateTimeException("Illegal value for DayOfMonth field, value " + dayOfMonth + " is not valid for month " + month.toString());
-          }
-          return new MonthDay2(month.value(), dayOfMonth);
-        };
-        MonthDay2.ofNumberNumber = function ofNumberNumber(month, dayOfMonth) {
-          requireNonNull(month, "month");
-          requireNonNull(dayOfMonth, "dayOfMonth");
-          return MonthDay2.of(Month.of(month), dayOfMonth);
-        };
-        MonthDay2.from = function from(temporal) {
-          requireNonNull(temporal, "temporal");
-          requireInstance(temporal, TemporalAccessor, "temporal");
-          if (temporal instanceof MonthDay2) {
-            return temporal;
-          }
-          try {
-            return MonthDay2.of(temporal.get(ChronoField.MONTH_OF_YEAR), temporal.get(ChronoField.DAY_OF_MONTH));
-          } catch (ex) {
-            throw new DateTimeException("Unable to obtain MonthDay from TemporalAccessor: " + temporal + ", type " + (temporal && temporal.constructor != null ? temporal.constructor.name : ""));
-          }
-        };
-        MonthDay2.parse = function parse(text, formatter) {
-          if (arguments.length === 1) {
-            return MonthDay2.parseString(text);
-          } else {
-            return MonthDay2.parseStringFormatter(text, formatter);
-          }
-        };
-        MonthDay2.parseString = function parseString(text) {
-          return MonthDay2.parseStringFormatter(text, PARSER$2);
-        };
-        MonthDay2.parseStringFormatter = function parseStringFormatter(text, formatter) {
-          requireNonNull(text, "text");
-          requireNonNull(formatter, "formatter");
-          requireInstance(formatter, DateTimeFormatter, "formatter");
-          return formatter.parse(text, MonthDay2.FROM);
-        };
-        var _proto = MonthDay2.prototype;
-        _proto.monthValue = function monthValue() {
-          return this._month;
-        };
-        _proto.month = function month() {
-          return Month.of(this._month);
-        };
-        _proto.dayOfMonth = function dayOfMonth() {
-          return this._day;
-        };
-        _proto.isSupported = function isSupported(field) {
-          if (field instanceof ChronoField) {
-            return field === ChronoField.MONTH_OF_YEAR || field === ChronoField.DAY_OF_MONTH;
-          }
-          return field != null && field.isSupportedBy(this);
-        };
-        _proto.range = function range(field) {
-          if (field === ChronoField.MONTH_OF_YEAR) {
-            return field.range();
-          } else if (field === ChronoField.DAY_OF_MONTH) {
-            return ValueRange.of(1, this.month().minLength(), this.month().maxLength());
-          }
-          return _TemporalAccessor.prototype.range.call(this, field);
-        };
-        _proto.get = function get(field) {
-          return this.range(field).checkValidIntValue(this.getLong(field), field);
-        };
-        _proto.getLong = function getLong(field) {
-          requireNonNull(field, "field");
-          if (field instanceof ChronoField) {
-            switch (field) {
-              case ChronoField.DAY_OF_MONTH:
-                return this._day;
-              case ChronoField.MONTH_OF_YEAR:
-                return this._month;
-            }
-            throw new UnsupportedTemporalTypeException("Unsupported field: " + field);
-          }
-          return field.getFrom(this);
-        };
-        _proto.isValidYear = function isValidYear(year) {
-          return (this._day === 29 && this._month === 2 && Year.isLeap(year) === false) === false;
-        };
-        _proto.withMonth = function withMonth(month) {
-          return this.with(Month.of(month));
-        };
-        _proto.with = function _with(month) {
-          requireNonNull(month, "month");
-          if (month.value() === this._month) {
-            return this;
-          }
-          var day = Math.min(this._day, month.maxLength());
-          return new MonthDay2(month.value(), day);
-        };
-        _proto.withDayOfMonth = function withDayOfMonth(dayOfMonth) {
-          if (dayOfMonth === this._day) {
-            return this;
-          }
-          return MonthDay2.of(this._month, dayOfMonth);
-        };
-        _proto.query = function query(_query) {
-          requireNonNull(_query, "query");
-          requireInstance(_query, TemporalQuery, "query");
-          if (_query === TemporalQueries.chronology()) {
-            return IsoChronology.INSTANCE;
-          }
-          return _TemporalAccessor.prototype.query.call(this, _query);
-        };
-        _proto.adjustInto = function adjustInto(temporal) {
-          requireNonNull(temporal, "temporal");
-          temporal = temporal.with(ChronoField.MONTH_OF_YEAR, this._month);
-          return temporal.with(ChronoField.DAY_OF_MONTH, Math.min(temporal.range(ChronoField.DAY_OF_MONTH).maximum(), this._day));
-        };
-        _proto.atYear = function atYear(year) {
-          return LocalDate.of(year, this._month, this.isValidYear(year) ? this._day : 28);
-        };
-        _proto.compareTo = function compareTo(other) {
-          requireNonNull(other, "other");
-          requireInstance(other, MonthDay2, "other");
-          var cmp = this._month - other.monthValue();
-          if (cmp === 0) {
-            cmp = this._day - other.dayOfMonth();
-          }
-          return cmp;
-        };
-        _proto.isAfter = function isAfter(other) {
-          requireNonNull(other, "other");
-          requireInstance(other, MonthDay2, "other");
-          return this.compareTo(other) > 0;
-        };
-        _proto.isBefore = function isBefore(other) {
-          requireNonNull(other, "other");
-          requireInstance(other, MonthDay2, "other");
-          return this.compareTo(other) < 0;
-        };
-        _proto.equals = function equals(obj) {
-          if (this === obj) {
-            return true;
-          }
-          if (obj instanceof MonthDay2) {
-            var other = obj;
-            return this.monthValue() === other.monthValue() && this.dayOfMonth() === other.dayOfMonth();
-          }
-          return false;
-        };
-        _proto.toString = function toString() {
-          return "--" + (this._month < 10 ? "0" : "") + this._month + (this._day < 10 ? "-0" : "-") + this._day;
-        };
-        _proto.toJSON = function toJSON() {
-          return this.toString();
-        };
-        _proto.format = function format(formatter) {
-          requireNonNull(formatter, "formatter");
-          requireInstance(formatter, DateTimeFormatter, "formatter");
-          return formatter.format(this);
-        };
-        return MonthDay2;
-      })(TemporalAccessor);
-      var PARSER$2;
-      function _init$9() {
-        PARSER$2 = new DateTimeFormatterBuilder().appendLiteral("--").appendValue(ChronoField.MONTH_OF_YEAR, 2).appendLiteral("-").appendValue(ChronoField.DAY_OF_MONTH, 2).toFormatter();
-        MonthDay.FROM = createTemporalQuery("MonthDay.FROM", function(temporal) {
-          return MonthDay.from(temporal);
-        });
-      }
-      var YearMonth = (function(_Temporal) {
-        function YearMonth2(year, month) {
-          var _this;
-          _this = _Temporal.call(this) || this;
-          _this._year = MathUtil.safeToInt(year);
-          _this._month = MathUtil.safeToInt(month);
-          return _this;
-        }
-        _inheritsLoose(YearMonth2, _Temporal);
-        YearMonth2.now = function now(zoneIdOrClock) {
-          if (arguments.length === 0) {
-            return YearMonth2.now0();
-          } else if (arguments.length === 1 && zoneIdOrClock instanceof ZoneId) {
-            return YearMonth2.nowZoneId(zoneIdOrClock);
-          } else {
-            return YearMonth2.nowClock(zoneIdOrClock);
-          }
-        };
-        YearMonth2.now0 = function now0() {
-          return YearMonth2.nowClock(Clock.systemDefaultZone());
-        };
-        YearMonth2.nowZoneId = function nowZoneId(zone) {
-          return YearMonth2.nowClock(Clock.system(zone));
-        };
-        YearMonth2.nowClock = function nowClock(clock) {
-          var now = LocalDate.now(clock);
-          return YearMonth2.of(now.year(), now.month());
-        };
-        YearMonth2.of = function of(year, monthOrNumber) {
-          if (arguments.length === 2 && monthOrNumber instanceof Month) {
-            return YearMonth2.ofNumberMonth(year, monthOrNumber);
-          } else {
-            return YearMonth2.ofNumberNumber(year, monthOrNumber);
-          }
-        };
-        YearMonth2.ofNumberMonth = function ofNumberMonth(year, month) {
-          requireNonNull(month, "month");
-          requireInstance(month, Month, "month");
-          return YearMonth2.ofNumberNumber(year, month.value());
-        };
-        YearMonth2.ofNumberNumber = function ofNumberNumber(year, month) {
-          requireNonNull(year, "year");
-          requireNonNull(month, "month");
-          ChronoField.YEAR.checkValidValue(year);
-          ChronoField.MONTH_OF_YEAR.checkValidValue(month);
-          return new YearMonth2(year, month);
-        };
-        YearMonth2.from = function from(temporal) {
-          requireNonNull(temporal, "temporal");
-          if (temporal instanceof YearMonth2) {
-            return temporal;
-          }
-          try {
-            return YearMonth2.of(temporal.get(ChronoField.YEAR), temporal.get(ChronoField.MONTH_OF_YEAR));
-          } catch (ex) {
-            throw new DateTimeException("Unable to obtain YearMonth from TemporalAccessor: " + temporal + ", type " + (temporal && temporal.constructor != null ? temporal.constructor.name : ""));
-          }
-        };
-        YearMonth2.parse = function parse(text, formatter) {
-          if (arguments.length === 1) {
-            return YearMonth2.parseString(text);
-          } else {
-            return YearMonth2.parseStringFormatter(text, formatter);
-          }
-        };
-        YearMonth2.parseString = function parseString(text) {
-          return YearMonth2.parseStringFormatter(text, PARSER$1);
-        };
-        YearMonth2.parseStringFormatter = function parseStringFormatter(text, formatter) {
-          requireNonNull(formatter, "formatter");
-          return formatter.parse(text, YearMonth2.FROM);
-        };
-        var _proto = YearMonth2.prototype;
-        _proto.isSupported = function isSupported(fieldOrUnit) {
-          if (arguments.length === 1 && fieldOrUnit instanceof TemporalField) {
-            return this.isSupportedField(fieldOrUnit);
-          } else {
-            return this.isSupportedUnit(fieldOrUnit);
-          }
-        };
-        _proto.isSupportedField = function isSupportedField(field) {
-          if (field instanceof ChronoField) {
-            return field === ChronoField.YEAR || field === ChronoField.MONTH_OF_YEAR || field === ChronoField.PROLEPTIC_MONTH || field === ChronoField.YEAR_OF_ERA || field === ChronoField.ERA;
-          }
-          return field != null && field.isSupportedBy(this);
-        };
-        _proto.isSupportedUnit = function isSupportedUnit(unit) {
-          if (unit instanceof ChronoUnit) {
-            return unit === ChronoUnit.MONTHS || unit === ChronoUnit.YEARS || unit === ChronoUnit.DECADES || unit === ChronoUnit.CENTURIES || unit === ChronoUnit.MILLENNIA || unit === ChronoUnit.ERAS;
-          }
-          return unit != null && unit.isSupportedBy(this);
-        };
-        _proto.range = function range(field) {
-          if (field === ChronoField.YEAR_OF_ERA) {
-            return this.year() <= 0 ? ValueRange.of(1, Year.MAX_VALUE + 1) : ValueRange.of(1, Year.MAX_VALUE);
-          }
-          return _Temporal.prototype.range.call(this, field);
-        };
-        _proto.get = function get(field) {
-          requireNonNull(field, "field");
-          requireInstance(field, TemporalField, "field");
-          return this.range(field).checkValidIntValue(this.getLong(field), field);
-        };
-        _proto.getLong = function getLong(field) {
-          requireNonNull(field, "field");
-          requireInstance(field, TemporalField, "field");
-          if (field instanceof ChronoField) {
-            switch (field) {
-              case ChronoField.MONTH_OF_YEAR:
-                return this._month;
-              case ChronoField.PROLEPTIC_MONTH:
-                return this._getProlepticMonth();
-              case ChronoField.YEAR_OF_ERA:
-                return this._year < 1 ? 1 - this._year : this._year;
-              case ChronoField.YEAR:
-                return this._year;
-              case ChronoField.ERA:
-                return this._year < 1 ? 0 : 1;
-            }
-            throw new UnsupportedTemporalTypeException("Unsupported field: " + field);
-          }
-          return field.getFrom(this);
-        };
-        _proto._getProlepticMonth = function _getProlepticMonth() {
-          return MathUtil.safeAdd(MathUtil.safeMultiply(this._year, 12), this._month - 1);
-        };
-        _proto.year = function year() {
-          return this._year;
-        };
-        _proto.monthValue = function monthValue() {
-          return this._month;
-        };
-        _proto.month = function month() {
-          return Month.of(this._month);
-        };
-        _proto.isLeapYear = function isLeapYear() {
-          return IsoChronology.isLeapYear(this._year);
-        };
-        _proto.isValidDay = function isValidDay(dayOfMonth) {
-          return dayOfMonth >= 1 && dayOfMonth <= this.lengthOfMonth();
-        };
-        _proto.lengthOfMonth = function lengthOfMonth() {
-          return this.month().length(this.isLeapYear());
-        };
-        _proto.lengthOfYear = function lengthOfYear() {
-          return this.isLeapYear() ? 366 : 365;
-        };
-        _proto.with = function _with(adjusterOrField, value) {
-          if (arguments.length === 1) {
-            return this._withAdjuster(adjusterOrField);
-          } else {
-            return this._withField(adjusterOrField, value);
-          }
-        };
-        _proto._withField = function _withField(field, newValue) {
-          requireNonNull(field, "field");
-          requireInstance(field, TemporalField, "field");
-          if (field instanceof ChronoField) {
-            var f = field;
-            f.checkValidValue(newValue);
-            switch (f) {
-              case ChronoField.MONTH_OF_YEAR:
-                return this.withMonth(newValue);
-              case ChronoField.PROLEPTIC_MONTH:
-                return this.plusMonths(newValue - this.getLong(ChronoField.PROLEPTIC_MONTH));
-              case ChronoField.YEAR_OF_ERA:
-                return this.withYear(this._year < 1 ? 1 - newValue : newValue);
-              case ChronoField.YEAR:
-                return this.withYear(newValue);
-              case ChronoField.ERA:
-                return this.getLong(ChronoField.ERA) === newValue ? this : this.withYear(1 - this._year);
-            }
-            throw new UnsupportedTemporalTypeException("Unsupported field: " + field);
-          }
-          return field.adjustInto(this, newValue);
-        };
-        _proto.withYear = function withYear(year) {
-          ChronoField.YEAR.checkValidValue(year);
-          return new YearMonth2(year, this._month);
-        };
-        _proto.withMonth = function withMonth(month) {
-          ChronoField.MONTH_OF_YEAR.checkValidValue(month);
-          return new YearMonth2(this._year, month);
-        };
-        _proto._plusUnit = function _plusUnit(amountToAdd, unit) {
-          requireNonNull(unit, "unit");
-          requireInstance(unit, TemporalUnit, "unit");
-          if (unit instanceof ChronoUnit) {
-            switch (unit) {
-              case ChronoUnit.MONTHS:
-                return this.plusMonths(amountToAdd);
-              case ChronoUnit.YEARS:
-                return this.plusYears(amountToAdd);
-              case ChronoUnit.DECADES:
-                return this.plusYears(MathUtil.safeMultiply(amountToAdd, 10));
-              case ChronoUnit.CENTURIES:
-                return this.plusYears(MathUtil.safeMultiply(amountToAdd, 100));
-              case ChronoUnit.MILLENNIA:
-                return this.plusYears(MathUtil.safeMultiply(amountToAdd, 1e3));
-              case ChronoUnit.ERAS:
-                return this.with(ChronoField.ERA, MathUtil.safeAdd(this.getLong(ChronoField.ERA), amountToAdd));
-            }
-            throw new UnsupportedTemporalTypeException("Unsupported unit: " + unit);
-          }
-          return unit.addTo(this, amountToAdd);
-        };
-        _proto.plusYears = function plusYears(yearsToAdd) {
-          if (yearsToAdd === 0) {
-            return this;
-          }
-          var newYear = ChronoField.YEAR.checkValidIntValue(this._year + yearsToAdd);
-          return this.withYear(newYear);
-        };
-        _proto.plusMonths = function plusMonths(monthsToAdd) {
-          if (monthsToAdd === 0) {
-            return this;
-          }
-          var monthCount = this._year * 12 + (this._month - 1);
-          var calcMonths = monthCount + monthsToAdd;
-          var newYear = ChronoField.YEAR.checkValidIntValue(MathUtil.floorDiv(calcMonths, 12));
-          var newMonth = MathUtil.floorMod(calcMonths, 12) + 1;
-          return new YearMonth2(newYear, newMonth);
-        };
-        _proto.minusYears = function minusYears(yearsToSubtract) {
-          return yearsToSubtract === MathUtil.MIN_SAFE_INTEGER ? this.plusYears(MathUtil.MIN_SAFE_INTEGER).plusYears(1) : this.plusYears(-yearsToSubtract);
-        };
-        _proto.minusMonths = function minusMonths(monthsToSubtract) {
-          return monthsToSubtract === MathUtil.MIN_SAFE_INTEGER ? this.plusMonths(Math.MAX_SAFE_INTEGER).plusMonths(1) : this.plusMonths(-monthsToSubtract);
-        };
-        _proto.query = function query(_query) {
-          requireNonNull(_query, "query");
-          requireInstance(_query, TemporalQuery, "query");
-          if (_query === TemporalQueries.chronology()) {
-            return IsoChronology.INSTANCE;
-          } else if (_query === TemporalQueries.precision()) {
-            return ChronoUnit.MONTHS;
-          } else if (_query === TemporalQueries.localDate() || _query === TemporalQueries.localTime() || _query === TemporalQueries.zone() || _query === TemporalQueries.zoneId() || _query === TemporalQueries.offset()) {
-            return null;
-          }
-          return _Temporal.prototype.query.call(this, _query);
-        };
-        _proto.adjustInto = function adjustInto(temporal) {
-          requireNonNull(temporal, "temporal");
-          requireInstance(temporal, Temporal, "temporal");
-          return temporal.with(ChronoField.PROLEPTIC_MONTH, this._getProlepticMonth());
-        };
-        _proto.until = function until(endExclusive, unit) {
-          requireNonNull(endExclusive, "endExclusive");
-          requireNonNull(unit, "unit");
-          requireInstance(endExclusive, Temporal, "endExclusive");
-          requireInstance(unit, TemporalUnit, "unit");
-          var end = YearMonth2.from(endExclusive);
-          if (unit instanceof ChronoUnit) {
-            var monthsUntil = end._getProlepticMonth() - this._getProlepticMonth();
-            switch (unit) {
-              case ChronoUnit.MONTHS:
-                return monthsUntil;
-              case ChronoUnit.YEARS:
-                return MathUtil.intDiv(monthsUntil, 12);
-              case ChronoUnit.DECADES:
-                return MathUtil.intDiv(monthsUntil, 120);
-              case ChronoUnit.CENTURIES:
-                return MathUtil.intDiv(monthsUntil, 1200);
-              case ChronoUnit.MILLENNIA:
-                return MathUtil.intDiv(monthsUntil, 12e3);
-              case ChronoUnit.ERAS:
-                return end.getLong(ChronoField.ERA) - this.getLong(ChronoField.ERA);
-            }
-            throw new UnsupportedTemporalTypeException("Unsupported unit: " + unit);
-          }
-          return unit.between(this, end);
-        };
-        _proto.atDay = function atDay(dayOfMonth) {
-          requireNonNull(dayOfMonth, "dayOfMonth");
-          return LocalDate.of(this._year, this._month, dayOfMonth);
-        };
-        _proto.atEndOfMonth = function atEndOfMonth() {
-          return LocalDate.of(this._year, this._month, this.lengthOfMonth());
-        };
-        _proto.compareTo = function compareTo(other) {
-          requireNonNull(other, "other");
-          requireInstance(other, YearMonth2, "other");
-          var cmp = this._year - other.year();
-          if (cmp === 0) {
-            cmp = this._month - other.monthValue();
-          }
-          return cmp;
-        };
-        _proto.isAfter = function isAfter(other) {
-          return this.compareTo(other) > 0;
-        };
-        _proto.isBefore = function isBefore(other) {
-          return this.compareTo(other) < 0;
-        };
-        _proto.equals = function equals(obj) {
-          if (this === obj) {
-            return true;
-          }
-          if (obj instanceof YearMonth2) {
-            var other = obj;
-            return this.year() === other.year() && this.monthValue() === other.monthValue();
-          }
-          return false;
-        };
-        _proto.toString = function toString() {
-          return PARSER$1.format(this);
-        };
-        _proto.toJSON = function toJSON() {
-          return this.toString();
-        };
-        _proto.format = function format(formatter) {
-          requireNonNull(formatter, "formatter");
-          return formatter.format(this);
-        };
-        return YearMonth2;
-      })(Temporal);
-      var PARSER$1;
-      function _init$8() {
-        PARSER$1 = new DateTimeFormatterBuilder().appendValue(ChronoField.YEAR, 4, 10, SignStyle.EXCEEDS_PAD).appendLiteral("-").appendValue(ChronoField.MONTH_OF_YEAR, 2).toFormatter();
-        YearMonth.FROM = createTemporalQuery("YearMonth.FROM", function(temporal) {
-          return YearMonth.from(temporal);
-        });
-      }
-      var Year = (function(_Temporal) {
-        function Year2(value) {
-          var _this;
-          _this = _Temporal.call(this) || this;
-          _this._year = MathUtil.safeToInt(value);
-          return _this;
-        }
-        _inheritsLoose(Year2, _Temporal);
-        var _proto = Year2.prototype;
-        _proto.value = function value() {
-          return this._year;
-        };
-        Year2.now = function now(zoneIdOrClock) {
-          if (zoneIdOrClock === void 0) {
-            zoneIdOrClock = void 0;
-          }
-          if (zoneIdOrClock === void 0) {
-            return Year2.now0();
-          } else if (zoneIdOrClock instanceof ZoneId) {
-            return Year2.nowZoneId(zoneIdOrClock);
-          } else {
-            return Year2.nowClock(zoneIdOrClock);
-          }
-        };
-        Year2.now0 = function now0() {
-          return Year2.nowClock(Clock.systemDefaultZone());
-        };
-        Year2.nowZoneId = function nowZoneId(zone) {
-          requireNonNull(zone, "zone");
-          requireInstance(zone, ZoneId, "zone");
-          return Year2.nowClock(Clock.system(zone));
-        };
-        Year2.nowClock = function nowClock(clock) {
-          requireNonNull(clock, "clock");
-          requireInstance(clock, Clock, "clock");
-          var now = LocalDate.now(clock);
-          return Year2.of(now.year());
-        };
-        Year2.of = function of(isoYear) {
-          requireNonNull(isoYear, "isoYear");
-          ChronoField.YEAR.checkValidValue(isoYear);
-          return new Year2(isoYear);
-        };
-        Year2.from = function from(temporal) {
-          requireNonNull(temporal, "temporal");
-          requireInstance(temporal, TemporalAccessor, "temporal");
-          if (temporal instanceof Year2) {
-            return temporal;
-          }
-          try {
-            return Year2.of(temporal.get(ChronoField.YEAR));
-          } catch (ex) {
-            throw new DateTimeException("Unable to obtain Year from TemporalAccessor: " + temporal + ", type " + (temporal && temporal.constructor != null ? temporal.constructor.name : ""));
-          }
-        };
-        Year2.parse = function parse(text, formatter) {
-          if (arguments.length <= 1) {
-            return Year2.parseText(text);
-          } else {
-            return Year2.parseTextFormatter(text, formatter);
-          }
-        };
-        Year2.parseText = function parseText(text) {
-          requireNonNull(text, "text");
-          return Year2.parse(text, PARSER);
-        };
-        Year2.parseTextFormatter = function parseTextFormatter(text, formatter) {
-          if (formatter === void 0) {
-            formatter = PARSER;
-          }
-          requireNonNull(text, "text");
-          requireNonNull(formatter, "formatter");
-          requireInstance(formatter, DateTimeFormatter, "formatter");
-          return formatter.parse(text, Year2.FROM);
-        };
-        Year2.isLeap = function isLeap(year) {
-          return MathUtil.intMod(year, 4) === 0 && (MathUtil.intMod(year, 100) !== 0 || MathUtil.intMod(year, 400) === 0);
-        };
-        _proto.isSupported = function isSupported(fieldOrUnit) {
-          if (arguments.length === 1 && fieldOrUnit instanceof TemporalField) {
-            return this.isSupportedField(fieldOrUnit);
-          } else {
-            return this.isSupportedUnit(fieldOrUnit);
-          }
-        };
-        _proto.isSupportedField = function isSupportedField(field) {
-          if (field instanceof ChronoField) {
-            return field === ChronoField.YEAR || field === ChronoField.YEAR_OF_ERA || field === ChronoField.ERA;
-          }
-          return field != null && field.isSupportedBy(this);
-        };
-        _proto.isSupportedUnit = function isSupportedUnit(unit) {
-          if (unit instanceof ChronoUnit) {
-            return unit === ChronoUnit.YEARS || unit === ChronoUnit.DECADES || unit === ChronoUnit.CENTURIES || unit === ChronoUnit.MILLENNIA || unit === ChronoUnit.ERAS;
-          }
-          return unit != null && unit.isSupportedBy(this);
-        };
-        _proto.range = function range(field) {
-          if (this.isSupported(field)) {
-            return field.range();
-          } else if (field instanceof ChronoField) {
-            throw new UnsupportedTemporalTypeException("Unsupported field: " + field);
-          }
-          return _Temporal.prototype.range.call(this, field);
-        };
-        _proto.get = function get(field) {
-          return this.range(field).checkValidIntValue(this.getLong(field), field);
-        };
-        _proto.getLong = function getLong(field) {
-          requireNonNull(field, "field");
-          if (field instanceof ChronoField) {
-            switch (field) {
-              case ChronoField.YEAR_OF_ERA:
-                return this._year < 1 ? 1 - this._year : this._year;
-              case ChronoField.YEAR:
-                return this._year;
-              case ChronoField.ERA:
-                return this._year < 1 ? 0 : 1;
-            }
-            throw new UnsupportedTemporalTypeException("Unsupported field: " + field);
-          }
-          return field.getFrom(this);
-        };
-        _proto.isLeap = function isLeap() {
-          return Year2.isLeap(this._year);
-        };
-        _proto._withField = function _withField(field, newValue) {
-          requireNonNull(field, "field");
-          requireInstance(field, TemporalField, "field");
-          if (field instanceof ChronoField) {
-            field.checkValidValue(newValue);
-            switch (field) {
-              case ChronoField.YEAR_OF_ERA:
-                return Year2.of(this._year < 1 ? 1 - newValue : newValue);
-              case ChronoField.YEAR:
-                return Year2.of(newValue);
-              case ChronoField.ERA:
-                return this.getLong(ChronoField.ERA) === newValue ? this : Year2.of(1 - this._year);
-            }
-            throw new UnsupportedTemporalTypeException("Unsupported field: " + field);
-          }
-          return field.adjustInto(this, newValue);
-        };
-        _proto._plusUnit = function _plusUnit(amountToAdd, unit) {
-          requireNonNull(amountToAdd, "amountToAdd");
-          requireNonNull(unit, "unit");
-          requireInstance(unit, TemporalUnit, "unit");
-          if (unit instanceof ChronoUnit) {
-            switch (unit) {
-              case ChronoUnit.YEARS:
-                return this.plusYears(amountToAdd);
-              case ChronoUnit.DECADES:
-                return this.plusYears(MathUtil.safeMultiply(amountToAdd, 10));
-              case ChronoUnit.CENTURIES:
-                return this.plusYears(MathUtil.safeMultiply(amountToAdd, 100));
-              case ChronoUnit.MILLENNIA:
-                return this.plusYears(MathUtil.safeMultiply(amountToAdd, 1e3));
-              case ChronoUnit.ERAS:
-                return this.with(ChronoField.ERA, MathUtil.safeAdd(this.getLong(ChronoField.ERA), amountToAdd));
-            }
-            throw new UnsupportedTemporalTypeException("Unsupported unit: " + unit);
-          }
-          return unit.addTo(this, amountToAdd);
-        };
-        _proto.plusYears = function plusYears(yearsToAdd) {
-          if (yearsToAdd === 0) {
-            return this;
-          }
-          return Year2.of(ChronoField.YEAR.checkValidIntValue(MathUtil.safeAdd(this._year, yearsToAdd)));
-        };
-        _proto.minusYears = function minusYears(yearsToSubtract) {
-          return yearsToSubtract === MathUtil.MIN_SAFE_INTEGER ? this.plusYears(MathUtil.MAX_SAFE_INTEGER).plusYears(1) : this.plusYears(-yearsToSubtract);
-        };
-        _proto.adjustInto = function adjustInto(temporal) {
-          requireNonNull(temporal, "temporal");
-          return temporal.with(ChronoField.YEAR, this._year);
-        };
-        _proto.isValidMonthDay = function isValidMonthDay(monthDay) {
-          return monthDay != null && monthDay.isValidYear(this._year);
-        };
-        _proto.length = function length() {
-          return this.isLeap() ? 366 : 365;
-        };
-        _proto.atDay = function atDay(dayOfYear) {
-          return LocalDate.ofYearDay(this._year, dayOfYear);
-        };
-        _proto.atMonth = function atMonth(monthOrNumber) {
-          if (arguments.length === 1 && monthOrNumber instanceof Month) {
-            return this.atMonthMonth(monthOrNumber);
-          } else {
-            return this.atMonthNumber(monthOrNumber);
-          }
-        };
-        _proto.atMonthMonth = function atMonthMonth(month) {
-          requireNonNull(month, "month");
-          requireInstance(month, Month, "month");
-          return YearMonth.of(this._year, month);
-        };
-        _proto.atMonthNumber = function atMonthNumber(month) {
-          requireNonNull(month, "month");
-          return YearMonth.of(this._year, month);
-        };
-        _proto.atMonthDay = function atMonthDay(monthDay) {
-          requireNonNull(monthDay, "monthDay");
-          requireInstance(monthDay, MonthDay, "monthDay");
-          return monthDay.atYear(this._year);
-        };
-        _proto.query = function query(_query) {
-          requireNonNull(_query, "query()");
-          requireInstance(_query, TemporalQuery, "query()");
-          if (_query === TemporalQueries.chronology()) {
-            return IsoChronology.INSTANCE;
-          } else if (_query === TemporalQueries.precision()) {
-            return ChronoUnit.YEARS;
-          } else if (_query === TemporalQueries.localDate() || _query === TemporalQueries.localTime() || _query === TemporalQueries.zone() || _query === TemporalQueries.zoneId() || _query === TemporalQueries.offset()) {
-            return null;
-          }
-          return _Temporal.prototype.query.call(this, _query);
-        };
-        _proto.compareTo = function compareTo(other) {
-          requireNonNull(other, "other");
-          requireInstance(other, Year2, "other");
-          return this._year - other._year;
-        };
-        _proto.isAfter = function isAfter(other) {
-          requireNonNull(other, "other");
-          requireInstance(other, Year2, "other");
-          return this._year > other._year;
-        };
-        _proto.isBefore = function isBefore(other) {
-          requireNonNull(other, "other");
-          requireInstance(other, Year2, "other");
-          return this._year < other._year;
-        };
-        _proto.format = function format(formatter) {
-          requireNonNull(formatter, "formatter");
-          requireInstance(formatter, DateTimeFormatter, "formatter");
-          return formatter.format(this);
-        };
-        _proto.equals = function equals(other) {
-          if (this === other) {
-            return true;
-          }
-          if (other instanceof Year2) {
-            return this.value() === other.value();
-          }
-          return false;
-        };
-        _proto.toString = function toString() {
-          return "" + this._year;
-        };
-        _proto.toJSON = function toJSON() {
-          return this.toString();
-        };
-        _proto.until = function until(endExclusive, unit) {
-          var end = Year2.from(endExclusive);
-          if (unit instanceof ChronoUnit) {
-            var yearsUntil = end.value() - this.value();
-            switch (unit) {
-              case ChronoUnit.YEARS:
-                return yearsUntil;
-              case ChronoUnit.DECADES:
-                return MathUtil.intDiv(yearsUntil, 10);
-              case ChronoUnit.CENTURIES:
-                return MathUtil.intDiv(yearsUntil, 100);
-              case ChronoUnit.MILLENNIA:
-                return MathUtil.intDiv(yearsUntil, 1e3);
-              case ChronoUnit.ERAS:
-                return end.getLong(ChronoField.ERA) - this.getLong(ChronoField.ERA);
-            }
-            throw new UnsupportedTemporalTypeException("Unsupported unit: " + unit);
-          }
-          return unit.between(this, end);
-        };
-        return Year2;
-      })(Temporal);
-      var PARSER;
-      function _init$7() {
-        Year.MIN_VALUE = YearConstants.MIN_VALUE;
-        Year.MAX_VALUE = YearConstants.MAX_VALUE;
-        PARSER = new DateTimeFormatterBuilder().appendValue(ChronoField.YEAR, 4, 10, SignStyle.EXCEEDS_PAD).toFormatter();
-        Year.FROM = createTemporalQuery("Year.FROM", function(temporal) {
-          return Year.from(temporal);
-        });
-      }
-      var TemporalAdjuster = (function() {
-        function TemporalAdjuster2() {
-        }
-        var _proto = TemporalAdjuster2.prototype;
-        _proto.adjustInto = function adjustInto(temporal) {
-          abstractMethodFail("adjustInto");
-        };
-        return TemporalAdjuster2;
-      })();
-      var TemporalAdjusters = (function() {
-        function TemporalAdjusters2() {
-        }
-        TemporalAdjusters2.firstDayOfMonth = function firstDayOfMonth() {
-          return Impl.FIRST_DAY_OF_MONTH;
-        };
-        TemporalAdjusters2.lastDayOfMonth = function lastDayOfMonth() {
-          return Impl.LAST_DAY_OF_MONTH;
-        };
-        TemporalAdjusters2.firstDayOfNextMonth = function firstDayOfNextMonth() {
-          return Impl.FIRST_DAY_OF_NEXT_MONTH;
-        };
-        TemporalAdjusters2.firstDayOfYear = function firstDayOfYear() {
-          return Impl.FIRST_DAY_OF_YEAR;
-        };
-        TemporalAdjusters2.lastDayOfYear = function lastDayOfYear() {
-          return Impl.LAST_DAY_OF_YEAR;
-        };
-        TemporalAdjusters2.firstDayOfNextYear = function firstDayOfNextYear() {
-          return Impl.FIRST_DAY_OF_NEXT_YEAR;
-        };
-        TemporalAdjusters2.firstInMonth = function firstInMonth(dayOfWeek) {
-          requireNonNull(dayOfWeek, "dayOfWeek");
-          return new DayOfWeekInMonth(1, dayOfWeek);
-        };
-        TemporalAdjusters2.lastInMonth = function lastInMonth(dayOfWeek) {
-          requireNonNull(dayOfWeek, "dayOfWeek");
-          return new DayOfWeekInMonth(-1, dayOfWeek);
-        };
-        TemporalAdjusters2.dayOfWeekInMonth = function dayOfWeekInMonth(ordinal, dayOfWeek) {
-          requireNonNull(dayOfWeek, "dayOfWeek");
-          return new DayOfWeekInMonth(ordinal, dayOfWeek);
-        };
-        TemporalAdjusters2.next = function next(dayOfWeek) {
-          return new RelativeDayOfWeek(2, dayOfWeek);
-        };
-        TemporalAdjusters2.nextOrSame = function nextOrSame(dayOfWeek) {
-          return new RelativeDayOfWeek(0, dayOfWeek);
-        };
-        TemporalAdjusters2.previous = function previous(dayOfWeek) {
-          return new RelativeDayOfWeek(3, dayOfWeek);
-        };
-        TemporalAdjusters2.previousOrSame = function previousOrSame(dayOfWeek) {
-          return new RelativeDayOfWeek(1, dayOfWeek);
-        };
-        return TemporalAdjusters2;
-      })();
-      var Impl = (function(_TemporalAdjuster) {
-        function Impl2(ordinal) {
-          var _this;
-          _this = _TemporalAdjuster.call(this) || this;
-          _this._ordinal = ordinal;
-          return _this;
-        }
-        _inheritsLoose(Impl2, _TemporalAdjuster);
-        var _proto = Impl2.prototype;
-        _proto.adjustInto = function adjustInto(temporal) {
-          switch (this._ordinal) {
-            case 0:
-              return temporal.with(ChronoField.DAY_OF_MONTH, 1);
-            case 1:
-              return temporal.with(ChronoField.DAY_OF_MONTH, temporal.range(ChronoField.DAY_OF_MONTH).maximum());
-            case 2:
-              return temporal.with(ChronoField.DAY_OF_MONTH, 1).plus(1, ChronoUnit.MONTHS);
-            case 3:
-              return temporal.with(ChronoField.DAY_OF_YEAR, 1);
-            case 4:
-              return temporal.with(ChronoField.DAY_OF_YEAR, temporal.range(ChronoField.DAY_OF_YEAR).maximum());
-            case 5:
-              return temporal.with(ChronoField.DAY_OF_YEAR, 1).plus(1, ChronoUnit.YEARS);
-          }
-          throw new IllegalStateException("Unreachable");
-        };
-        return Impl2;
-      })(TemporalAdjuster);
-      Impl.FIRST_DAY_OF_MONTH = new Impl(0);
-      Impl.LAST_DAY_OF_MONTH = new Impl(1);
-      Impl.FIRST_DAY_OF_NEXT_MONTH = new Impl(2);
-      Impl.FIRST_DAY_OF_YEAR = new Impl(3);
-      Impl.LAST_DAY_OF_YEAR = new Impl(4);
-      Impl.FIRST_DAY_OF_NEXT_YEAR = new Impl(5);
-      var DayOfWeekInMonth = (function(_TemporalAdjuster2) {
-        function DayOfWeekInMonth2(ordinal, dow) {
-          var _this2;
-          _this2 = _TemporalAdjuster2.call(this) || this;
-          _this2._ordinal = ordinal;
-          _this2._dowValue = dow.value();
-          return _this2;
-        }
-        _inheritsLoose(DayOfWeekInMonth2, _TemporalAdjuster2);
-        var _proto2 = DayOfWeekInMonth2.prototype;
-        _proto2.adjustInto = function adjustInto(temporal) {
-          if (this._ordinal >= 0) {
-            var temp = temporal.with(ChronoField.DAY_OF_MONTH, 1);
-            var curDow = temp.get(ChronoField.DAY_OF_WEEK);
-            var dowDiff = MathUtil.intMod(this._dowValue - curDow + 7, 7);
-            dowDiff += (this._ordinal - 1) * 7;
-            return temp.plus(dowDiff, ChronoUnit.DAYS);
-          } else {
-            var _temp = temporal.with(ChronoField.DAY_OF_MONTH, temporal.range(ChronoField.DAY_OF_MONTH).maximum());
-            var _curDow = _temp.get(ChronoField.DAY_OF_WEEK);
-            var daysDiff = this._dowValue - _curDow;
-            daysDiff = daysDiff === 0 ? 0 : daysDiff > 0 ? daysDiff - 7 : daysDiff;
-            daysDiff -= (-this._ordinal - 1) * 7;
-            return _temp.plus(daysDiff, ChronoUnit.DAYS);
-          }
-        };
-        return DayOfWeekInMonth2;
-      })(TemporalAdjuster);
-      var RelativeDayOfWeek = (function(_TemporalAdjuster3) {
-        function RelativeDayOfWeek2(relative, dayOfWeek) {
-          var _this3;
-          _this3 = _TemporalAdjuster3.call(this) || this;
-          requireNonNull(dayOfWeek, "dayOfWeek");
-          _this3._relative = relative;
-          _this3._dowValue = dayOfWeek.value();
-          return _this3;
-        }
-        _inheritsLoose(RelativeDayOfWeek2, _TemporalAdjuster3);
-        var _proto3 = RelativeDayOfWeek2.prototype;
-        _proto3.adjustInto = function adjustInto(temporal) {
-          var calDow = temporal.get(ChronoField.DAY_OF_WEEK);
-          if (this._relative < 2 && calDow === this._dowValue) {
-            return temporal;
-          }
-          if ((this._relative & 1) === 0) {
-            var daysDiff = calDow - this._dowValue;
-            return temporal.plus(daysDiff >= 0 ? 7 - daysDiff : -daysDiff, ChronoUnit.DAYS);
-          } else {
-            var _daysDiff = this._dowValue - calDow;
-            return temporal.minus(_daysDiff >= 0 ? 7 - _daysDiff : -_daysDiff, ChronoUnit.DAYS);
-          }
-        };
-        return RelativeDayOfWeek2;
-      })(TemporalAdjuster);
-      var IsoChronology = (function(_Enum) {
-        function IsoChronology2() {
-          return _Enum.apply(this, arguments) || this;
-        }
-        _inheritsLoose(IsoChronology2, _Enum);
-        IsoChronology2.isLeapYear = function isLeapYear(prolepticYear) {
-          return (prolepticYear & 3) === 0 && (prolepticYear % 100 !== 0 || prolepticYear % 400 === 0);
-        };
-        var _proto = IsoChronology2.prototype;
-        _proto._updateResolveMap = function _updateResolveMap(fieldValues, field, value) {
-          requireNonNull(fieldValues, "fieldValues");
-          requireNonNull(field, "field");
-          var current = fieldValues.get(field);
-          if (current != null && current !== value) {
-            throw new DateTimeException("Invalid state, field: " + field + " " + current + " conflicts with " + field + " " + value);
-          }
-          fieldValues.put(field, value);
-        };
-        _proto.resolveDate = function resolveDate(fieldValues, resolverStyle) {
-          if (fieldValues.containsKey(ChronoField.EPOCH_DAY)) {
-            return LocalDate.ofEpochDay(fieldValues.remove(ChronoField.EPOCH_DAY));
-          }
-          var prolepticMonth = fieldValues.remove(ChronoField.PROLEPTIC_MONTH);
-          if (prolepticMonth != null) {
-            if (resolverStyle !== ResolverStyle.LENIENT) {
-              ChronoField.PROLEPTIC_MONTH.checkValidValue(prolepticMonth);
-            }
-            this._updateResolveMap(fieldValues, ChronoField.MONTH_OF_YEAR, MathUtil.floorMod(prolepticMonth, 12) + 1);
-            this._updateResolveMap(fieldValues, ChronoField.YEAR, MathUtil.floorDiv(prolepticMonth, 12));
-          }
-          var yoeLong = fieldValues.remove(ChronoField.YEAR_OF_ERA);
-          if (yoeLong != null) {
-            if (resolverStyle !== ResolverStyle.LENIENT) {
-              ChronoField.YEAR_OF_ERA.checkValidValue(yoeLong);
-            }
-            var era = fieldValues.remove(ChronoField.ERA);
-            if (era == null) {
-              var year = fieldValues.get(ChronoField.YEAR);
-              if (resolverStyle === ResolverStyle.STRICT) {
-                if (year != null) {
-                  this._updateResolveMap(fieldValues, ChronoField.YEAR, year > 0 ? yoeLong : MathUtil.safeSubtract(1, yoeLong));
-                } else {
-                  fieldValues.put(ChronoField.YEAR_OF_ERA, yoeLong);
-                }
-              } else {
-                this._updateResolveMap(fieldValues, ChronoField.YEAR, year == null || year > 0 ? yoeLong : MathUtil.safeSubtract(1, yoeLong));
-              }
-            } else if (era === 1) {
-              this._updateResolveMap(fieldValues, ChronoField.YEAR, yoeLong);
-            } else if (era === 0) {
-              this._updateResolveMap(fieldValues, ChronoField.YEAR, MathUtil.safeSubtract(1, yoeLong));
-            } else {
-              throw new DateTimeException("Invalid value for era: " + era);
-            }
-          } else if (fieldValues.containsKey(ChronoField.ERA)) {
-            ChronoField.ERA.checkValidValue(fieldValues.get(ChronoField.ERA));
-          }
-          if (fieldValues.containsKey(ChronoField.YEAR)) {
-            if (fieldValues.containsKey(ChronoField.MONTH_OF_YEAR)) {
-              if (fieldValues.containsKey(ChronoField.DAY_OF_MONTH)) {
-                var y = ChronoField.YEAR.checkValidIntValue(fieldValues.remove(ChronoField.YEAR));
-                var moy = fieldValues.remove(ChronoField.MONTH_OF_YEAR);
-                var dom = fieldValues.remove(ChronoField.DAY_OF_MONTH);
-                if (resolverStyle === ResolverStyle.LENIENT) {
-                  var months = moy - 1;
-                  var days = dom - 1;
-                  return LocalDate.of(y, 1, 1).plusMonths(months).plusDays(days);
-                } else if (resolverStyle === ResolverStyle.SMART) {
-                  ChronoField.DAY_OF_MONTH.checkValidValue(dom);
-                  if (moy === 4 || moy === 6 || moy === 9 || moy === 11) {
-                    dom = Math.min(dom, 30);
-                  } else if (moy === 2) {
-                    dom = Math.min(dom, Month.FEBRUARY.length(Year.isLeap(y)));
-                  }
-                  return LocalDate.of(y, moy, dom);
-                } else {
-                  return LocalDate.of(y, moy, dom);
-                }
-              }
-            }
-            if (fieldValues.containsKey(ChronoField.DAY_OF_YEAR)) {
-              var _y = ChronoField.YEAR.checkValidIntValue(fieldValues.remove(ChronoField.YEAR));
-              if (resolverStyle === ResolverStyle.LENIENT) {
-                var _days = MathUtil.safeSubtract(fieldValues.remove(ChronoField.DAY_OF_YEAR), 1);
-                return LocalDate.ofYearDay(_y, 1).plusDays(_days);
-              }
-              var doy = ChronoField.DAY_OF_YEAR.checkValidIntValue(fieldValues.remove(ChronoField.DAY_OF_YEAR));
-              return LocalDate.ofYearDay(_y, doy);
-            }
-            if (fieldValues.containsKey(ChronoField.ALIGNED_WEEK_OF_YEAR)) {
-              if (fieldValues.containsKey(ChronoField.ALIGNED_DAY_OF_WEEK_IN_YEAR)) {
-                var _y2 = ChronoField.YEAR.checkValidIntValue(fieldValues.remove(ChronoField.YEAR));
-                if (resolverStyle === ResolverStyle.LENIENT) {
-                  var weeks = MathUtil.safeSubtract(fieldValues.remove(ChronoField.ALIGNED_WEEK_OF_YEAR), 1);
-                  var _days2 = MathUtil.safeSubtract(fieldValues.remove(ChronoField.ALIGNED_DAY_OF_WEEK_IN_YEAR), 1);
-                  return LocalDate.of(_y2, 1, 1).plusWeeks(weeks).plusDays(_days2);
-                }
-                var aw = ChronoField.ALIGNED_WEEK_OF_YEAR.checkValidIntValue(fieldValues.remove(ChronoField.ALIGNED_WEEK_OF_YEAR));
-                var ad = ChronoField.ALIGNED_DAY_OF_WEEK_IN_YEAR.checkValidIntValue(fieldValues.remove(ChronoField.ALIGNED_DAY_OF_WEEK_IN_YEAR));
-                var date = LocalDate.of(_y2, 1, 1).plusDays((aw - 1) * 7 + (ad - 1));
-                if (resolverStyle === ResolverStyle.STRICT && date.get(ChronoField.YEAR) !== _y2) {
-                  throw new DateTimeException("Strict mode rejected date parsed to a different year");
-                }
-                return date;
-              }
-              if (fieldValues.containsKey(ChronoField.DAY_OF_WEEK)) {
-                var _y3 = ChronoField.YEAR.checkValidIntValue(fieldValues.remove(ChronoField.YEAR));
-                if (resolverStyle === ResolverStyle.LENIENT) {
-                  var _weeks = MathUtil.safeSubtract(fieldValues.remove(ChronoField.ALIGNED_WEEK_OF_YEAR), 1);
-                  var _days3 = MathUtil.safeSubtract(fieldValues.remove(ChronoField.DAY_OF_WEEK), 1);
-                  return LocalDate.of(_y3, 1, 1).plusWeeks(_weeks).plusDays(_days3);
-                }
-                var _aw = ChronoField.ALIGNED_WEEK_OF_YEAR.checkValidIntValue(fieldValues.remove(ChronoField.ALIGNED_WEEK_OF_YEAR));
-                var dow = ChronoField.DAY_OF_WEEK.checkValidIntValue(fieldValues.remove(ChronoField.DAY_OF_WEEK));
-                var _date = LocalDate.of(_y3, 1, 1).plusWeeks(_aw - 1).with(TemporalAdjusters.nextOrSame(DayOfWeek.of(dow)));
-                if (resolverStyle === ResolverStyle.STRICT && _date.get(ChronoField.YEAR) !== _y3) {
-                  throw new DateTimeException("Strict mode rejected date parsed to a different month");
-                }
-                return _date;
-              }
-            }
-          }
-          return null;
-        };
-        _proto.date = function date(temporal) {
-          return LocalDate.from(temporal);
-        };
-        return IsoChronology2;
-      })(Enum);
-      function _init$6() {
-        IsoChronology.INSTANCE = new IsoChronology("IsoChronology");
-      }
-      var DAYS_PER_CYCLE = 146097;
-      var DAYS_0000_TO_1970 = DAYS_PER_CYCLE * 5 - (30 * 365 + 7);
-      var LocalDate = (function(_ChronoLocalDate) {
-        function LocalDate2(year, month, dayOfMonth) {
-          var _this;
-          _this = _ChronoLocalDate.call(this) || this;
-          requireNonNull(year, "year");
-          requireNonNull(month, "month");
-          requireNonNull(dayOfMonth, "dayOfMonth");
-          if (month instanceof Month) {
-            month = month.value();
-          }
-          _this._year = MathUtil.safeToInt(year);
-          _this._month = MathUtil.safeToInt(month);
-          _this._day = MathUtil.safeToInt(dayOfMonth);
-          LocalDate2._validate(_this._year, _this._month, _this._day);
-          return _this;
-        }
-        _inheritsLoose(LocalDate2, _ChronoLocalDate);
-        LocalDate2.now = function now(clockOrZone) {
-          var clock;
-          if (clockOrZone == null) {
-            clock = Clock.systemDefaultZone();
-          } else if (clockOrZone instanceof ZoneId) {
-            clock = Clock.system(clockOrZone);
-          } else {
-            clock = clockOrZone;
-          }
-          return LocalDate2.ofInstant(clock.instant(), clock.zone());
-        };
-        LocalDate2.ofInstant = function ofInstant(instant, zone) {
-          if (zone === void 0) {
-            zone = ZoneId.systemDefault();
-          }
-          requireNonNull(instant, "instant");
-          var offset = zone.rules().offset(instant);
-          var epochSec = instant.epochSecond() + offset.totalSeconds();
-          var epochDay = MathUtil.floorDiv(epochSec, LocalTime.SECONDS_PER_DAY);
-          return LocalDate2.ofEpochDay(epochDay);
-        };
-        LocalDate2.of = function of(year, month, dayOfMonth) {
-          return new LocalDate2(year, month, dayOfMonth);
-        };
-        LocalDate2.ofYearDay = function ofYearDay(year, dayOfYear) {
-          ChronoField.YEAR.checkValidValue(year);
-          var leap = IsoChronology.isLeapYear(year);
-          if (dayOfYear === 366 && leap === false) {
-            assert(false, "Invalid date 'DayOfYear 366' as '" + year + "' is not a leap year", DateTimeException);
-          }
-          var moy = Month.of(Math.floor((dayOfYear - 1) / 31 + 1));
-          var monthEnd = moy.firstDayOfYear(leap) + moy.length(leap) - 1;
-          if (dayOfYear > monthEnd) {
-            moy = moy.plus(1);
-          }
-          var dom = dayOfYear - moy.firstDayOfYear(leap) + 1;
-          return new LocalDate2(year, moy.value(), dom);
-        };
-        LocalDate2.ofEpochDay = function ofEpochDay(epochDay) {
-          if (epochDay === void 0) {
-            epochDay = 0;
-          }
-          var adjust, adjustCycles, doyEst, yearEst, zeroDay;
-          zeroDay = epochDay + DAYS_0000_TO_1970;
-          zeroDay -= 60;
-          adjust = 0;
-          if (zeroDay < 0) {
-            adjustCycles = MathUtil.intDiv(zeroDay + 1, DAYS_PER_CYCLE) - 1;
-            adjust = adjustCycles * 400;
-            zeroDay += -adjustCycles * DAYS_PER_CYCLE;
-          }
-          yearEst = MathUtil.intDiv(400 * zeroDay + 591, DAYS_PER_CYCLE);
-          doyEst = zeroDay - (365 * yearEst + MathUtil.intDiv(yearEst, 4) - MathUtil.intDiv(yearEst, 100) + MathUtil.intDiv(yearEst, 400));
-          if (doyEst < 0) {
-            yearEst--;
-            doyEst = zeroDay - (365 * yearEst + MathUtil.intDiv(yearEst, 4) - MathUtil.intDiv(yearEst, 100) + MathUtil.intDiv(yearEst, 400));
-          }
-          yearEst += adjust;
-          var marchDoy0 = doyEst;
-          var marchMonth0 = MathUtil.intDiv(marchDoy0 * 5 + 2, 153);
-          var month = (marchMonth0 + 2) % 12 + 1;
-          var dom = marchDoy0 - MathUtil.intDiv(marchMonth0 * 306 + 5, 10) + 1;
-          yearEst += MathUtil.intDiv(marchMonth0, 10);
-          var year = yearEst;
-          return new LocalDate2(year, month, dom);
-        };
-        LocalDate2.from = function from(temporal) {
-          requireNonNull(temporal, "temporal");
-          var date = temporal.query(TemporalQueries.localDate());
-          if (date == null) {
-            throw new DateTimeException("Unable to obtain LocalDate from TemporalAccessor: " + temporal + ", type " + (temporal.constructor != null ? temporal.constructor.name : ""));
-          }
-          return date;
-        };
-        LocalDate2.parse = function parse(text, formatter) {
-          if (formatter === void 0) {
-            formatter = DateTimeFormatter.ISO_LOCAL_DATE;
-          }
-          assert(formatter != null, "formatter", NullPointerException);
-          return formatter.parse(text, LocalDate2.FROM);
-        };
-        LocalDate2._resolvePreviousValid = function _resolvePreviousValid(year, month, day) {
-          switch (month) {
-            case 2:
-              day = Math.min(day, IsoChronology.isLeapYear(year) ? 29 : 28);
-              break;
-            case 4:
-            case 6:
-            case 9:
-            case 11:
-              day = Math.min(day, 30);
-              break;
-          }
-          return LocalDate2.of(year, month, day);
-        };
-        LocalDate2._validate = function _validate(year, month, dayOfMonth) {
-          var dom;
-          ChronoField.YEAR.checkValidValue(year);
-          ChronoField.MONTH_OF_YEAR.checkValidValue(month);
-          ChronoField.DAY_OF_MONTH.checkValidValue(dayOfMonth);
-          if (dayOfMonth > 28) {
-            dom = 31;
-            switch (month) {
-              case 2:
-                dom = IsoChronology.isLeapYear(year) ? 29 : 28;
-                break;
-              case 4:
-              case 6:
-              case 9:
-              case 11:
-                dom = 30;
-            }
-            if (dayOfMonth > dom) {
-              if (dayOfMonth === 29) {
-                assert(false, "Invalid date 'February 29' as '" + year + "' is not a leap year", DateTimeException);
-              } else {
-                assert(false, "Invalid date '" + year + "' '" + month + "' '" + dayOfMonth + "'", DateTimeException);
-              }
-            }
-          }
-        };
-        var _proto = LocalDate2.prototype;
-        _proto.isSupported = function isSupported(field) {
-          return _ChronoLocalDate.prototype.isSupported.call(this, field);
-        };
-        _proto.range = function range(field) {
-          if (field instanceof ChronoField) {
-            if (field.isDateBased()) {
-              switch (field) {
-                case ChronoField.DAY_OF_MONTH:
-                  return ValueRange.of(1, this.lengthOfMonth());
-                case ChronoField.DAY_OF_YEAR:
-                  return ValueRange.of(1, this.lengthOfYear());
-                case ChronoField.ALIGNED_WEEK_OF_MONTH:
-                  return ValueRange.of(1, this.month() === Month.FEBRUARY && this.isLeapYear() === false ? 4 : 5);
-                case ChronoField.YEAR_OF_ERA:
-                  return this._year <= 0 ? ValueRange.of(1, Year.MAX_VALUE + 1) : ValueRange.of(1, Year.MAX_VALUE);
-              }
-              return field.range();
-            }
-            throw new UnsupportedTemporalTypeException("Unsupported field: " + field);
-          }
-          return field.rangeRefinedBy(this);
-        };
-        _proto.get = function get(field) {
-          return this.getLong(field);
-        };
-        _proto.getLong = function getLong(field) {
-          assert(field != null, "", NullPointerException);
-          if (field instanceof ChronoField) {
-            return this._get0(field);
-          }
-          return field.getFrom(this);
-        };
-        _proto._get0 = function _get0(field) {
-          switch (field) {
-            case ChronoField.DAY_OF_WEEK:
-              return this.dayOfWeek().value();
-            case ChronoField.ALIGNED_DAY_OF_WEEK_IN_MONTH:
-              return MathUtil.intMod(this._day - 1, 7) + 1;
-            case ChronoField.ALIGNED_DAY_OF_WEEK_IN_YEAR:
-              return MathUtil.intMod(this.dayOfYear() - 1, 7) + 1;
-            case ChronoField.DAY_OF_MONTH:
-              return this._day;
-            case ChronoField.DAY_OF_YEAR:
-              return this.dayOfYear();
-            case ChronoField.EPOCH_DAY:
-              return this.toEpochDay();
-            case ChronoField.ALIGNED_WEEK_OF_MONTH:
-              return MathUtil.intDiv(this._day - 1, 7) + 1;
-            case ChronoField.ALIGNED_WEEK_OF_YEAR:
-              return MathUtil.intDiv(this.dayOfYear() - 1, 7) + 1;
-            case ChronoField.MONTH_OF_YEAR:
-              return this._month;
-            case ChronoField.PROLEPTIC_MONTH:
-              return this._prolepticMonth();
-            case ChronoField.YEAR_OF_ERA:
-              return this._year >= 1 ? this._year : 1 - this._year;
-            case ChronoField.YEAR:
-              return this._year;
-            case ChronoField.ERA:
-              return this._year >= 1 ? 1 : 0;
-          }
-          throw new UnsupportedTemporalTypeException("Unsupported field: " + field);
-        };
-        _proto._prolepticMonth = function _prolepticMonth() {
-          return this._year * 12 + (this._month - 1);
-        };
-        _proto.chronology = function chronology() {
-          return IsoChronology.INSTANCE;
-        };
-        _proto.year = function year() {
-          return this._year;
-        };
-        _proto.monthValue = function monthValue() {
-          return this._month;
-        };
-        _proto.month = function month() {
-          return Month.of(this._month);
-        };
-        _proto.dayOfMonth = function dayOfMonth() {
-          return this._day;
-        };
-        _proto.dayOfYear = function dayOfYear() {
-          return this.month().firstDayOfYear(this.isLeapYear()) + this._day - 1;
-        };
-        _proto.dayOfWeek = function dayOfWeek() {
-          var dow0 = MathUtil.floorMod(this.toEpochDay() + 3, 7);
-          return DayOfWeek.of(dow0 + 1);
-        };
-        _proto.isLeapYear = function isLeapYear() {
-          return IsoChronology.isLeapYear(this._year);
-        };
-        _proto.lengthOfMonth = function lengthOfMonth() {
-          switch (this._month) {
-            case 2:
-              return this.isLeapYear() ? 29 : 28;
-            case 4:
-            case 6:
-            case 9:
-            case 11:
-              return 30;
-            default:
-              return 31;
-          }
-        };
-        _proto.lengthOfYear = function lengthOfYear() {
-          return this.isLeapYear() ? 366 : 365;
-        };
-        _proto._withAdjuster = function _withAdjuster(adjuster) {
-          requireNonNull(adjuster, "adjuster");
-          if (adjuster instanceof LocalDate2) {
-            return adjuster;
-          }
-          return _ChronoLocalDate.prototype._withAdjuster.call(this, adjuster);
-        };
-        _proto._withField = function _withField(field, newValue) {
-          assert(field != null, "field", NullPointerException);
-          if (field instanceof ChronoField) {
-            var f = field;
-            f.checkValidValue(newValue);
-            switch (f) {
-              case ChronoField.DAY_OF_WEEK:
-                return this.plusDays(newValue - this.dayOfWeek().value());
-              case ChronoField.ALIGNED_DAY_OF_WEEK_IN_MONTH:
-                return this.plusDays(newValue - this.getLong(ChronoField.ALIGNED_DAY_OF_WEEK_IN_MONTH));
-              case ChronoField.ALIGNED_DAY_OF_WEEK_IN_YEAR:
-                return this.plusDays(newValue - this.getLong(ChronoField.ALIGNED_DAY_OF_WEEK_IN_YEAR));
-              case ChronoField.DAY_OF_MONTH:
-                return this.withDayOfMonth(newValue);
-              case ChronoField.DAY_OF_YEAR:
-                return this.withDayOfYear(newValue);
-              case ChronoField.EPOCH_DAY:
-                return LocalDate2.ofEpochDay(newValue);
-              case ChronoField.ALIGNED_WEEK_OF_MONTH:
-                return this.plusWeeks(newValue - this.getLong(ChronoField.ALIGNED_WEEK_OF_MONTH));
-              case ChronoField.ALIGNED_WEEK_OF_YEAR:
-                return this.plusWeeks(newValue - this.getLong(ChronoField.ALIGNED_WEEK_OF_YEAR));
-              case ChronoField.MONTH_OF_YEAR:
-                return this.withMonth(newValue);
-              case ChronoField.PROLEPTIC_MONTH:
-                return this.plusMonths(newValue - this.getLong(ChronoField.PROLEPTIC_MONTH));
-              case ChronoField.YEAR_OF_ERA:
-                return this.withYear(this._year >= 1 ? newValue : 1 - newValue);
-              case ChronoField.YEAR:
-                return this.withYear(newValue);
-              case ChronoField.ERA:
-                return this.getLong(ChronoField.ERA) === newValue ? this : this.withYear(1 - this._year);
-            }
-            throw new UnsupportedTemporalTypeException("Unsupported field: " + field);
-          }
-          return field.adjustInto(this, newValue);
-        };
-        _proto.withYear = function withYear(year) {
-          if (this._year === year) {
-            return this;
-          }
-          ChronoField.YEAR.checkValidValue(year);
-          return LocalDate2._resolvePreviousValid(year, this._month, this._day);
-        };
-        _proto.withMonth = function withMonth(month) {
-          var m = month instanceof Month ? month.value() : month;
-          if (this._month === m) {
-            return this;
-          }
-          ChronoField.MONTH_OF_YEAR.checkValidValue(m);
-          return LocalDate2._resolvePreviousValid(this._year, m, this._day);
-        };
-        _proto.withDayOfMonth = function withDayOfMonth(dayOfMonth) {
-          if (this._day === dayOfMonth) {
-            return this;
-          }
-          return LocalDate2.of(this._year, this._month, dayOfMonth);
-        };
-        _proto.withDayOfYear = function withDayOfYear(dayOfYear) {
-          if (this.dayOfYear() === dayOfYear) {
-            return this;
-          }
-          return LocalDate2.ofYearDay(this._year, dayOfYear);
-        };
-        _proto._plusUnit = function _plusUnit(amountToAdd, unit) {
-          requireNonNull(amountToAdd, "amountToAdd");
-          requireNonNull(unit, "unit");
-          if (unit instanceof ChronoUnit) {
-            switch (unit) {
-              case ChronoUnit.DAYS:
-                return this.plusDays(amountToAdd);
-              case ChronoUnit.WEEKS:
-                return this.plusWeeks(amountToAdd);
-              case ChronoUnit.MONTHS:
-                return this.plusMonths(amountToAdd);
-              case ChronoUnit.YEARS:
-                return this.plusYears(amountToAdd);
-              case ChronoUnit.DECADES:
-                return this.plusYears(MathUtil.safeMultiply(amountToAdd, 10));
-              case ChronoUnit.CENTURIES:
-                return this.plusYears(MathUtil.safeMultiply(amountToAdd, 100));
-              case ChronoUnit.MILLENNIA:
-                return this.plusYears(MathUtil.safeMultiply(amountToAdd, 1e3));
-              case ChronoUnit.ERAS:
-                return this.with(ChronoField.ERA, MathUtil.safeAdd(this.getLong(ChronoField.ERA), amountToAdd));
-            }
-            throw new UnsupportedTemporalTypeException("Unsupported unit: " + unit);
-          }
-          return unit.addTo(this, amountToAdd);
-        };
-        _proto.plusYears = function plusYears(yearsToAdd) {
-          if (yearsToAdd === 0) {
-            return this;
-          }
-          var newYear = ChronoField.YEAR.checkValidIntValue(this._year + yearsToAdd);
-          return LocalDate2._resolvePreviousValid(newYear, this._month, this._day);
-        };
-        _proto.plusMonths = function plusMonths(monthsToAdd) {
-          if (monthsToAdd === 0) {
-            return this;
-          }
-          var monthCount = this._year * 12 + (this._month - 1);
-          var calcMonths = monthCount + monthsToAdd;
-          var newYear = ChronoField.YEAR.checkValidIntValue(MathUtil.floorDiv(calcMonths, 12));
-          var newMonth = MathUtil.floorMod(calcMonths, 12) + 1;
-          return LocalDate2._resolvePreviousValid(newYear, newMonth, this._day);
-        };
-        _proto.plusWeeks = function plusWeeks(weeksToAdd) {
-          return this.plusDays(MathUtil.safeMultiply(weeksToAdd, 7));
-        };
-        _proto.plusDays = function plusDays(daysToAdd) {
-          if (daysToAdd === 0) {
-            return this;
-          }
-          var mjDay = MathUtil.safeAdd(this.toEpochDay(), daysToAdd);
-          return LocalDate2.ofEpochDay(mjDay);
-        };
-        _proto._minusUnit = function _minusUnit(amountToSubtract, unit) {
-          requireNonNull(amountToSubtract, "amountToSubtract");
-          requireNonNull(unit, "unit");
-          return this._plusUnit(-1 * amountToSubtract, unit);
-        };
-        _proto.minusYears = function minusYears(yearsToSubtract) {
-          return this.plusYears(yearsToSubtract * -1);
-        };
-        _proto.minusMonths = function minusMonths(monthsToSubtract) {
-          return this.plusMonths(monthsToSubtract * -1);
-        };
-        _proto.minusWeeks = function minusWeeks(weeksToSubtract) {
-          return this.plusWeeks(weeksToSubtract * -1);
-        };
-        _proto.minusDays = function minusDays(daysToSubtract) {
-          return this.plusDays(daysToSubtract * -1);
-        };
-        _proto.query = function query(_query) {
-          requireNonNull(_query, "query");
-          if (_query === TemporalQueries.localDate()) {
-            return this;
-          }
-          return _ChronoLocalDate.prototype.query.call(this, _query);
-        };
-        _proto.adjustInto = function adjustInto(temporal) {
-          return _ChronoLocalDate.prototype.adjustInto.call(this, temporal);
-        };
-        _proto.until = function until(p1, p2) {
-          if (arguments.length < 2) {
-            return this.until1(p1);
-          } else {
-            return this.until2(p1, p2);
-          }
-        };
-        _proto.until2 = function until2(endExclusive, unit) {
-          var end = LocalDate2.from(endExclusive);
-          if (unit instanceof ChronoUnit) {
-            switch (unit) {
-              case ChronoUnit.DAYS:
-                return this.daysUntil(end);
-              case ChronoUnit.WEEKS:
-                return MathUtil.intDiv(this.daysUntil(end), 7);
-              case ChronoUnit.MONTHS:
-                return this._monthsUntil(end);
-              case ChronoUnit.YEARS:
-                return MathUtil.intDiv(this._monthsUntil(end), 12);
-              case ChronoUnit.DECADES:
-                return MathUtil.intDiv(this._monthsUntil(end), 120);
-              case ChronoUnit.CENTURIES:
-                return MathUtil.intDiv(this._monthsUntil(end), 1200);
-              case ChronoUnit.MILLENNIA:
-                return MathUtil.intDiv(this._monthsUntil(end), 12e3);
-              case ChronoUnit.ERAS:
-                return end.getLong(ChronoField.ERA) - this.getLong(ChronoField.ERA);
-            }
-            throw new UnsupportedTemporalTypeException("Unsupported unit: " + unit);
-          }
-          return unit.between(this, end);
-        };
-        _proto.daysUntil = function daysUntil(end) {
-          return end.toEpochDay() - this.toEpochDay();
-        };
-        _proto._monthsUntil = function _monthsUntil(end) {
-          var packed1 = this._prolepticMonth() * 32 + this.dayOfMonth();
-          var packed2 = end._prolepticMonth() * 32 + end.dayOfMonth();
-          return MathUtil.intDiv(packed2 - packed1, 32);
-        };
-        _proto.until1 = function until1(endDate) {
-          var end = LocalDate2.from(endDate);
-          var totalMonths = end._prolepticMonth() - this._prolepticMonth();
-          var days = end._day - this._day;
-          if (totalMonths > 0 && days < 0) {
-            totalMonths--;
-            var calcDate = this.plusMonths(totalMonths);
-            days = end.toEpochDay() - calcDate.toEpochDay();
-          } else if (totalMonths < 0 && days > 0) {
-            totalMonths++;
-            days -= end.lengthOfMonth();
-          }
-          var years = MathUtil.intDiv(totalMonths, 12);
-          var months = MathUtil.intMod(totalMonths, 12);
-          return Period.of(years, months, days);
-        };
-        _proto.atTime = function atTime() {
-          if (arguments.length === 1) {
-            return this.atTime1.apply(this, arguments);
-          } else {
-            return this.atTime4.apply(this, arguments);
-          }
-        };
-        _proto.atTime1 = function atTime1(time) {
-          requireNonNull(time, "time");
-          if (time instanceof LocalTime) {
-            return LocalDateTime.of(this, time);
-          } else if (time instanceof OffsetTime) {
-            return this._atTimeOffsetTime(time);
-          } else {
-            throw new IllegalArgumentException("time must be an instance of LocalTime or OffsetTime" + (time && time.constructor && time.constructor.name ? ", but is " + time.constructor.name : ""));
-          }
-        };
-        _proto.atTime4 = function atTime4(hour, minute, second, nanoOfSecond) {
-          if (second === void 0) {
-            second = 0;
-          }
-          if (nanoOfSecond === void 0) {
-            nanoOfSecond = 0;
-          }
-          return this.atTime1(LocalTime.of(hour, minute, second, nanoOfSecond));
-        };
-        _proto._atTimeOffsetTime = function _atTimeOffsetTime(time) {
-          return OffsetDateTime.of(LocalDateTime.of(this, time.toLocalTime()), time.offset());
-        };
-        _proto.atStartOfDay = function atStartOfDay(zone) {
-          if (zone != null) {
-            return this._atStartOfDayWithZone(zone);
-          } else {
-            return LocalDateTime.of(this, LocalTime.MIDNIGHT);
-          }
-        };
-        _proto._atStartOfDayWithZone = function _atStartOfDayWithZone(zone) {
-          requireNonNull(zone, "zone");
-          var ldt = this.atTime(LocalTime.MIDNIGHT);
-          if (zone instanceof ZoneOffset === false) {
-            var trans = zone.rules().transition(ldt);
-            if (trans != null && trans.isGap()) {
-              ldt = trans.dateTimeAfter();
-            }
-          }
-          return ZonedDateTime.of(ldt, zone);
-        };
-        _proto.toEpochDay = function toEpochDay() {
-          var y = this._year;
-          var m = this._month;
-          var total = 0;
-          total += 365 * y;
-          if (y >= 0) {
-            total += MathUtil.intDiv(y + 3, 4) - MathUtil.intDiv(y + 99, 100) + MathUtil.intDiv(y + 399, 400);
-          } else {
-            total -= MathUtil.intDiv(y, -4) - MathUtil.intDiv(y, -100) + MathUtil.intDiv(y, -400);
-          }
-          total += MathUtil.intDiv(367 * m - 362, 12);
-          total += this.dayOfMonth() - 1;
-          if (m > 2) {
-            total--;
-            if (!IsoChronology.isLeapYear(y)) {
-              total--;
-            }
-          }
-          return total - DAYS_0000_TO_1970;
-        };
-        _proto.compareTo = function compareTo(other) {
-          requireNonNull(other, "other");
-          requireInstance(other, LocalDate2, "other");
-          return this._compareTo0(other);
-        };
-        _proto._compareTo0 = function _compareTo0(otherDate) {
-          var cmp = this._year - otherDate._year;
-          if (cmp === 0) {
-            cmp = this._month - otherDate._month;
-            if (cmp === 0) {
-              cmp = this._day - otherDate._day;
-            }
-          }
-          return cmp;
-        };
-        _proto.isAfter = function isAfter(other) {
-          return this.compareTo(other) > 0;
-        };
-        _proto.isBefore = function isBefore(other) {
-          return this.compareTo(other) < 0;
-        };
-        _proto.isEqual = function isEqual(other) {
-          return this.compareTo(other) === 0;
-        };
-        _proto.equals = function equals(other) {
-          if (this === other) {
-            return true;
-          }
-          if (other instanceof LocalDate2) {
-            return this._compareTo0(other) === 0;
-          }
-          return false;
-        };
-        _proto.hashCode = function hashCode() {
-          var yearValue = this._year;
-          var monthValue = this._month;
-          var dayValue = this._day;
-          return MathUtil.hash(yearValue & 4294965248 ^ (yearValue << 11) + (monthValue << 6) + dayValue);
-        };
-        _proto.toString = function toString() {
-          var dayString, monthString, yearString;
-          var yearValue = this._year;
-          var monthValue = this._month;
-          var dayValue = this._day;
-          var absYear = Math.abs(yearValue);
-          if (absYear < 1e3) {
-            if (yearValue < 0) {
-              yearString = "-" + ("" + (yearValue - 1e4)).slice(-4);
-            } else {
-              yearString = ("" + (yearValue + 1e4)).slice(-4);
-            }
-          } else {
-            if (yearValue > 9999) {
-              yearString = "+" + yearValue;
-            } else {
-              yearString = "" + yearValue;
-            }
-          }
-          if (monthValue < 10) {
-            monthString = "-0" + monthValue;
-          } else {
-            monthString = "-" + monthValue;
-          }
-          if (dayValue < 10) {
-            dayString = "-0" + dayValue;
-          } else {
-            dayString = "-" + dayValue;
-          }
-          return yearString + monthString + dayString;
-        };
-        _proto.toJSON = function toJSON() {
-          return this.toString();
-        };
-        _proto.format = function format(formatter) {
-          requireNonNull(formatter, "formatter");
-          requireInstance(formatter, DateTimeFormatter, "formatter");
-          return _ChronoLocalDate.prototype.format.call(this, formatter);
-        };
-        return LocalDate2;
-      })(ChronoLocalDate);
-      function _init$5() {
-        LocalDate.MIN = LocalDate.of(YearConstants.MIN_VALUE, 1, 1);
-        LocalDate.MAX = LocalDate.of(YearConstants.MAX_VALUE, 12, 31);
-        LocalDate.EPOCH_0 = LocalDate.ofEpochDay(0);
-        LocalDate.FROM = createTemporalQuery("LocalDate.FROM", function(temporal) {
-          return LocalDate.from(temporal);
-        });
-      }
-      var ChronoLocalDateTime = (function(_Temporal) {
-        function ChronoLocalDateTime2() {
-          return _Temporal.apply(this, arguments) || this;
-        }
-        _inheritsLoose(ChronoLocalDateTime2, _Temporal);
-        var _proto = ChronoLocalDateTime2.prototype;
-        _proto.chronology = function chronology() {
-          return this.toLocalDate().chronology();
-        };
-        _proto.query = function query(_query) {
-          if (_query === TemporalQueries.chronology()) {
-            return this.chronology();
-          } else if (_query === TemporalQueries.precision()) {
-            return ChronoUnit.NANOS;
-          } else if (_query === TemporalQueries.localDate()) {
-            return LocalDate.ofEpochDay(this.toLocalDate().toEpochDay());
-          } else if (_query === TemporalQueries.localTime()) {
-            return this.toLocalTime();
-          } else if (_query === TemporalQueries.zone() || _query === TemporalQueries.zoneId() || _query === TemporalQueries.offset()) {
-            return null;
-          }
-          return _Temporal.prototype.query.call(this, _query);
-        };
-        _proto.adjustInto = function adjustInto(temporal) {
-          return temporal.with(ChronoField.EPOCH_DAY, this.toLocalDate().toEpochDay()).with(ChronoField.NANO_OF_DAY, this.toLocalTime().toNanoOfDay());
-        };
-        _proto.toInstant = function toInstant(offset) {
-          requireInstance(offset, ZoneOffset, "zoneId");
-          return Instant.ofEpochSecond(this.toEpochSecond(offset), this.toLocalTime().nano());
-        };
-        _proto.toEpochSecond = function toEpochSecond(offset) {
-          requireNonNull(offset, "offset");
-          var epochDay = this.toLocalDate().toEpochDay();
-          var secs = epochDay * 86400 + this.toLocalTime().toSecondOfDay();
-          secs -= offset.totalSeconds();
-          return MathUtil.safeToInt(secs);
-        };
-        return ChronoLocalDateTime2;
-      })(Temporal);
-      var LocalDateTime = (function(_ChronoLocalDateTime) {
-        function LocalDateTime2(date, time) {
-          var _this;
-          _this = _ChronoLocalDateTime.call(this) || this;
-          requireInstance(date, LocalDate, "date");
-          requireInstance(time, LocalTime, "time");
-          _this._date = date;
-          _this._time = time;
-          return _this;
-        }
-        _inheritsLoose(LocalDateTime2, _ChronoLocalDateTime);
-        LocalDateTime2.now = function now(clockOrZone) {
-          if (clockOrZone == null) {
-            return LocalDateTime2._now(Clock.systemDefaultZone());
-          } else if (clockOrZone instanceof Clock) {
-            return LocalDateTime2._now(clockOrZone);
-          } else {
-            return LocalDateTime2._now(Clock.system(clockOrZone));
-          }
-        };
-        LocalDateTime2._now = function _now(clock) {
-          requireNonNull(clock, "clock");
-          return LocalDateTime2.ofInstant(clock.instant(), clock.zone());
-        };
-        LocalDateTime2._ofEpochMillis = function _ofEpochMillis(epochMilli, offset) {
-          var localSecond = MathUtil.floorDiv(epochMilli, 1e3) + offset.totalSeconds();
-          var localEpochDay = MathUtil.floorDiv(localSecond, LocalTime.SECONDS_PER_DAY);
-          var secsOfDay = MathUtil.floorMod(localSecond, LocalTime.SECONDS_PER_DAY);
-          var nanoOfSecond = MathUtil.floorMod(epochMilli, 1e3) * 1e6;
-          var date = LocalDate.ofEpochDay(localEpochDay);
-          var time = LocalTime.ofSecondOfDay(secsOfDay, nanoOfSecond);
-          return new LocalDateTime2(date, time);
-        };
-        LocalDateTime2.of = function of() {
-          if (arguments.length <= 2) {
-            return LocalDateTime2.ofDateAndTime.apply(this, arguments);
-          } else {
-            return LocalDateTime2.ofNumbers.apply(this, arguments);
-          }
-        };
-        LocalDateTime2.ofNumbers = function ofNumbers(year, month, dayOfMonth, hour, minute, second, nanoOfSecond) {
-          if (hour === void 0) {
-            hour = 0;
-          }
-          if (minute === void 0) {
-            minute = 0;
-          }
-          if (second === void 0) {
-            second = 0;
-          }
-          if (nanoOfSecond === void 0) {
-            nanoOfSecond = 0;
-          }
-          var date = LocalDate.of(year, month, dayOfMonth);
-          var time = LocalTime.of(hour, minute, second, nanoOfSecond);
-          return new LocalDateTime2(date, time);
-        };
-        LocalDateTime2.ofDateAndTime = function ofDateAndTime(date, time) {
-          requireNonNull(date, "date");
-          requireNonNull(time, "time");
-          return new LocalDateTime2(date, time);
-        };
-        LocalDateTime2.ofInstant = function ofInstant(instant, zone) {
-          if (zone === void 0) {
-            zone = ZoneId.systemDefault();
-          }
-          requireNonNull(instant, "instant");
-          requireInstance(instant, Instant, "instant");
-          requireNonNull(zone, "zone");
-          var offset = zone.rules().offset(instant);
-          return LocalDateTime2.ofEpochSecond(instant.epochSecond(), instant.nano(), offset);
-        };
-        LocalDateTime2.ofEpochSecond = function ofEpochSecond(epochSecond, nanoOfSecond, offset) {
-          if (epochSecond === void 0) {
-            epochSecond = 0;
-          }
-          if (nanoOfSecond === void 0) {
-            nanoOfSecond = 0;
-          }
-          if (arguments.length === 2 && nanoOfSecond instanceof ZoneOffset) {
-            offset = nanoOfSecond;
-            nanoOfSecond = 0;
-          }
-          requireNonNull(offset, "offset");
-          var localSecond = epochSecond + offset.totalSeconds();
-          var localEpochDay = MathUtil.floorDiv(localSecond, LocalTime.SECONDS_PER_DAY);
-          var secsOfDay = MathUtil.floorMod(localSecond, LocalTime.SECONDS_PER_DAY);
-          var date = LocalDate.ofEpochDay(localEpochDay);
-          var time = LocalTime.ofSecondOfDay(secsOfDay, nanoOfSecond);
-          return new LocalDateTime2(date, time);
-        };
-        LocalDateTime2.from = function from(temporal) {
-          requireNonNull(temporal, "temporal");
-          if (temporal instanceof LocalDateTime2) {
-            return temporal;
-          } else if (temporal instanceof ZonedDateTime) {
-            return temporal.toLocalDateTime();
-          }
-          try {
-            var date = LocalDate.from(temporal);
-            var time = LocalTime.from(temporal);
-            return new LocalDateTime2(date, time);
-          } catch (ex) {
-            throw new DateTimeException("Unable to obtain LocalDateTime TemporalAccessor: " + temporal + ", type " + (temporal.constructor != null ? temporal.constructor.name : ""));
-          }
-        };
-        LocalDateTime2.parse = function parse(text, formatter) {
-          if (formatter === void 0) {
-            formatter = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
-          }
-          requireNonNull(formatter, "formatter");
-          return formatter.parse(text, LocalDateTime2.FROM);
-        };
-        var _proto = LocalDateTime2.prototype;
-        _proto._withDateTime = function _withDateTime(newDate, newTime) {
-          if (this._date.equals(newDate) && this._time.equals(newTime)) {
-            return this;
-          }
-          return new LocalDateTime2(newDate, newTime);
-        };
-        _proto.isSupported = function isSupported(fieldOrUnit) {
-          if (fieldOrUnit instanceof ChronoField) {
-            return fieldOrUnit.isDateBased() || fieldOrUnit.isTimeBased();
-          } else if (fieldOrUnit instanceof ChronoUnit) {
-            return fieldOrUnit.isDateBased() || fieldOrUnit.isTimeBased();
-          }
-          return fieldOrUnit != null && fieldOrUnit.isSupportedBy(this);
-        };
-        _proto.range = function range(field) {
-          if (field instanceof ChronoField) {
-            return field.isTimeBased() ? this._time.range(field) : this._date.range(field);
-          }
-          return field.rangeRefinedBy(this);
-        };
-        _proto.get = function get(field) {
-          if (field instanceof ChronoField) {
-            return field.isTimeBased() ? this._time.get(field) : this._date.get(field);
-          }
-          return _ChronoLocalDateTime.prototype.get.call(this, field);
-        };
-        _proto.getLong = function getLong(field) {
-          requireNonNull(field, "field");
-          if (field instanceof ChronoField) {
-            return field.isTimeBased() ? this._time.getLong(field) : this._date.getLong(field);
-          }
-          return field.getFrom(this);
-        };
-        _proto.year = function year() {
-          return this._date.year();
-        };
-        _proto.monthValue = function monthValue() {
-          return this._date.monthValue();
-        };
-        _proto.month = function month() {
-          return this._date.month();
-        };
-        _proto.dayOfMonth = function dayOfMonth() {
-          return this._date.dayOfMonth();
-        };
-        _proto.dayOfYear = function dayOfYear() {
-          return this._date.dayOfYear();
-        };
-        _proto.dayOfWeek = function dayOfWeek() {
-          return this._date.dayOfWeek();
-        };
-        _proto.hour = function hour() {
-          return this._time.hour();
-        };
-        _proto.minute = function minute() {
-          return this._time.minute();
-        };
-        _proto.second = function second() {
-          return this._time.second();
-        };
-        _proto.nano = function nano() {
-          return this._time.nano();
-        };
-        _proto._withAdjuster = function _withAdjuster(adjuster) {
-          requireNonNull(adjuster, "adjuster");
-          if (adjuster instanceof LocalDate) {
-            return this._withDateTime(adjuster, this._time);
-          } else if (adjuster instanceof LocalTime) {
-            return this._withDateTime(this._date, adjuster);
-          } else if (adjuster instanceof LocalDateTime2) {
-            return adjuster;
-          }
-          return _ChronoLocalDateTime.prototype._withAdjuster.call(this, adjuster);
-        };
-        _proto._withField = function _withField(field, newValue) {
-          requireNonNull(field, "field");
-          if (field instanceof ChronoField) {
-            if (field.isTimeBased()) {
-              return this._withDateTime(this._date, this._time.with(field, newValue));
-            } else {
-              return this._withDateTime(this._date.with(field, newValue), this._time);
-            }
-          }
-          return field.adjustInto(this, newValue);
-        };
-        _proto.withYear = function withYear(year) {
-          return this._withDateTime(this._date.withYear(year), this._time);
-        };
-        _proto.withMonth = function withMonth(month) {
-          return this._withDateTime(this._date.withMonth(month), this._time);
-        };
-        _proto.withDayOfMonth = function withDayOfMonth(dayOfMonth) {
-          return this._withDateTime(this._date.withDayOfMonth(dayOfMonth), this._time);
-        };
-        _proto.withDayOfYear = function withDayOfYear(dayOfYear) {
-          return this._withDateTime(this._date.withDayOfYear(dayOfYear), this._time);
-        };
-        _proto.withHour = function withHour(hour) {
-          var newTime = this._time.withHour(hour);
-          return this._withDateTime(this._date, newTime);
-        };
-        _proto.withMinute = function withMinute(minute) {
-          var newTime = this._time.withMinute(minute);
-          return this._withDateTime(this._date, newTime);
-        };
-        _proto.withSecond = function withSecond(second) {
-          var newTime = this._time.withSecond(second);
-          return this._withDateTime(this._date, newTime);
-        };
-        _proto.withNano = function withNano(nanoOfSecond) {
-          var newTime = this._time.withNano(nanoOfSecond);
-          return this._withDateTime(this._date, newTime);
-        };
-        _proto.truncatedTo = function truncatedTo(unit) {
-          return this._withDateTime(this._date, this._time.truncatedTo(unit));
-        };
-        _proto._plusUnit = function _plusUnit(amountToAdd, unit) {
-          requireNonNull(unit, "unit");
-          if (unit instanceof ChronoUnit) {
-            switch (unit) {
-              case ChronoUnit.NANOS:
-                return this.plusNanos(amountToAdd);
-              case ChronoUnit.MICROS:
-                return this.plusDays(MathUtil.intDiv(amountToAdd, LocalTime.MICROS_PER_DAY)).plusNanos(MathUtil.intMod(amountToAdd, LocalTime.MICROS_PER_DAY) * 1e3);
-              case ChronoUnit.MILLIS:
-                return this.plusDays(MathUtil.intDiv(amountToAdd, LocalTime.MILLIS_PER_DAY)).plusNanos(MathUtil.intMod(amountToAdd, LocalTime.MILLIS_PER_DAY) * 1e6);
-              case ChronoUnit.SECONDS:
-                return this.plusSeconds(amountToAdd);
-              case ChronoUnit.MINUTES:
-                return this.plusMinutes(amountToAdd);
-              case ChronoUnit.HOURS:
-                return this.plusHours(amountToAdd);
-              case ChronoUnit.HALF_DAYS:
-                return this.plusDays(MathUtil.intDiv(amountToAdd, 256)).plusHours(MathUtil.intMod(amountToAdd, 256) * 12);
-            }
-            return this._withDateTime(this._date.plus(amountToAdd, unit), this._time);
-          }
-          return unit.addTo(this, amountToAdd);
-        };
-        _proto.plusYears = function plusYears(years) {
-          var newDate = this._date.plusYears(years);
-          return this._withDateTime(newDate, this._time);
-        };
-        _proto.plusMonths = function plusMonths(months) {
-          var newDate = this._date.plusMonths(months);
-          return this._withDateTime(newDate, this._time);
-        };
-        _proto.plusWeeks = function plusWeeks(weeks) {
-          var newDate = this._date.plusWeeks(weeks);
-          return this._withDateTime(newDate, this._time);
-        };
-        _proto.plusDays = function plusDays(days) {
-          var newDate = this._date.plusDays(days);
-          return this._withDateTime(newDate, this._time);
-        };
-        _proto.plusHours = function plusHours(hours) {
-          return this._plusWithOverflow(this._date, hours, 0, 0, 0, 1);
-        };
-        _proto.plusMinutes = function plusMinutes(minutes) {
-          return this._plusWithOverflow(this._date, 0, minutes, 0, 0, 1);
-        };
-        _proto.plusSeconds = function plusSeconds(seconds) {
-          return this._plusWithOverflow(this._date, 0, 0, seconds, 0, 1);
-        };
-        _proto.plusNanos = function plusNanos(nanos) {
-          return this._plusWithOverflow(this._date, 0, 0, 0, nanos, 1);
-        };
-        _proto._minusUnit = function _minusUnit(amountToSubtract, unit) {
-          requireNonNull(unit, "unit");
-          return this._plusUnit(-1 * amountToSubtract, unit);
-        };
-        _proto.minusYears = function minusYears(years) {
-          return this.plusYears(-1 * years);
-        };
-        _proto.minusMonths = function minusMonths(months) {
-          return this.plusMonths(-1 * months);
-        };
-        _proto.minusWeeks = function minusWeeks(weeks) {
-          return this.plusWeeks(-1 * weeks);
-        };
-        _proto.minusDays = function minusDays(days) {
-          return this.plusDays(-1 * days);
-        };
-        _proto.minusHours = function minusHours(hours) {
-          return this._plusWithOverflow(this._date, hours, 0, 0, 0, -1);
-        };
-        _proto.minusMinutes = function minusMinutes(minutes) {
-          return this._plusWithOverflow(this._date, 0, minutes, 0, 0, -1);
-        };
-        _proto.minusSeconds = function minusSeconds(seconds) {
-          return this._plusWithOverflow(this._date, 0, 0, seconds, 0, -1);
-        };
-        _proto.minusNanos = function minusNanos(nanos) {
-          return this._plusWithOverflow(this._date, 0, 0, 0, nanos, -1);
-        };
-        _proto._plusWithOverflow = function _plusWithOverflow(newDate, hours, minutes, seconds, nanos, sign) {
-          if (hours === 0 && minutes === 0 && seconds === 0 && nanos === 0) {
-            return this._withDateTime(newDate, this._time);
-          }
-          var totDays = MathUtil.intDiv(nanos, LocalTime.NANOS_PER_DAY) + MathUtil.intDiv(seconds, LocalTime.SECONDS_PER_DAY) + MathUtil.intDiv(minutes, LocalTime.MINUTES_PER_DAY) + MathUtil.intDiv(hours, LocalTime.HOURS_PER_DAY);
-          totDays *= sign;
-          var totNanos = MathUtil.intMod(nanos, LocalTime.NANOS_PER_DAY) + MathUtil.intMod(seconds, LocalTime.SECONDS_PER_DAY) * LocalTime.NANOS_PER_SECOND + MathUtil.intMod(minutes, LocalTime.MINUTES_PER_DAY) * LocalTime.NANOS_PER_MINUTE + MathUtil.intMod(hours, LocalTime.HOURS_PER_DAY) * LocalTime.NANOS_PER_HOUR;
-          var curNoD = this._time.toNanoOfDay();
-          totNanos = totNanos * sign + curNoD;
-          totDays += MathUtil.floorDiv(totNanos, LocalTime.NANOS_PER_DAY);
-          var newNoD = MathUtil.floorMod(totNanos, LocalTime.NANOS_PER_DAY);
-          var newTime = newNoD === curNoD ? this._time : LocalTime.ofNanoOfDay(newNoD);
-          return this._withDateTime(newDate.plusDays(totDays), newTime);
-        };
-        _proto.query = function query(_query) {
-          requireNonNull(_query, "query");
-          if (_query === TemporalQueries.localDate()) {
-            return this.toLocalDate();
-          }
-          return _ChronoLocalDateTime.prototype.query.call(this, _query);
-        };
-        _proto.adjustInto = function adjustInto(temporal) {
-          return _ChronoLocalDateTime.prototype.adjustInto.call(this, temporal);
-        };
-        _proto.until = function until(endExclusive, unit) {
-          requireNonNull(endExclusive, "endExclusive");
-          requireNonNull(unit, "unit");
-          var end = LocalDateTime2.from(endExclusive);
-          if (unit instanceof ChronoUnit) {
-            if (unit.isTimeBased()) {
-              var daysUntil = this._date.daysUntil(end._date);
-              var timeUntil = end._time.toNanoOfDay() - this._time.toNanoOfDay();
-              if (daysUntil > 0 && timeUntil < 0) {
-                daysUntil--;
-                timeUntil += LocalTime.NANOS_PER_DAY;
-              } else if (daysUntil < 0 && timeUntil > 0) {
-                daysUntil++;
-                timeUntil -= LocalTime.NANOS_PER_DAY;
-              }
-              var amount = daysUntil;
-              switch (unit) {
-                case ChronoUnit.NANOS:
-                  amount = MathUtil.safeMultiply(amount, LocalTime.NANOS_PER_DAY);
-                  return MathUtil.safeAdd(amount, timeUntil);
-                case ChronoUnit.MICROS:
-                  amount = MathUtil.safeMultiply(amount, LocalTime.MICROS_PER_DAY);
-                  return MathUtil.safeAdd(amount, MathUtil.intDiv(timeUntil, 1e3));
-                case ChronoUnit.MILLIS:
-                  amount = MathUtil.safeMultiply(amount, LocalTime.MILLIS_PER_DAY);
-                  return MathUtil.safeAdd(amount, MathUtil.intDiv(timeUntil, 1e6));
-                case ChronoUnit.SECONDS:
-                  amount = MathUtil.safeMultiply(amount, LocalTime.SECONDS_PER_DAY);
-                  return MathUtil.safeAdd(amount, MathUtil.intDiv(timeUntil, LocalTime.NANOS_PER_SECOND));
-                case ChronoUnit.MINUTES:
-                  amount = MathUtil.safeMultiply(amount, LocalTime.MINUTES_PER_DAY);
-                  return MathUtil.safeAdd(amount, MathUtil.intDiv(timeUntil, LocalTime.NANOS_PER_MINUTE));
-                case ChronoUnit.HOURS:
-                  amount = MathUtil.safeMultiply(amount, LocalTime.HOURS_PER_DAY);
-                  return MathUtil.safeAdd(amount, MathUtil.intDiv(timeUntil, LocalTime.NANOS_PER_HOUR));
-                case ChronoUnit.HALF_DAYS:
-                  amount = MathUtil.safeMultiply(amount, 2);
-                  return MathUtil.safeAdd(amount, MathUtil.intDiv(timeUntil, LocalTime.NANOS_PER_HOUR * 12));
-              }
-              throw new UnsupportedTemporalTypeException("Unsupported unit: " + unit);
-            }
-            var endDate = end._date;
-            var endTime = end._time;
-            if (endDate.isAfter(this._date) && endTime.isBefore(this._time)) {
-              endDate = endDate.minusDays(1);
-            } else if (endDate.isBefore(this._date) && endTime.isAfter(this._time)) {
-              endDate = endDate.plusDays(1);
-            }
-            return this._date.until(endDate, unit);
-          }
-          return unit.between(this, end);
-        };
-        _proto.atOffset = function atOffset(offset) {
-          return OffsetDateTime.of(this, offset);
-        };
-        _proto.atZone = function atZone(zone) {
-          return ZonedDateTime.of(this, zone);
-        };
-        _proto.toLocalDate = function toLocalDate() {
-          return this._date;
-        };
-        _proto.toLocalTime = function toLocalTime() {
-          return this._time;
-        };
-        _proto.compareTo = function compareTo(other) {
-          requireNonNull(other, "other");
-          requireInstance(other, LocalDateTime2, "other");
-          return this._compareTo0(other);
-        };
-        _proto._compareTo0 = function _compareTo0(other) {
-          var cmp = this._date.compareTo(other.toLocalDate());
-          if (cmp === 0) {
-            cmp = this._time.compareTo(other.toLocalTime());
-          }
-          return cmp;
-        };
-        _proto.isAfter = function isAfter(other) {
-          return this.compareTo(other) > 0;
-        };
-        _proto.isBefore = function isBefore(other) {
-          return this.compareTo(other) < 0;
-        };
-        _proto.isEqual = function isEqual(other) {
-          return this.compareTo(other) === 0;
-        };
-        _proto.equals = function equals(other) {
-          if (this === other) {
-            return true;
-          }
-          if (other instanceof LocalDateTime2) {
-            return this._date.equals(other._date) && this._time.equals(other._time);
-          }
-          return false;
-        };
-        _proto.hashCode = function hashCode() {
-          return this._date.hashCode() ^ this._time.hashCode();
-        };
-        _proto.toString = function toString() {
-          return this._date.toString() + "T" + this._time.toString();
-        };
-        _proto.toJSON = function toJSON() {
-          return this.toString();
-        };
-        _proto.format = function format(formatter) {
-          requireNonNull(formatter, "formatter");
-          return formatter.format(this);
-        };
-        return LocalDateTime2;
-      })(ChronoLocalDateTime);
-      function _init$4() {
-        LocalDateTime.MIN = LocalDateTime.of(LocalDate.MIN, LocalTime.MIN);
-        LocalDateTime.MAX = LocalDateTime.of(LocalDate.MAX, LocalTime.MAX);
-        LocalDateTime.FROM = createTemporalQuery("LocalDateTime.FROM", function(temporal) {
-          return LocalDateTime.from(temporal);
-        });
-      }
-      var LocalTime = (function(_Temporal) {
-        function LocalTime2(hour, minute, second, nanoOfSecond) {
-          var _this;
-          if (hour === void 0) {
-            hour = 0;
-          }
-          if (minute === void 0) {
-            minute = 0;
-          }
-          if (second === void 0) {
-            second = 0;
-          }
-          if (nanoOfSecond === void 0) {
-            nanoOfSecond = 0;
-          }
-          _this = _Temporal.call(this) || this;
-          var _hour = MathUtil.safeToInt(hour);
-          var _minute = MathUtil.safeToInt(minute);
-          var _second = MathUtil.safeToInt(second);
-          var _nanoOfSecond = MathUtil.safeToInt(nanoOfSecond);
-          LocalTime2._validate(_hour, _minute, _second, _nanoOfSecond);
-          if (_minute === 0 && _second === 0 && _nanoOfSecond === 0) {
-            if (!LocalTime2.HOURS[_hour]) {
-              _this._hour = _hour;
-              _this._minute = _minute;
-              _this._second = _second;
-              _this._nano = _nanoOfSecond;
-              LocalTime2.HOURS[_hour] = _this;
-            }
-            return LocalTime2.HOURS[_hour] || _assertThisInitialized(_this);
-          }
-          _this._hour = _hour;
-          _this._minute = _minute;
-          _this._second = _second;
-          _this._nano = _nanoOfSecond;
-          return _this;
-        }
-        _inheritsLoose(LocalTime2, _Temporal);
-        LocalTime2.now = function now(clockOrZone) {
-          if (clockOrZone == null) {
-            return LocalTime2._now(Clock.systemDefaultZone());
-          } else if (clockOrZone instanceof Clock) {
-            return LocalTime2._now(clockOrZone);
-          } else {
-            return LocalTime2._now(Clock.system(clockOrZone));
-          }
-        };
-        LocalTime2._now = function _now(clock) {
-          if (clock === void 0) {
-            clock = Clock.systemDefaultZone();
-          }
-          requireNonNull(clock, "clock");
-          return LocalTime2.ofInstant(clock.instant(), clock.zone());
-        };
-        LocalTime2.ofInstant = function ofInstant(instant, zone) {
-          if (zone === void 0) {
-            zone = ZoneId.systemDefault();
-          }
-          var offset = zone.rules().offset(instant);
-          var secsOfDay = MathUtil.intMod(instant.epochSecond(), LocalTime2.SECONDS_PER_DAY);
-          secsOfDay = MathUtil.intMod(secsOfDay + offset.totalSeconds(), LocalTime2.SECONDS_PER_DAY);
-          if (secsOfDay < 0) {
-            secsOfDay += LocalTime2.SECONDS_PER_DAY;
-          }
-          return LocalTime2.ofSecondOfDay(secsOfDay, instant.nano());
-        };
-        LocalTime2.of = function of(hour, minute, second, nanoOfSecond) {
-          return new LocalTime2(hour, minute, second, nanoOfSecond);
-        };
-        LocalTime2.ofSecondOfDay = function ofSecondOfDay(secondOfDay, nanoOfSecond) {
-          if (secondOfDay === void 0) {
-            secondOfDay = 0;
-          }
-          if (nanoOfSecond === void 0) {
-            nanoOfSecond = 0;
-          }
-          ChronoField.SECOND_OF_DAY.checkValidValue(secondOfDay);
-          ChronoField.NANO_OF_SECOND.checkValidValue(nanoOfSecond);
-          var hours = MathUtil.intDiv(secondOfDay, LocalTime2.SECONDS_PER_HOUR);
-          secondOfDay -= hours * LocalTime2.SECONDS_PER_HOUR;
-          var minutes = MathUtil.intDiv(secondOfDay, LocalTime2.SECONDS_PER_MINUTE);
-          secondOfDay -= minutes * LocalTime2.SECONDS_PER_MINUTE;
-          return new LocalTime2(hours, minutes, secondOfDay, nanoOfSecond);
-        };
-        LocalTime2.ofNanoOfDay = function ofNanoOfDay(nanoOfDay) {
-          if (nanoOfDay === void 0) {
-            nanoOfDay = 0;
-          }
-          ChronoField.NANO_OF_DAY.checkValidValue(nanoOfDay);
-          var hours = MathUtil.intDiv(nanoOfDay, LocalTime2.NANOS_PER_HOUR);
-          nanoOfDay -= hours * LocalTime2.NANOS_PER_HOUR;
-          var minutes = MathUtil.intDiv(nanoOfDay, LocalTime2.NANOS_PER_MINUTE);
-          nanoOfDay -= minutes * LocalTime2.NANOS_PER_MINUTE;
-          var seconds = MathUtil.intDiv(nanoOfDay, LocalTime2.NANOS_PER_SECOND);
-          nanoOfDay -= seconds * LocalTime2.NANOS_PER_SECOND;
-          return new LocalTime2(hours, minutes, seconds, nanoOfDay);
-        };
-        LocalTime2.from = function from(temporal) {
-          requireNonNull(temporal, "temporal");
-          var time = temporal.query(TemporalQueries.localTime());
-          if (time == null) {
-            throw new DateTimeException("Unable to obtain LocalTime TemporalAccessor: " + temporal + ", type " + (temporal.constructor != null ? temporal.constructor.name : ""));
-          }
-          return time;
-        };
-        LocalTime2.parse = function parse(text, formatter) {
-          if (formatter === void 0) {
-            formatter = DateTimeFormatter.ISO_LOCAL_TIME;
-          }
-          requireNonNull(formatter, "formatter");
-          return formatter.parse(text, LocalTime2.FROM);
-        };
-        LocalTime2._validate = function _validate(hour, minute, second, nanoOfSecond) {
-          ChronoField.HOUR_OF_DAY.checkValidValue(hour);
-          ChronoField.MINUTE_OF_HOUR.checkValidValue(minute);
-          ChronoField.SECOND_OF_MINUTE.checkValidValue(second);
-          ChronoField.NANO_OF_SECOND.checkValidValue(nanoOfSecond);
-        };
-        var _proto = LocalTime2.prototype;
-        _proto.isSupported = function isSupported(fieldOrUnit) {
-          if (fieldOrUnit instanceof ChronoField) {
-            return fieldOrUnit.isTimeBased();
-          } else if (fieldOrUnit instanceof ChronoUnit) {
-            return fieldOrUnit.isTimeBased();
-          }
-          return fieldOrUnit != null && fieldOrUnit.isSupportedBy(this);
-        };
-        _proto.range = function range(field) {
-          requireNonNull(field);
-          return _Temporal.prototype.range.call(this, field);
-        };
-        _proto.get = function get(field) {
-          return this.getLong(field);
-        };
-        _proto.getLong = function getLong(field) {
-          requireNonNull(field, "field");
-          if (field instanceof ChronoField) {
-            return this._get0(field);
-          }
-          return field.getFrom(this);
-        };
-        _proto._get0 = function _get0(field) {
-          switch (field) {
-            case ChronoField.NANO_OF_SECOND:
-              return this._nano;
-            case ChronoField.NANO_OF_DAY:
-              return this.toNanoOfDay();
-            case ChronoField.MICRO_OF_SECOND:
-              return MathUtil.intDiv(this._nano, 1e3);
-            case ChronoField.MICRO_OF_DAY:
-              return MathUtil.intDiv(this.toNanoOfDay(), 1e3);
-            case ChronoField.MILLI_OF_SECOND:
-              return MathUtil.intDiv(this._nano, 1e6);
-            case ChronoField.MILLI_OF_DAY:
-              return MathUtil.intDiv(this.toNanoOfDay(), 1e6);
-            case ChronoField.SECOND_OF_MINUTE:
-              return this._second;
-            case ChronoField.SECOND_OF_DAY:
-              return this.toSecondOfDay();
-            case ChronoField.MINUTE_OF_HOUR:
-              return this._minute;
-            case ChronoField.MINUTE_OF_DAY:
-              return this._hour * 60 + this._minute;
-            case ChronoField.HOUR_OF_AMPM:
-              return MathUtil.intMod(this._hour, 12);
-            case ChronoField.CLOCK_HOUR_OF_AMPM: {
-              var ham = MathUtil.intMod(this._hour, 12);
-              return ham % 12 === 0 ? 12 : ham;
-            }
-            case ChronoField.HOUR_OF_DAY:
-              return this._hour;
-            case ChronoField.CLOCK_HOUR_OF_DAY:
-              return this._hour === 0 ? 24 : this._hour;
-            case ChronoField.AMPM_OF_DAY:
-              return MathUtil.intDiv(this._hour, 12);
-          }
-          throw new UnsupportedTemporalTypeException("Unsupported field: " + field);
-        };
-        _proto.hour = function hour() {
-          return this._hour;
-        };
-        _proto.minute = function minute() {
-          return this._minute;
-        };
-        _proto.second = function second() {
-          return this._second;
-        };
-        _proto.nano = function nano() {
-          return this._nano;
-        };
-        _proto._withAdjuster = function _withAdjuster(adjuster) {
-          requireNonNull(adjuster, "adjuster");
-          if (adjuster instanceof LocalTime2) {
-            return adjuster;
-          }
-          return _Temporal.prototype._withAdjuster.call(this, adjuster);
-        };
-        _proto._withField = function _withField(field, newValue) {
-          requireNonNull(field, "field");
-          requireInstance(field, TemporalField, "field");
-          if (field instanceof ChronoField) {
-            field.checkValidValue(newValue);
-            switch (field) {
-              case ChronoField.NANO_OF_SECOND:
-                return this.withNano(newValue);
-              case ChronoField.NANO_OF_DAY:
-                return LocalTime2.ofNanoOfDay(newValue);
-              case ChronoField.MICRO_OF_SECOND:
-                return this.withNano(newValue * 1e3);
-              case ChronoField.MICRO_OF_DAY:
-                return LocalTime2.ofNanoOfDay(newValue * 1e3);
-              case ChronoField.MILLI_OF_SECOND:
-                return this.withNano(newValue * 1e6);
-              case ChronoField.MILLI_OF_DAY:
-                return LocalTime2.ofNanoOfDay(newValue * 1e6);
-              case ChronoField.SECOND_OF_MINUTE:
-                return this.withSecond(newValue);
-              case ChronoField.SECOND_OF_DAY:
-                return this.plusSeconds(newValue - this.toSecondOfDay());
-              case ChronoField.MINUTE_OF_HOUR:
-                return this.withMinute(newValue);
-              case ChronoField.MINUTE_OF_DAY:
-                return this.plusMinutes(newValue - (this._hour * 60 + this._minute));
-              case ChronoField.HOUR_OF_AMPM:
-                return this.plusHours(newValue - MathUtil.intMod(this._hour, 12));
-              case ChronoField.CLOCK_HOUR_OF_AMPM:
-                return this.plusHours((newValue === 12 ? 0 : newValue) - MathUtil.intMod(this._hour, 12));
-              case ChronoField.HOUR_OF_DAY:
-                return this.withHour(newValue);
-              case ChronoField.CLOCK_HOUR_OF_DAY:
-                return this.withHour(newValue === 24 ? 0 : newValue);
-              case ChronoField.AMPM_OF_DAY:
-                return this.plusHours((newValue - MathUtil.intDiv(this._hour, 12)) * 12);
-            }
-            throw new UnsupportedTemporalTypeException("Unsupported field: " + field);
-          }
-          return field.adjustInto(this, newValue);
-        };
-        _proto.withHour = function withHour(hour) {
-          if (hour === void 0) {
-            hour = 0;
-          }
-          if (this._hour === hour) {
-            return this;
-          }
-          return new LocalTime2(hour, this._minute, this._second, this._nano);
-        };
-        _proto.withMinute = function withMinute(minute) {
-          if (minute === void 0) {
-            minute = 0;
-          }
-          if (this._minute === minute) {
-            return this;
-          }
-          return new LocalTime2(this._hour, minute, this._second, this._nano);
-        };
-        _proto.withSecond = function withSecond(second) {
-          if (second === void 0) {
-            second = 0;
-          }
-          if (this._second === second) {
-            return this;
-          }
-          return new LocalTime2(this._hour, this._minute, second, this._nano);
-        };
-        _proto.withNano = function withNano(nanoOfSecond) {
-          if (nanoOfSecond === void 0) {
-            nanoOfSecond = 0;
-          }
-          if (this._nano === nanoOfSecond) {
-            return this;
-          }
-          return new LocalTime2(this._hour, this._minute, this._second, nanoOfSecond);
-        };
-        _proto.truncatedTo = function truncatedTo(unit) {
-          requireNonNull(unit, "unit");
-          if (unit === ChronoUnit.NANOS) {
-            return this;
-          }
-          var unitDur = unit.duration();
-          if (unitDur.seconds() > LocalTime2.SECONDS_PER_DAY) {
-            throw new DateTimeException("Unit is too large to be used for truncation");
-          }
-          var dur = unitDur.toNanos();
-          if (MathUtil.intMod(LocalTime2.NANOS_PER_DAY, dur) !== 0) {
-            throw new DateTimeException("Unit must divide into a standard day without remainder");
-          }
-          var nod = this.toNanoOfDay();
-          return LocalTime2.ofNanoOfDay(MathUtil.intDiv(nod, dur) * dur);
-        };
-        _proto._plusUnit = function _plusUnit(amountToAdd, unit) {
-          requireNonNull(unit, "unit");
-          if (unit instanceof ChronoUnit) {
-            switch (unit) {
-              case ChronoUnit.NANOS:
-                return this.plusNanos(amountToAdd);
-              case ChronoUnit.MICROS:
-                return this.plusNanos(MathUtil.intMod(amountToAdd, LocalTime2.MICROS_PER_DAY) * 1e3);
-              case ChronoUnit.MILLIS:
-                return this.plusNanos(MathUtil.intMod(amountToAdd, LocalTime2.MILLIS_PER_DAY) * 1e6);
-              case ChronoUnit.SECONDS:
-                return this.plusSeconds(amountToAdd);
-              case ChronoUnit.MINUTES:
-                return this.plusMinutes(amountToAdd);
-              case ChronoUnit.HOURS:
-                return this.plusHours(amountToAdd);
-              case ChronoUnit.HALF_DAYS:
-                return this.plusHours(MathUtil.intMod(amountToAdd, 2) * 12);
-            }
-            throw new UnsupportedTemporalTypeException("Unsupported unit: " + unit);
-          }
-          return unit.addTo(this, amountToAdd);
-        };
-        _proto.plusHours = function plusHours(hoursToAdd) {
-          if (hoursToAdd === 0) {
-            return this;
-          }
-          var newHour = MathUtil.intMod(MathUtil.intMod(hoursToAdd, LocalTime2.HOURS_PER_DAY) + this._hour + LocalTime2.HOURS_PER_DAY, LocalTime2.HOURS_PER_DAY);
-          return new LocalTime2(newHour, this._minute, this._second, this._nano);
-        };
-        _proto.plusMinutes = function plusMinutes(minutesToAdd) {
-          if (minutesToAdd === 0) {
-            return this;
-          }
-          var mofd = this._hour * LocalTime2.MINUTES_PER_HOUR + this._minute;
-          var newMofd = MathUtil.intMod(MathUtil.intMod(minutesToAdd, LocalTime2.MINUTES_PER_DAY) + mofd + LocalTime2.MINUTES_PER_DAY, LocalTime2.MINUTES_PER_DAY);
-          if (mofd === newMofd) {
-            return this;
-          }
-          var newHour = MathUtil.intDiv(newMofd, LocalTime2.MINUTES_PER_HOUR);
-          var newMinute = MathUtil.intMod(newMofd, LocalTime2.MINUTES_PER_HOUR);
-          return new LocalTime2(newHour, newMinute, this._second, this._nano);
-        };
-        _proto.plusSeconds = function plusSeconds(secondsToAdd) {
-          if (secondsToAdd === 0) {
-            return this;
-          }
-          var sofd = this._hour * LocalTime2.SECONDS_PER_HOUR + this._minute * LocalTime2.SECONDS_PER_MINUTE + this._second;
-          var newSofd = MathUtil.intMod(MathUtil.intMod(secondsToAdd, LocalTime2.SECONDS_PER_DAY) + sofd + LocalTime2.SECONDS_PER_DAY, LocalTime2.SECONDS_PER_DAY);
-          if (sofd === newSofd) {
-            return this;
-          }
-          var newHour = MathUtil.intDiv(newSofd, LocalTime2.SECONDS_PER_HOUR);
-          var newMinute = MathUtil.intMod(MathUtil.intDiv(newSofd, LocalTime2.SECONDS_PER_MINUTE), LocalTime2.MINUTES_PER_HOUR);
-          var newSecond = MathUtil.intMod(newSofd, LocalTime2.SECONDS_PER_MINUTE);
-          return new LocalTime2(newHour, newMinute, newSecond, this._nano);
-        };
-        _proto.plusNanos = function plusNanos(nanosToAdd) {
-          if (nanosToAdd === 0) {
-            return this;
-          }
-          var nofd = this.toNanoOfDay();
-          var newNofd = MathUtil.intMod(MathUtil.intMod(nanosToAdd, LocalTime2.NANOS_PER_DAY) + nofd + LocalTime2.NANOS_PER_DAY, LocalTime2.NANOS_PER_DAY);
-          if (nofd === newNofd) {
-            return this;
-          }
-          var newHour = MathUtil.intDiv(newNofd, LocalTime2.NANOS_PER_HOUR);
-          var newMinute = MathUtil.intMod(MathUtil.intDiv(newNofd, LocalTime2.NANOS_PER_MINUTE), LocalTime2.MINUTES_PER_HOUR);
-          var newSecond = MathUtil.intMod(MathUtil.intDiv(newNofd, LocalTime2.NANOS_PER_SECOND), LocalTime2.SECONDS_PER_MINUTE);
-          var newNano = MathUtil.intMod(newNofd, LocalTime2.NANOS_PER_SECOND);
-          return new LocalTime2(newHour, newMinute, newSecond, newNano);
-        };
-        _proto._minusUnit = function _minusUnit(amountToSubtract, unit) {
-          requireNonNull(unit, "unit");
-          return this._plusUnit(-1 * amountToSubtract, unit);
-        };
-        _proto.minusHours = function minusHours(hoursToSubtract) {
-          return this.plusHours(-1 * MathUtil.intMod(hoursToSubtract, LocalTime2.HOURS_PER_DAY));
-        };
-        _proto.minusMinutes = function minusMinutes(minutesToSubtract) {
-          return this.plusMinutes(-1 * MathUtil.intMod(minutesToSubtract, LocalTime2.MINUTES_PER_DAY));
-        };
-        _proto.minusSeconds = function minusSeconds(secondsToSubtract) {
-          return this.plusSeconds(-1 * MathUtil.intMod(secondsToSubtract, LocalTime2.SECONDS_PER_DAY));
-        };
-        _proto.minusNanos = function minusNanos(nanosToSubtract) {
-          return this.plusNanos(-1 * MathUtil.intMod(nanosToSubtract, LocalTime2.NANOS_PER_DAY));
-        };
-        _proto.query = function query(_query) {
-          requireNonNull(_query, "query");
-          if (_query === TemporalQueries.precision()) {
-            return ChronoUnit.NANOS;
-          } else if (_query === TemporalQueries.localTime()) {
-            return this;
-          }
-          if (_query === TemporalQueries.chronology() || _query === TemporalQueries.zoneId() || _query === TemporalQueries.zone() || _query === TemporalQueries.offset() || _query === TemporalQueries.localDate()) {
-            return null;
-          }
-          return _query.queryFrom(this);
-        };
-        _proto.adjustInto = function adjustInto(temporal) {
-          return temporal.with(LocalTime2.NANO_OF_DAY, this.toNanoOfDay());
-        };
-        _proto.until = function until(endExclusive, unit) {
-          requireNonNull(endExclusive, "endExclusive");
-          requireNonNull(unit, "unit");
-          var end = LocalTime2.from(endExclusive);
-          if (unit instanceof ChronoUnit) {
-            var nanosUntil = end.toNanoOfDay() - this.toNanoOfDay();
-            switch (unit) {
-              case ChronoUnit.NANOS:
-                return nanosUntil;
-              case ChronoUnit.MICROS:
-                return MathUtil.intDiv(nanosUntil, 1e3);
-              case ChronoUnit.MILLIS:
-                return MathUtil.intDiv(nanosUntil, 1e6);
-              case ChronoUnit.SECONDS:
-                return MathUtil.intDiv(nanosUntil, LocalTime2.NANOS_PER_SECOND);
-              case ChronoUnit.MINUTES:
-                return MathUtil.intDiv(nanosUntil, LocalTime2.NANOS_PER_MINUTE);
-              case ChronoUnit.HOURS:
-                return MathUtil.intDiv(nanosUntil, LocalTime2.NANOS_PER_HOUR);
-              case ChronoUnit.HALF_DAYS:
-                return MathUtil.intDiv(nanosUntil, 12 * LocalTime2.NANOS_PER_HOUR);
-            }
-            throw new UnsupportedTemporalTypeException("Unsupported unit: " + unit);
-          }
-          return unit.between(this, end);
-        };
-        _proto.atDate = function atDate(date) {
-          return LocalDateTime.of(date, this);
-        };
-        _proto.atOffset = function atOffset(offset) {
-          return OffsetTime.of(this, offset);
-        };
-        _proto.toSecondOfDay = function toSecondOfDay() {
-          var total = this._hour * LocalTime2.SECONDS_PER_HOUR;
-          total += this._minute * LocalTime2.SECONDS_PER_MINUTE;
-          total += this._second;
-          return total;
-        };
-        _proto.toNanoOfDay = function toNanoOfDay() {
-          var total = this._hour * LocalTime2.NANOS_PER_HOUR;
-          total += this._minute * LocalTime2.NANOS_PER_MINUTE;
-          total += this._second * LocalTime2.NANOS_PER_SECOND;
-          total += this._nano;
-          return total;
-        };
-        _proto.compareTo = function compareTo(other) {
-          requireNonNull(other, "other");
-          requireInstance(other, LocalTime2, "other");
-          var cmp = MathUtil.compareNumbers(this._hour, other._hour);
-          if (cmp === 0) {
-            cmp = MathUtil.compareNumbers(this._minute, other._minute);
-            if (cmp === 0) {
-              cmp = MathUtil.compareNumbers(this._second, other._second);
-              if (cmp === 0) {
-                cmp = MathUtil.compareNumbers(this._nano, other._nano);
-              }
-            }
-          }
-          return cmp;
-        };
-        _proto.isAfter = function isAfter(other) {
-          return this.compareTo(other) > 0;
-        };
-        _proto.isBefore = function isBefore(other) {
-          return this.compareTo(other) < 0;
-        };
-        _proto.equals = function equals(other) {
-          if (this === other) {
-            return true;
-          }
-          if (other instanceof LocalTime2) {
-            return this._hour === other._hour && this._minute === other._minute && this._second === other._second && this._nano === other._nano;
-          }
-          return false;
-        };
-        _proto.hashCode = function hashCode() {
-          var nod = this.toNanoOfDay();
-          return MathUtil.hash(nod);
-        };
-        _proto.toString = function toString() {
-          var buf = "";
-          var hourValue = this._hour;
-          var minuteValue = this._minute;
-          var secondValue = this._second;
-          var nanoValue = this._nano;
-          buf += hourValue < 10 ? "0" : "";
-          buf += hourValue;
-          buf += minuteValue < 10 ? ":0" : ":";
-          buf += minuteValue;
-          if (secondValue > 0 || nanoValue > 0) {
-            buf += secondValue < 10 ? ":0" : ":";
-            buf += secondValue;
-            if (nanoValue > 0) {
-              buf += ".";
-              if (MathUtil.intMod(nanoValue, 1e6) === 0) {
-                buf += ("" + (MathUtil.intDiv(nanoValue, 1e6) + 1e3)).substring(1);
-              } else if (MathUtil.intMod(nanoValue, 1e3) === 0) {
-                buf += ("" + (MathUtil.intDiv(nanoValue, 1e3) + 1e6)).substring(1);
-              } else {
-                buf += ("" + (nanoValue + 1e9)).substring(1);
-              }
-            }
-          }
-          return buf;
-        };
-        _proto.toJSON = function toJSON() {
-          return this.toString();
-        };
-        _proto.format = function format(formatter) {
-          requireNonNull(formatter, "formatter");
-          return formatter.format(this);
-        };
-        return LocalTime2;
-      })(Temporal);
-      function _init$3() {
-        LocalTime.HOURS = [];
-        for (var hour = 0; hour < 24; hour++) {
-          LocalTime.of(hour, 0, 0, 0);
-        }
-        LocalTime.MIN = LocalTime.HOURS[0];
-        LocalTime.MAX = new LocalTime(23, 59, 59, 999999999);
-        LocalTime.MIDNIGHT = LocalTime.HOURS[0];
-        LocalTime.NOON = LocalTime.HOURS[12];
-        LocalTime.FROM = createTemporalQuery("LocalTime.FROM", function(temporal) {
-          return LocalTime.from(temporal);
-        });
-      }
-      LocalTime.HOURS_PER_DAY = 24;
-      LocalTime.MINUTES_PER_HOUR = 60;
-      LocalTime.MINUTES_PER_DAY = LocalTime.MINUTES_PER_HOUR * LocalTime.HOURS_PER_DAY;
-      LocalTime.SECONDS_PER_MINUTE = 60;
-      LocalTime.SECONDS_PER_HOUR = LocalTime.SECONDS_PER_MINUTE * LocalTime.MINUTES_PER_HOUR;
-      LocalTime.SECONDS_PER_DAY = LocalTime.SECONDS_PER_HOUR * LocalTime.HOURS_PER_DAY;
-      LocalTime.MILLIS_PER_DAY = LocalTime.SECONDS_PER_DAY * 1e3;
-      LocalTime.MICROS_PER_DAY = LocalTime.SECONDS_PER_DAY * 1e6;
-      LocalTime.NANOS_PER_SECOND = 1e9;
-      LocalTime.NANOS_PER_MINUTE = LocalTime.NANOS_PER_SECOND * LocalTime.SECONDS_PER_MINUTE;
-      LocalTime.NANOS_PER_HOUR = LocalTime.NANOS_PER_MINUTE * LocalTime.MINUTES_PER_HOUR;
-      LocalTime.NANOS_PER_DAY = LocalTime.NANOS_PER_HOUR * LocalTime.HOURS_PER_DAY;
-      var NANOS_PER_MILLI = 1e6;
-      var Instant = (function(_Temporal) {
-        function Instant2(seconds, nanoOfSecond) {
-          var _this;
-          _this = _Temporal.call(this) || this;
-          Instant2._validate(seconds, nanoOfSecond);
-          _this._seconds = MathUtil.safeToInt(seconds);
-          _this._nanos = MathUtil.safeToInt(nanoOfSecond);
-          return _this;
-        }
-        _inheritsLoose(Instant2, _Temporal);
-        Instant2.now = function now(clock) {
-          if (clock === void 0) {
-            clock = Clock.systemUTC();
-          }
-          return clock.instant();
-        };
-        Instant2.ofEpochSecond = function ofEpochSecond(epochSecond, nanoAdjustment) {
-          if (nanoAdjustment === void 0) {
-            nanoAdjustment = 0;
-          }
-          var secs = epochSecond + MathUtil.floorDiv(nanoAdjustment, LocalTime.NANOS_PER_SECOND);
-          var nos = MathUtil.floorMod(nanoAdjustment, LocalTime.NANOS_PER_SECOND);
-          return Instant2._create(secs, nos);
-        };
-        Instant2.ofEpochMilli = function ofEpochMilli(epochMilli) {
-          var secs = MathUtil.floorDiv(epochMilli, 1e3);
-          var mos = MathUtil.floorMod(epochMilli, 1e3);
-          return Instant2._create(secs, mos * 1e6);
-        };
-        Instant2.ofEpochMicro = function ofEpochMicro(epochMicro) {
-          var secs = MathUtil.floorDiv(epochMicro, 1e6);
-          var mos = MathUtil.floorMod(epochMicro, 1e6);
-          return Instant2._create(secs, mos * 1e3);
-        };
-        Instant2.from = function from(temporal) {
-          try {
-            var instantSecs = temporal.getLong(ChronoField.INSTANT_SECONDS);
-            var nanoOfSecond = temporal.get(ChronoField.NANO_OF_SECOND);
-            return Instant2.ofEpochSecond(instantSecs, nanoOfSecond);
-          } catch (ex) {
-            throw new DateTimeException("Unable to obtain Instant from TemporalAccessor: " + temporal + ", type " + typeof temporal, ex);
-          }
-        };
-        Instant2.parse = function parse(text) {
-          return DateTimeFormatter.ISO_INSTANT.parse(text, Instant2.FROM);
-        };
-        Instant2._create = function _create(seconds, nanoOfSecond) {
-          if (seconds === 0 && nanoOfSecond === 0) {
-            return Instant2.EPOCH;
-          }
-          return new Instant2(seconds, nanoOfSecond);
-        };
-        Instant2._validate = function _validate(seconds, nanoOfSecond) {
-          if (seconds < Instant2.MIN_SECONDS || seconds > Instant2.MAX_SECONDS) {
-            throw new DateTimeException("Instant exceeds minimum or maximum instant");
-          }
-          if (nanoOfSecond < 0 || nanoOfSecond > LocalTime.NANOS_PER_SECOND) {
-            throw new DateTimeException("Instant exceeds minimum or maximum instant");
-          }
-        };
-        var _proto = Instant2.prototype;
-        _proto.isSupported = function isSupported(fieldOrUnit) {
-          if (fieldOrUnit instanceof ChronoField) {
-            return fieldOrUnit === ChronoField.INSTANT_SECONDS || fieldOrUnit === ChronoField.NANO_OF_SECOND || fieldOrUnit === ChronoField.MICRO_OF_SECOND || fieldOrUnit === ChronoField.MILLI_OF_SECOND;
-          }
-          if (fieldOrUnit instanceof ChronoUnit) {
-            return fieldOrUnit.isTimeBased() || fieldOrUnit === ChronoUnit.DAYS;
-          }
-          return fieldOrUnit != null && fieldOrUnit.isSupportedBy(this);
-        };
-        _proto.range = function range(field) {
-          return _Temporal.prototype.range.call(this, field);
-        };
-        _proto.get = function get(field) {
-          return this.getLong(field);
-        };
-        _proto.getLong = function getLong(field) {
-          if (field instanceof ChronoField) {
-            switch (field) {
-              case ChronoField.NANO_OF_SECOND:
-                return this._nanos;
-              case ChronoField.MICRO_OF_SECOND:
-                return MathUtil.intDiv(this._nanos, 1e3);
-              case ChronoField.MILLI_OF_SECOND:
-                return MathUtil.intDiv(this._nanos, NANOS_PER_MILLI);
-              case ChronoField.INSTANT_SECONDS:
-                return this._seconds;
-            }
-            throw new UnsupportedTemporalTypeException("Unsupported field: " + field);
-          }
-          return field.getFrom(this);
-        };
-        _proto.epochSecond = function epochSecond() {
-          return this._seconds;
-        };
-        _proto.nano = function nano() {
-          return this._nanos;
-        };
-        _proto._withField = function _withField(field, newValue) {
-          requireNonNull(field, "field");
-          if (field instanceof ChronoField) {
-            field.checkValidValue(newValue);
-            switch (field) {
-              case ChronoField.MILLI_OF_SECOND: {
-                var nval = newValue * NANOS_PER_MILLI;
-                return nval !== this._nanos ? Instant2._create(this._seconds, nval) : this;
-              }
-              case ChronoField.MICRO_OF_SECOND: {
-                var _nval = newValue * 1e3;
-                return _nval !== this._nanos ? Instant2._create(this._seconds, _nval) : this;
-              }
-              case ChronoField.NANO_OF_SECOND:
-                return newValue !== this._nanos ? Instant2._create(this._seconds, newValue) : this;
-              case ChronoField.INSTANT_SECONDS:
-                return newValue !== this._seconds ? Instant2._create(newValue, this._nanos) : this;
-            }
-            throw new UnsupportedTemporalTypeException("Unsupported field: " + field);
-          }
-          return field.adjustInto(this, newValue);
-        };
-        _proto.truncatedTo = function truncatedTo(unit) {
-          requireNonNull(unit, "unit");
-          if (unit === ChronoUnit.NANOS) {
-            return this;
-          }
-          var unitDur = unit.duration();
-          if (unitDur.seconds() > LocalTime.SECONDS_PER_DAY) {
-            throw new DateTimeException("Unit is too large to be used for truncation");
-          }
-          var dur = unitDur.toNanos();
-          if (MathUtil.intMod(LocalTime.NANOS_PER_DAY, dur) !== 0) {
-            throw new DateTimeException("Unit must divide into a standard day without remainder");
-          }
-          var nod = MathUtil.intMod(this._seconds, LocalTime.SECONDS_PER_DAY) * LocalTime.NANOS_PER_SECOND + this._nanos;
-          var result = MathUtil.floorDiv(nod, dur) * dur;
-          return this.plusNanos(result - nod);
-        };
-        _proto._plusUnit = function _plusUnit(amountToAdd, unit) {
-          requireNonNull(amountToAdd, "amountToAdd");
-          requireNonNull(unit, "unit");
-          requireInstance(unit, TemporalUnit);
-          if (unit instanceof ChronoUnit) {
-            switch (unit) {
-              case ChronoUnit.NANOS:
-                return this.plusNanos(amountToAdd);
-              case ChronoUnit.MICROS:
-                return this.plusMicros(amountToAdd);
-              case ChronoUnit.MILLIS:
-                return this.plusMillis(amountToAdd);
-              case ChronoUnit.SECONDS:
-                return this.plusSeconds(amountToAdd);
-              case ChronoUnit.MINUTES:
-                return this.plusSeconds(MathUtil.safeMultiply(amountToAdd, LocalTime.SECONDS_PER_MINUTE));
-              case ChronoUnit.HOURS:
-                return this.plusSeconds(MathUtil.safeMultiply(amountToAdd, LocalTime.SECONDS_PER_HOUR));
-              case ChronoUnit.HALF_DAYS:
-                return this.plusSeconds(MathUtil.safeMultiply(amountToAdd, LocalTime.SECONDS_PER_DAY / 2));
-              case ChronoUnit.DAYS:
-                return this.plusSeconds(MathUtil.safeMultiply(amountToAdd, LocalTime.SECONDS_PER_DAY));
-            }
-            throw new UnsupportedTemporalTypeException("Unsupported unit: " + unit);
-          }
-          return unit.addTo(this, amountToAdd);
-        };
-        _proto.plusSeconds = function plusSeconds(secondsToAdd) {
-          return this._plus(secondsToAdd, 0);
-        };
-        _proto.plusMillis = function plusMillis(millisToAdd) {
-          return this._plus(MathUtil.intDiv(millisToAdd, 1e3), MathUtil.intMod(millisToAdd, 1e3) * NANOS_PER_MILLI);
-        };
-        _proto.plusNanos = function plusNanos(nanosToAdd) {
-          return this._plus(0, nanosToAdd);
-        };
-        _proto.plusMicros = function plusMicros(microsToAdd) {
-          return this._plus(MathUtil.intDiv(microsToAdd, 1e6), MathUtil.intMod(microsToAdd, 1e6) * 1e3);
-        };
-        _proto._plus = function _plus(secondsToAdd, nanosToAdd) {
-          if (secondsToAdd === 0 && nanosToAdd === 0) {
-            return this;
-          }
-          var epochSec = this._seconds + secondsToAdd;
-          epochSec = epochSec + MathUtil.intDiv(nanosToAdd, LocalTime.NANOS_PER_SECOND);
-          var nanoAdjustment = this._nanos + nanosToAdd % LocalTime.NANOS_PER_SECOND;
-          return Instant2.ofEpochSecond(epochSec, nanoAdjustment);
-        };
-        _proto._minusUnit = function _minusUnit(amountToSubtract, unit) {
-          return this._plusUnit(-1 * amountToSubtract, unit);
-        };
-        _proto.minusSeconds = function minusSeconds(secondsToSubtract) {
-          return this.plusSeconds(secondsToSubtract * -1);
-        };
-        _proto.minusMillis = function minusMillis(millisToSubtract) {
-          return this.plusMillis(-1 * millisToSubtract);
-        };
-        _proto.minusNanos = function minusNanos(nanosToSubtract) {
-          return this.plusNanos(-1 * nanosToSubtract);
-        };
-        _proto.minusMicros = function minusMicros(microsToSubtract) {
-          return this.plusMicros(-1 * microsToSubtract);
-        };
-        _proto.query = function query(_query) {
-          requireNonNull(_query, "query");
-          if (_query === TemporalQueries.precision()) {
-            return ChronoUnit.NANOS;
-          }
-          if (_query === TemporalQueries.localDate() || _query === TemporalQueries.localTime() || _query === TemporalQueries.chronology() || _query === TemporalQueries.zoneId() || _query === TemporalQueries.zone() || _query === TemporalQueries.offset()) {
-            return null;
-          }
-          return _query.queryFrom(this);
-        };
-        _proto.adjustInto = function adjustInto(temporal) {
-          requireNonNull(temporal, "temporal");
-          return temporal.with(ChronoField.INSTANT_SECONDS, this._seconds).with(ChronoField.NANO_OF_SECOND, this._nanos);
-        };
-        _proto.until = function until(endExclusive, unit) {
-          requireNonNull(endExclusive, "endExclusive");
-          requireNonNull(unit, "unit");
-          var end = Instant2.from(endExclusive);
-          if (unit instanceof ChronoUnit) {
-            switch (unit) {
-              case ChronoUnit.NANOS:
-                return this._nanosUntil(end);
-              case ChronoUnit.MICROS:
-                return this._microsUntil(end);
-              case ChronoUnit.MILLIS:
-                return MathUtil.safeSubtract(end.toEpochMilli(), this.toEpochMilli());
-              case ChronoUnit.SECONDS:
-                return this._secondsUntil(end);
-              case ChronoUnit.MINUTES:
-                return MathUtil.intDiv(this._secondsUntil(end), LocalTime.SECONDS_PER_MINUTE);
-              case ChronoUnit.HOURS:
-                return MathUtil.intDiv(this._secondsUntil(end), LocalTime.SECONDS_PER_HOUR);
-              case ChronoUnit.HALF_DAYS:
-                return MathUtil.intDiv(this._secondsUntil(end), 12 * LocalTime.SECONDS_PER_HOUR);
-              case ChronoUnit.DAYS:
-                return MathUtil.intDiv(this._secondsUntil(end), LocalTime.SECONDS_PER_DAY);
-            }
-            throw new UnsupportedTemporalTypeException("Unsupported unit: " + unit);
-          }
-          return unit.between(this, end);
-        };
-        _proto._microsUntil = function _microsUntil(end) {
-          var secsDiff = MathUtil.safeSubtract(end.epochSecond(), this.epochSecond());
-          var nanosDiff = end.nano() - this.nano();
-          if (secsDiff > 0 && nanosDiff < 0) {
-            secsDiff--;
-            nanosDiff += LocalTime.NANOS_PER_SECOND;
-          } else if (secsDiff < 0 && nanosDiff > 0) {
-            secsDiff++;
-            nanosDiff -= LocalTime.NANOS_PER_SECOND;
-          }
-          var totalMicros = MathUtil.safeMultiply(secsDiff, 1e6);
-          return MathUtil.safeAdd(totalMicros, MathUtil.intDiv(nanosDiff, 1e3));
-        };
-        _proto._nanosUntil = function _nanosUntil(end) {
-          var secsDiff = MathUtil.safeSubtract(end.epochSecond(), this.epochSecond());
-          var totalNanos = MathUtil.safeMultiply(secsDiff, LocalTime.NANOS_PER_SECOND);
-          return MathUtil.safeAdd(totalNanos, end.nano() - this.nano());
-        };
-        _proto._secondsUntil = function _secondsUntil(end) {
-          var secsDiff = MathUtil.safeSubtract(end.epochSecond(), this.epochSecond());
-          var nanosDiff = end.nano() - this.nano();
-          if (secsDiff > 0 && nanosDiff < 0) {
-            secsDiff--;
-          } else if (secsDiff < 0 && nanosDiff > 0) {
-            secsDiff++;
-          }
-          return secsDiff;
-        };
-        _proto.atOffset = function atOffset(offset) {
-          return OffsetDateTime.ofInstant(this, offset);
-        };
-        _proto.atZone = function atZone(zone) {
-          return ZonedDateTime.ofInstant(this, zone);
-        };
-        _proto.toEpochMilli = function toEpochMilli() {
-          if (this._seconds < 0 && this._nanos > 0) {
-            var _millis = MathUtil.safeMultiply(this._seconds + 1, 1e3);
-            var adjustment = MathUtil.intDiv(this._nanos, NANOS_PER_MILLI) - 1e3;
-            return MathUtil.safeAdd(_millis, adjustment);
-          }
-          var millis = MathUtil.safeMultiply(this._seconds, 1e3);
-          return millis + MathUtil.intDiv(this._nanos, NANOS_PER_MILLI);
-        };
-        _proto.compareTo = function compareTo(otherInstant) {
-          requireNonNull(otherInstant, "otherInstant");
-          requireInstance(otherInstant, Instant2, "otherInstant");
-          var cmp = MathUtil.compareNumbers(this._seconds, otherInstant._seconds);
-          if (cmp !== 0) {
-            return cmp;
-          }
-          return this._nanos - otherInstant._nanos;
-        };
-        _proto.isAfter = function isAfter(otherInstant) {
-          return this.compareTo(otherInstant) > 0;
-        };
-        _proto.isBefore = function isBefore(otherInstant) {
-          return this.compareTo(otherInstant) < 0;
-        };
-        _proto.equals = function equals(other) {
-          if (this === other) {
-            return true;
-          }
-          if (other instanceof Instant2) {
-            return this.epochSecond() === other.epochSecond() && this.nano() === other.nano();
-          }
-          return false;
-        };
-        _proto.hashCode = function hashCode() {
-          return MathUtil.hashCode(this._seconds, this._nanos);
-        };
-        _proto.toString = function toString() {
-          return DateTimeFormatter.ISO_INSTANT.format(this);
-        };
-        _proto.toJSON = function toJSON() {
-          return this.toString();
-        };
-        return Instant2;
-      })(Temporal);
-      function _init$2() {
-        Instant.MIN_SECONDS = -31619119219200;
-        Instant.MAX_SECONDS = 31494816403199;
-        Instant.EPOCH = new Instant(0, 0);
-        Instant.MIN = Instant.ofEpochSecond(Instant.MIN_SECONDS, 0);
-        Instant.MAX = Instant.ofEpochSecond(Instant.MAX_SECONDS, 999999999);
-        Instant.FROM = createTemporalQuery("Instant.FROM", function(temporal) {
-          return Instant.from(temporal);
-        });
-      }
-      var Clock = (function() {
-        function Clock2() {
-        }
-        Clock2.systemUTC = function systemUTC() {
-          return new SystemClock(ZoneOffset.UTC);
-        };
-        Clock2.systemDefaultZone = function systemDefaultZone() {
-          return new SystemClock(ZoneId.systemDefault());
-        };
-        Clock2.system = function system(zone) {
-          return new SystemClock(zone);
-        };
-        Clock2.fixed = function fixed(fixedInstant, zoneId) {
-          return new FixedClock(fixedInstant, zoneId);
-        };
-        Clock2.offset = function offset(baseClock, duration) {
-          return new OffsetClock(baseClock, duration);
-        };
-        var _proto = Clock2.prototype;
-        _proto.millis = function millis() {
-          abstractMethodFail("Clock.millis");
-        };
-        _proto.instant = function instant() {
-          abstractMethodFail("Clock.instant");
-        };
-        _proto.zone = function zone() {
-          abstractMethodFail("Clock.zone");
-        };
-        _proto.withZone = function withZone() {
-          abstractMethodFail("Clock.withZone");
-        };
-        return Clock2;
-      })();
-      var SystemClock = (function(_Clock) {
-        function SystemClock2(zone) {
-          var _this;
-          requireNonNull(zone, "zone");
-          _this = _Clock.call(this) || this;
-          _this._zone = zone;
-          return _this;
-        }
-        _inheritsLoose(SystemClock2, _Clock);
-        var _proto2 = SystemClock2.prototype;
-        _proto2.zone = function zone() {
-          return this._zone;
-        };
-        _proto2.millis = function millis() {
-          return (/* @__PURE__ */ new Date()).getTime();
-        };
-        _proto2.instant = function instant() {
-          return Instant.ofEpochMilli(this.millis());
-        };
-        _proto2.equals = function equals(obj) {
-          if (obj instanceof SystemClock2) {
-            return this._zone.equals(obj._zone);
-          }
-          return false;
-        };
-        _proto2.withZone = function withZone(zone) {
-          if (zone.equals(this._zone)) {
-            return this;
-          }
-          return new SystemClock2(zone);
-        };
-        _proto2.toString = function toString() {
-          return "SystemClock[" + this._zone.toString() + "]";
-        };
-        return SystemClock2;
-      })(Clock);
-      var FixedClock = (function(_Clock2) {
-        function FixedClock2(fixedInstant, zoneId) {
-          var _this2;
-          _this2 = _Clock2.call(this) || this;
-          _this2._instant = fixedInstant;
-          _this2._zoneId = zoneId;
-          return _this2;
-        }
-        _inheritsLoose(FixedClock2, _Clock2);
-        var _proto3 = FixedClock2.prototype;
-        _proto3.instant = function instant() {
-          return this._instant;
-        };
-        _proto3.millis = function millis() {
-          return this._instant.toEpochMilli();
-        };
-        _proto3.zone = function zone() {
-          return this._zoneId;
-        };
-        _proto3.toString = function toString() {
-          return "FixedClock[]";
-        };
-        _proto3.equals = function equals(obj) {
-          if (obj instanceof FixedClock2) {
-            return this._instant.equals(obj._instant) && this._zoneId.equals(obj._zoneId);
-          }
-          return false;
-        };
-        _proto3.withZone = function withZone(zone) {
-          if (zone.equals(this._zoneId)) {
-            return this;
-          }
-          return new FixedClock2(this._instant, zone);
-        };
-        return FixedClock2;
-      })(Clock);
-      var OffsetClock = (function(_Clock3) {
-        function OffsetClock2(baseClock, offset) {
-          var _this3;
-          _this3 = _Clock3.call(this) || this;
-          _this3._baseClock = baseClock;
-          _this3._offset = offset;
-          return _this3;
-        }
-        _inheritsLoose(OffsetClock2, _Clock3);
-        var _proto4 = OffsetClock2.prototype;
-        _proto4.zone = function zone() {
-          return this._baseClock.zone();
-        };
-        _proto4.withZone = function withZone(zone) {
-          if (zone.equals(this._baseClock.zone())) {
-            return this;
-          }
-          return new OffsetClock2(this._baseClock.withZone(zone), this._offset);
-        };
-        _proto4.millis = function millis() {
-          return this._baseClock.millis() + this._offset.toMillis();
-        };
-        _proto4.instant = function instant() {
-          return this._baseClock.instant().plus(this._offset);
-        };
-        _proto4.equals = function equals(obj) {
-          if (obj instanceof OffsetClock2) {
-            return this._baseClock.equals(obj._baseClock) && this._offset.equals(obj._offset);
-          }
-          return false;
-        };
-        _proto4.toString = function toString() {
-          return "OffsetClock[" + this._baseClock + "," + this._offset + "]";
-        };
-        return OffsetClock2;
-      })(Clock);
-      var ZoneOffsetTransition = (function() {
-        function ZoneOffsetTransition2(transition, offsetBefore, offsetAfter) {
-          requireNonNull(transition, "transition");
-          requireNonNull(offsetBefore, "offsetBefore");
-          requireNonNull(offsetAfter, "offsetAfter");
-          if (offsetBefore.equals(offsetAfter)) {
-            throw new IllegalArgumentException("Offsets must not be equal");
-          }
-          if (transition.nano() !== 0) {
-            throw new IllegalArgumentException("Nano-of-second must be zero");
-          }
-          if (transition instanceof LocalDateTime) {
-            this._transition = transition;
-          } else {
-            this._transition = LocalDateTime.ofEpochSecond(transition, 0, offsetBefore);
-          }
-          this._offsetBefore = offsetBefore;
-          this._offsetAfter = offsetAfter;
-        }
-        ZoneOffsetTransition2.of = function of(transition, offsetBefore, offsetAfter) {
-          return new ZoneOffsetTransition2(transition, offsetBefore, offsetAfter);
-        };
-        var _proto = ZoneOffsetTransition2.prototype;
-        _proto.instant = function instant() {
-          return this._transition.toInstant(this._offsetBefore);
-        };
-        _proto.toEpochSecond = function toEpochSecond() {
-          return this._transition.toEpochSecond(this._offsetBefore);
-        };
-        _proto.dateTimeBefore = function dateTimeBefore() {
-          return this._transition;
-        };
-        _proto.dateTimeAfter = function dateTimeAfter() {
-          return this._transition.plusSeconds(this.durationSeconds());
-        };
-        _proto.offsetBefore = function offsetBefore() {
-          return this._offsetBefore;
-        };
-        _proto.offsetAfter = function offsetAfter() {
-          return this._offsetAfter;
-        };
-        _proto.duration = function duration() {
-          return Duration.ofSeconds(this.durationSeconds());
-        };
-        _proto.durationSeconds = function durationSeconds() {
-          return this._offsetAfter.totalSeconds() - this._offsetBefore.totalSeconds();
-        };
-        _proto.isGap = function isGap() {
-          return this._offsetAfter.totalSeconds() > this._offsetBefore.totalSeconds();
-        };
-        _proto.isOverlap = function isOverlap() {
-          return this._offsetAfter.totalSeconds() < this._offsetBefore.totalSeconds();
-        };
-        _proto.isValidOffset = function isValidOffset(offset) {
-          return this.isGap() ? false : this._offsetBefore.equals(offset) || this._offsetAfter.equals(offset);
-        };
-        _proto.validOffsets = function validOffsets() {
-          if (this.isGap()) {
-            return [];
-          } else {
-            return [this._offsetBefore, this._offsetAfter];
-          }
-        };
-        _proto.compareTo = function compareTo(transition) {
-          return this.instant().compareTo(transition.instant());
-        };
-        _proto.equals = function equals(other) {
-          if (other === this) {
-            return true;
-          }
-          if (other instanceof ZoneOffsetTransition2) {
-            var d = other;
-            return this._transition.equals(d._transition) && this._offsetBefore.equals(d.offsetBefore()) && this._offsetAfter.equals(d.offsetAfter());
-          }
-          return false;
-        };
-        _proto.hashCode = function hashCode() {
-          return this._transition.hashCode() ^ this._offsetBefore.hashCode() ^ this._offsetAfter.hashCode() >>> 16;
-        };
-        _proto.toString = function toString() {
-          return "Transition[" + (this.isGap() ? "Gap" : "Overlap") + " at " + this._transition.toString() + this._offsetBefore.toString() + " to " + this._offsetAfter + "]";
-        };
-        return ZoneOffsetTransition2;
-      })();
-      function _init$1() {
-        TemporalQueries.ZONE_ID = createTemporalQuery("ZONE_ID", function(temporal) {
-          return temporal.query(TemporalQueries.ZONE_ID);
-        });
-        TemporalQueries.CHRONO = createTemporalQuery("CHRONO", function(temporal) {
-          return temporal.query(TemporalQueries.CHRONO);
-        });
-        TemporalQueries.PRECISION = createTemporalQuery("PRECISION", function(temporal) {
-          return temporal.query(TemporalQueries.PRECISION);
-        });
-        TemporalQueries.OFFSET = createTemporalQuery("OFFSET", function(temporal) {
-          if (temporal.isSupported(ChronoField.OFFSET_SECONDS)) {
-            return ZoneOffset.ofTotalSeconds(temporal.get(ChronoField.OFFSET_SECONDS));
-          }
-          return null;
-        });
-        TemporalQueries.ZONE = createTemporalQuery("ZONE", function(temporal) {
-          var zone = temporal.query(TemporalQueries.ZONE_ID);
-          return zone != null ? zone : temporal.query(TemporalQueries.OFFSET);
-        });
-        TemporalQueries.LOCAL_DATE = createTemporalQuery("LOCAL_DATE", function(temporal) {
-          if (temporal.isSupported(ChronoField.EPOCH_DAY)) {
-            return LocalDate.ofEpochDay(temporal.getLong(ChronoField.EPOCH_DAY));
-          }
-          return null;
-        });
-        TemporalQueries.LOCAL_TIME = createTemporalQuery("LOCAL_TIME", function(temporal) {
-          if (temporal.isSupported(ChronoField.NANO_OF_DAY)) {
-            return LocalTime.ofNanoOfDay(temporal.getLong(ChronoField.NANO_OF_DAY));
-          }
-          return null;
-        });
-      }
-      var SystemDefaultZoneRules = (function(_ZoneRules) {
-        function SystemDefaultZoneRules2() {
-          return _ZoneRules.apply(this, arguments) || this;
-        }
-        _inheritsLoose(SystemDefaultZoneRules2, _ZoneRules);
-        var _proto = SystemDefaultZoneRules2.prototype;
-        _proto.isFixedOffset = function isFixedOffset() {
-          return false;
-        };
-        _proto.offsetOfInstant = function offsetOfInstant(instant) {
-          var offsetInMinutes = new Date(instant.toEpochMilli()).getTimezoneOffset();
-          return ZoneOffset.ofTotalMinutes(offsetInMinutes * -1);
-        };
-        _proto.offsetOfEpochMilli = function offsetOfEpochMilli(epochMilli) {
-          var offsetInMinutes = new Date(epochMilli).getTimezoneOffset();
-          return ZoneOffset.ofTotalMinutes(offsetInMinutes * -1);
-        };
-        _proto.offsetOfLocalDateTime = function offsetOfLocalDateTime(localDateTime) {
-          var epochMilli = localDateTime.toEpochSecond(ZoneOffset.UTC) * 1e3;
-          var offsetInMinutesBeforePossibleTransition = new Date(epochMilli).getTimezoneOffset();
-          var epochMilliSystemZone = epochMilli + offsetInMinutesBeforePossibleTransition * 6e4;
-          var offsetInMinutesAfterPossibleTransition = new Date(epochMilliSystemZone).getTimezoneOffset();
-          return ZoneOffset.ofTotalMinutes(offsetInMinutesAfterPossibleTransition * -1);
-        };
-        _proto.validOffsets = function validOffsets(localDateTime) {
-          return [this.offsetOfLocalDateTime(localDateTime)];
-        };
-        _proto.transition = function transition() {
-          return null;
-        };
-        _proto.standardOffset = function standardOffset(instant) {
-          return this.offsetOfInstant(instant);
-        };
-        _proto.daylightSavings = function daylightSavings() {
-          this._throwNotSupported();
-        };
-        _proto.isDaylightSavings = function isDaylightSavings() {
-          this._throwNotSupported();
-        };
-        _proto.isValidOffset = function isValidOffset(dateTime, offset) {
-          return this.offsetOfLocalDateTime(dateTime).equals(offset);
-        };
-        _proto.nextTransition = function nextTransition() {
-          this._throwNotSupported();
-        };
-        _proto.previousTransition = function previousTransition() {
-          this._throwNotSupported();
-        };
-        _proto.transitions = function transitions() {
-          this._throwNotSupported();
-        };
-        _proto.transitionRules = function transitionRules() {
-          this._throwNotSupported();
-        };
-        _proto._throwNotSupported = function _throwNotSupported() {
-          throw new DateTimeException("not supported operation");
-        };
-        _proto.equals = function equals(other) {
-          if (this === other || other instanceof SystemDefaultZoneRules2) {
-            return true;
-          } else {
-            return false;
-          }
-        };
-        _proto.toString = function toString() {
-          return "SYSTEM";
-        };
-        return SystemDefaultZoneRules2;
-      })(ZoneRules);
-      var SystemDefaultZoneId = (function(_ZoneId) {
-        function SystemDefaultZoneId2() {
-          var _this;
-          _this = _ZoneId.call(this) || this;
-          _this._rules = new SystemDefaultZoneRules();
-          return _this;
-        }
-        _inheritsLoose(SystemDefaultZoneId2, _ZoneId);
-        var _proto = SystemDefaultZoneId2.prototype;
-        _proto.rules = function rules() {
-          return this._rules;
-        };
-        _proto.equals = function equals(other) {
-          if (this === other) {
-            return true;
-          }
-          return false;
-        };
-        _proto.id = function id() {
-          return "SYSTEM";
-        };
-        return SystemDefaultZoneId2;
-      })(ZoneId);
-      var ZoneIdFactory = (function() {
-        function ZoneIdFactory2() {
-        }
-        ZoneIdFactory2.systemDefault = function systemDefault() {
-          return SYSTEM_DEFAULT_ZONE_ID_INSTANCE;
-        };
-        ZoneIdFactory2.getAvailableZoneIds = function getAvailableZoneIds() {
-          return ZoneRulesProvider.getAvailableZoneIds();
-        };
-        ZoneIdFactory2.of = function of(zoneId) {
-          requireNonNull(zoneId, "zoneId");
-          if (zoneId === "Z") {
-            return ZoneOffset.UTC;
-          }
-          if (zoneId.length === 1) {
-            throw new DateTimeException("Invalid zone: " + zoneId);
-          }
-          if (StringUtil.startsWith(zoneId, "+") || StringUtil.startsWith(zoneId, "-")) {
-            return ZoneOffset.of(zoneId);
-          }
-          if (zoneId === "UTC" || zoneId === "GMT" || zoneId === "GMT0" || zoneId === "UT") {
-            return new ZoneRegion(zoneId, ZoneOffset.UTC.rules());
-          }
-          if (StringUtil.startsWith(zoneId, "UTC+") || StringUtil.startsWith(zoneId, "GMT+") || StringUtil.startsWith(zoneId, "UTC-") || StringUtil.startsWith(zoneId, "GMT-")) {
-            var offset = ZoneOffset.of(zoneId.substring(3));
-            if (offset.totalSeconds() === 0) {
-              return new ZoneRegion(zoneId.substring(0, 3), offset.rules());
-            }
-            return new ZoneRegion(zoneId.substring(0, 3) + offset.id(), offset.rules());
-          }
-          if (StringUtil.startsWith(zoneId, "UT+") || StringUtil.startsWith(zoneId, "UT-")) {
-            var _offset = ZoneOffset.of(zoneId.substring(2));
-            if (_offset.totalSeconds() === 0) {
-              return new ZoneRegion("UT", _offset.rules());
-            }
-            return new ZoneRegion("UT" + _offset.id(), _offset.rules());
-          }
-          if (zoneId === "SYSTEM") {
-            return ZoneId.systemDefault();
-          }
-          return ZoneRegion.ofId(zoneId);
-        };
-        ZoneIdFactory2.ofOffset = function ofOffset(prefix, offset) {
-          requireNonNull(prefix, "prefix");
-          requireNonNull(offset, "offset");
-          if (prefix.length === 0) {
-            return offset;
-          }
-          if (prefix === "GMT" || prefix === "UTC" || prefix === "UT") {
-            if (offset.totalSeconds() === 0) {
-              return new ZoneRegion(prefix, offset.rules());
-            }
-            return new ZoneRegion(prefix + offset.id(), offset.rules());
-          }
-          throw new IllegalArgumentException("Invalid prefix, must be GMT, UTC or UT: " + prefix);
-        };
-        ZoneIdFactory2.from = function from(temporal) {
-          requireNonNull(temporal, "temporal");
-          var obj = temporal.query(TemporalQueries.zone());
-          if (obj == null) {
-            throw new DateTimeException("Unable to obtain ZoneId from TemporalAccessor: " + temporal + ", type " + (temporal.constructor != null ? temporal.constructor.name : ""));
-          }
-          return obj;
-        };
-        return ZoneIdFactory2;
-      })();
-      var SYSTEM_DEFAULT_ZONE_ID_INSTANCE = null;
-      function _init() {
-        SYSTEM_DEFAULT_ZONE_ID_INSTANCE = new SystemDefaultZoneId();
-        ZoneId.systemDefault = ZoneIdFactory.systemDefault;
-        ZoneId.getAvailableZoneIds = ZoneIdFactory.getAvailableZoneIds;
-        ZoneId.of = ZoneIdFactory.of;
-        ZoneId.ofOffset = ZoneIdFactory.ofOffset;
-        ZoneId.from = ZoneIdFactory.from;
-        ZoneOffset.from = ZoneIdFactory.from;
-        ZoneId.SYSTEM = SYSTEM_DEFAULT_ZONE_ID_INSTANCE;
-        ZoneId.UTC = ZoneOffset.ofTotalSeconds(0);
-      }
-      var isInit = false;
-      function init() {
-        if (isInit) {
-          return;
-        }
-        isInit = true;
-        _init$m();
-        _init$n();
-        _init$l();
-        _init$k();
-        _init$3();
-        _init$g();
-        _init$1();
-        _init$j();
-        _init$2();
-        _init$5();
-        _init$4();
-        _init$7();
-        _init$i();
-        _init$8();
-        _init$9();
-        _init$h();
-        _init$f();
-        _init$c();
-        _init();
-        _init$6();
-        _init$a();
-        _init$b();
-        _init$d();
-        _init$e();
-      }
-      init();
-      var ToNativeJsConverter = (function() {
-        function ToNativeJsConverter2(temporal, zone) {
-          var zonedDateTime;
-          if (temporal instanceof Instant) {
-            this.instant = temporal;
-            return;
-          } else if (temporal instanceof LocalDate) {
-            zone = zone == null ? ZoneId.systemDefault() : zone;
-            zonedDateTime = temporal.atStartOfDay(zone);
-          } else if (temporal instanceof LocalDateTime) {
-            zone = zone == null ? ZoneId.systemDefault() : zone;
-            zonedDateTime = temporal.atZone(zone);
-          } else if (temporal instanceof ZonedDateTime) {
-            if (zone == null) {
-              zonedDateTime = temporal;
-            } else {
-              zonedDateTime = temporal.withZoneSameInstant(zone);
-            }
-          } else {
-            throw new IllegalArgumentException("unsupported instance for convert operation:" + temporal);
-          }
-          this.instant = zonedDateTime.toInstant();
-        }
-        var _proto = ToNativeJsConverter2.prototype;
-        _proto.toDate = function toDate() {
-          return new Date(this.instant.toEpochMilli());
-        };
-        _proto.toEpochMilli = function toEpochMilli() {
-          return this.instant.toEpochMilli();
-        };
-        return ToNativeJsConverter2;
-      })();
-      function convert(temporal, zone) {
-        return new ToNativeJsConverter(temporal, zone);
-      }
-      function nativeJs(date, zone) {
-        if (zone === void 0) {
-          zone = ZoneId.systemDefault();
-        }
-        requireNonNull(date, "date");
-        requireNonNull(zone, "zone");
-        return Instant.ofEpochMilli(date.valueOf()).atZone(zone);
-      }
-      function bindUse(jsJoda) {
-        var used = [];
-        return function use2(fn) {
-          if (!~used.indexOf(fn)) {
-            fn(jsJoda);
-            used.push(fn);
-          }
-          return jsJoda;
-        };
-      }
-      var _ = {
-        assert: assert$1,
-        DateTimeBuilder,
-        DateTimeParseContext,
-        DateTimePrintContext,
-        MathUtil,
-        StringUtil,
-        StringBuilder
-      };
-      var jsJodaExports = {
-        _,
-        convert,
-        nativeJs,
-        ArithmeticException,
-        DateTimeException,
-        DateTimeParseException,
-        IllegalArgumentException,
-        IllegalStateException,
-        UnsupportedTemporalTypeException,
-        NullPointerException,
-        Clock,
-        DayOfWeek,
-        Duration,
-        Instant,
-        LocalDate,
-        LocalTime,
-        LocalDateTime,
-        OffsetTime,
-        OffsetDateTime,
-        Month,
-        MonthDay,
-        ParsePosition,
-        Period,
-        Year,
-        YearConstants,
-        YearMonth,
-        ZonedDateTime,
-        ZoneOffset,
-        ZoneId,
-        ZoneRegion,
-        ZoneOffsetTransition,
-        ZoneRules,
-        ZoneRulesProvider,
-        ChronoLocalDate,
-        ChronoLocalDateTime,
-        ChronoZonedDateTime,
-        IsoChronology,
-        ChronoField,
-        ChronoUnit,
-        IsoFields,
-        Temporal,
-        TemporalAccessor,
-        TemporalAdjuster,
-        TemporalAdjusters,
-        TemporalAmount,
-        TemporalField,
-        TemporalQueries,
-        TemporalQuery,
-        TemporalUnit,
-        ValueRange,
-        DateTimeFormatter,
-        DateTimeFormatterBuilder,
-        DecimalStyle,
-        ResolverStyle,
-        SignStyle,
-        TextStyle
-      };
-      var use = bindUse(jsJodaExports);
-      jsJodaExports.use = use;
-      exports3.ArithmeticException = ArithmeticException;
-      exports3.ChronoField = ChronoField;
-      exports3.ChronoLocalDate = ChronoLocalDate;
-      exports3.ChronoLocalDateTime = ChronoLocalDateTime;
-      exports3.ChronoUnit = ChronoUnit;
-      exports3.ChronoZonedDateTime = ChronoZonedDateTime;
-      exports3.Clock = Clock;
-      exports3.DateTimeException = DateTimeException;
-      exports3.DateTimeFormatter = DateTimeFormatter;
-      exports3.DateTimeFormatterBuilder = DateTimeFormatterBuilder;
-      exports3.DateTimeParseException = DateTimeParseException;
-      exports3.DayOfWeek = DayOfWeek;
-      exports3.DecimalStyle = DecimalStyle;
-      exports3.Duration = Duration;
-      exports3.IllegalArgumentException = IllegalArgumentException;
-      exports3.IllegalStateException = IllegalStateException;
-      exports3.Instant = Instant;
-      exports3.IsoChronology = IsoChronology;
-      exports3.IsoFields = IsoFields;
-      exports3.LocalDate = LocalDate;
-      exports3.LocalDateTime = LocalDateTime;
-      exports3.LocalTime = LocalTime;
-      exports3.Month = Month;
-      exports3.MonthDay = MonthDay;
-      exports3.NullPointerException = NullPointerException;
-      exports3.OffsetDateTime = OffsetDateTime;
-      exports3.OffsetTime = OffsetTime;
-      exports3.ParsePosition = ParsePosition;
-      exports3.Period = Period;
-      exports3.ResolverStyle = ResolverStyle;
-      exports3.SignStyle = SignStyle;
-      exports3.Temporal = Temporal;
-      exports3.TemporalAccessor = TemporalAccessor;
-      exports3.TemporalAdjuster = TemporalAdjuster;
-      exports3.TemporalAdjusters = TemporalAdjusters;
-      exports3.TemporalAmount = TemporalAmount;
-      exports3.TemporalField = TemporalField;
-      exports3.TemporalQueries = TemporalQueries;
-      exports3.TemporalQuery = TemporalQuery;
-      exports3.TemporalUnit = TemporalUnit;
-      exports3.TextStyle = TextStyle;
-      exports3.UnsupportedTemporalTypeException = UnsupportedTemporalTypeException;
-      exports3.ValueRange = ValueRange;
-      exports3.Year = Year;
-      exports3.YearConstants = YearConstants;
-      exports3.YearMonth = YearMonth;
-      exports3.ZoneId = ZoneId;
-      exports3.ZoneOffset = ZoneOffset;
-      exports3.ZoneOffsetTransition = ZoneOffsetTransition;
-      exports3.ZoneRegion = ZoneRegion;
-      exports3.ZoneRules = ZoneRules;
-      exports3.ZoneRulesProvider = ZoneRulesProvider;
-      exports3.ZonedDateTime = ZonedDateTime;
-      exports3._ = _;
-      exports3.convert = convert;
-      exports3.nativeJs = nativeJs;
-      exports3.use = use;
-    }));
+    }
   }
 });
 
@@ -52526,11 +42258,11 @@ var require_datetime = __commonJS({
     });
     exports2.default = void 0;
     var _datetimen = _interopRequireDefault(require_datetimen());
-    var _core = require_js_joda();
+    var _temporal = require_temporal();
     function _interopRequireDefault(e) {
       return e && e.__esModule ? e : { default: e };
     }
-    var EPOCH_DATE = _core.LocalDate.ofYearDay(1900, 1);
+    var EPOCH_DATE = (0, _temporal.epochDay)(1900, 1, 1);
     var TYPE_INFO = Buffer.from([_datetimen.default.id, 8]);
     var DateTime = {
       id: 61,
@@ -52550,10 +42282,10 @@ var require_datetime = __commonJS({
         }
         let days, milliseconds;
         if (options.useUTC) {
-          days = EPOCH_DATE.until(_core.LocalDate.of(value.getUTCFullYear(), value.getUTCMonth() + 1, value.getUTCDate()), _core.ChronoUnit.DAYS);
+          days = (0, _temporal.epochDay)(value.getUTCFullYear(), value.getUTCMonth() + 1, value.getUTCDate()) - EPOCH_DATE;
           milliseconds = ((value.getUTCHours() * 60 + value.getUTCMinutes()) * 60 + value.getUTCSeconds()) * 1e3 + value.getUTCMilliseconds();
         } else {
-          days = EPOCH_DATE.until(_core.LocalDate.of(value.getFullYear(), value.getMonth() + 1, value.getDate()), _core.ChronoUnit.DAYS);
+          days = (0, _temporal.epochDay)(value.getFullYear(), value.getMonth() + 1, value.getDate()) - EPOCH_DATE;
           milliseconds = ((value.getHours() * 60 + value.getMinutes()) * 60 + value.getSeconds()) * 1e3 + value.getMilliseconds();
         }
         let threeHundredthsOfSecond = Math.round(milliseconds / (3 + 1 / 3));
@@ -57380,7 +47112,7 @@ var require_binary = __commonJS({
       resolveLength: function(parameter) {
         const value = parameter.value;
         if (value != null) {
-          return value.length;
+          return value.length || 1;
         } else {
           return this.maximumLength;
         }
@@ -57395,8 +47127,12 @@ var require_binary = __commonJS({
           buffer.writeBuffer(NULL_LENGTH);
           return;
         }
-        buffer.writeUInt16LE(parameter.length);
-        buffer.writeBuffer(value.subarray(0, parameter.length !== void 0 ? Math.min(parameter.length, Binary.maximumLength) : Binary.maximumLength));
+        const length = parameter.length != null ? parameter.length : this.maximumLength;
+        if (value.length > length) {
+          throw new TypeError(`Binary value of ${value.length} bytes exceeds the declared length of ${length}.`);
+        }
+        buffer.writeUInt16LE(value.length);
+        buffer.writeBuffer(value);
       },
       validate: function(value) {
         if (value == null) {
@@ -57406,6 +47142,17 @@ var require_binary = __commonJS({
           throw new TypeError("Invalid buffer.");
         }
         return value;
+      },
+      resolve(parameter) {
+        let value = this.validate(parameter.value, void 0);
+        const length = parameter.length || this.resolveLength(parameter);
+        if (value != null && value.length > length) {
+          value = value.subarray(0, length);
+        }
+        return {
+          value,
+          length
+        };
       }
     };
     var _default = exports2.default = Binary;
@@ -57756,63 +47503,6 @@ var require_xml = __commonJS({
     };
     var _default = exports2.default = XML;
     module2.exports = XML;
-  }
-});
-
-// node_modules/tedious/lib/data-types/temporal.js
-var require_temporal = __commonJS({
-  "node_modules/tedious/lib/data-types/temporal.js"(exports2) {
-    "use strict";
-    Object.defineProperty(exports2, "__esModule", {
-      value: true
-    });
-    exports2.daysSinceYearOne = daysSinceYearOne;
-    exports2.timeLength = timeLength;
-    exports2.writeTimeOfDay = writeTimeOfDay;
-    var _core = require_js_joda();
-    var YEAR_ONE = _core.LocalDate.ofYearDay(1, 1);
-    function daysSinceYearOne(value, useUTC) {
-      const date = useUTC ? _core.LocalDate.of(value.getUTCFullYear(), value.getUTCMonth() + 1, value.getUTCDate()) : _core.LocalDate.of(value.getFullYear(), value.getMonth() + 1, value.getDate());
-      return YEAR_ONE.until(date, _core.ChronoUnit.DAYS);
-    }
-    function timeLength(scale) {
-      switch (scale) {
-        case 0:
-        case 1:
-        case 2:
-          return 3;
-        case 3:
-        case 4:
-          return 4;
-        case 5:
-        case 6:
-        case 7:
-          return 5;
-        default:
-          throw new Error("invalid scale");
-      }
-    }
-    function writeTimeOfDay(buffer, value, scale, useUTC) {
-      let timestamp = useUTC ? ((value.getUTCHours() * 60 + value.getUTCMinutes()) * 60 + value.getUTCSeconds()) * 1e3 + value.getUTCMilliseconds() : ((value.getHours() * 60 + value.getMinutes()) * 60 + value.getSeconds()) * 1e3 + value.getMilliseconds();
-      timestamp = timestamp * Math.pow(10, scale - 3);
-      timestamp += (value.nanosecondDelta != null ? value.nanosecondDelta : 0) * Math.pow(10, scale);
-      timestamp = Math.round(timestamp);
-      switch (scale) {
-        case 0:
-        case 1:
-        case 2:
-          buffer.writeUInt24LE(timestamp);
-          break;
-        case 3:
-        case 4:
-          buffer.writeUInt32LE(timestamp);
-          break;
-        case 5:
-        case 6:
-        case 7:
-          buffer.writeUInt40LE(timestamp);
-      }
-    }
   }
 });
 
@@ -58618,7 +48308,7 @@ var require_request2 = __commonJS({
        * An `done` event is emitted for each SQL statement in the SQL batch except variable declarations.
        * For execution of SQL statements within stored procedures, `doneProc` and `doneInProc` events are used in place of `done`.
        *
-       * If you are using [[Connection.execSql]] then SQL server may treat the multiple calls with the same query as a stored procedure.
+       * If you are using {@link Connection.execSql} then SQL server may treat the multiple calls with the same query as a stored procedure.
        * When this occurs, the `doneProc` and `doneInProc` events may be emitted instead. You must handle both events to ensure complete coverage.
        */
       /**
@@ -58627,15 +48317,15 @@ var require_request2 = __commonJS({
        * Indicates the completion status of a SQL statement within a stored procedure. All rows from a statement
        * in a stored procedure have been provided (through `row` events).
        *
-       * This event may also occur when executing multiple calls with the same query using [[execSql]].
+       * This event may also occur when executing multiple calls with the same query using {@link Connection.execSql}.
        */
       /**
        * Indicates the completion status of a stored procedure. This is also generated for stored procedures
        * executed through SQL statements.\
-       * This event may also occur when executing multiple calls with the same query using [[execSql]].
+       * This event may also occur when executing multiple calls with the same query using {@link Connection.execSql}.
        */
       /**
-       * A value for an output parameter (that was added to the request with [[addOutputParameter]]).
+       * A value for an output parameter (that was added to the request with {@link addOutputParameter}).
        * See also `Using Parameters`.
        */
       /**
@@ -58764,7 +48454,11 @@ var require_request2 = __commonJS({
        *   or modify a buffer it has yielded until the request has completed.
        *
        * @param options
-       *   Additional type options. Optional.
+       *   Additional type options. For example, set `scale` to control the
+       *   fractional-second precision of a DateTime2 parameter:
+       *   `request.addParameter('createdAt', TYPES.DateTime2, date, { scale: 3 })`
+       *   sends the value with three fractional-second digits. For DateTime2
+       *   parameters, the default is 7 for non-null values and 0 for `null` values.
        */
       // TODO: `type` must be a valid TDS value type
       addParameter(name, type, value, options) {
@@ -58846,8 +48540,8 @@ var require_request2 = __commonJS({
         this.resolvedParameters = resolvedParameters;
       }
       /**
-       * Temporarily suspends the flow of data from the database. No more `row` events will be emitted until [[resume]] is called.
-       * If this request is already in a paused state, calling [[pause]] has no effect.
+       * Temporarily suspends the flow of data from the database. No more `row` events will be emitted until {@link resume} is called.
+       * If this request is already in a paused state, calling {@link pause} has no effect.
        */
       pause() {
         if (this.paused) {
@@ -58858,7 +48552,7 @@ var require_request2 = __commonJS({
       }
       /**
        * Resumes the flow of data from the database.
-       * If this request is not in a paused state, calling [[resume]] has no effect.
+       * If this request is not in a paused state, calling {@link resume} has no effect.
        */
       resume() {
         if (!this.paused) {
@@ -58883,7 +48577,7 @@ var require_request2 = __commonJS({
        * @param timeout
        *   The number of milliseconds before the request is considered failed,
        *   or `0` for no timeout. When no timeout is set for the request,
-       *   the [[ConnectionOptions.requestTimeout]] of the [[Connection]] is used.
+       *   the {@link ConnectionOptions.requestTimeout} of the {@link Connection} is used.
        */
       setTimeout(timeout) {
         this.timeout = timeout;
@@ -58891,6 +48585,63 @@ var require_request2 = __commonJS({
     };
     var _default = exports2.default = Request;
     module2.exports = Request;
+  }
+});
+
+// node_modules/tedious/lib/execution-options.js
+var require_execution_options = __commonJS({
+  "node_modules/tedious/lib/execution-options.js"(exports2) {
+    "use strict";
+    Object.defineProperty(exports2, "__esModule", {
+      value: true
+    });
+    exports2.abortOnSignal = abortOnSignal;
+    exports2.originalCallback = originalCallback;
+    var _errors = require_errors();
+    function abortError(signal) {
+      const error = new _errors.RequestError("The operation was aborted", "ABORT_ERR", {
+        cause: signal.reason
+      });
+      error.name = "AbortError";
+      return error;
+    }
+    var replacedCallbacks = /* @__PURE__ */ new WeakMap();
+    function originalCallback(execution) {
+      let callback = execution.callback;
+      for (let replaced = replacedCallbacks.get(callback); replaced !== void 0; replaced = replacedCallbacks.get(callback)) {
+        callback = replaced;
+      }
+      return callback;
+    }
+    function abortOnSignal(execution, signal) {
+      if (signal === void 0) {
+        return;
+      }
+      const callback = execution.callback;
+      let canceledBySignal = false;
+      const onAbort = () => {
+        if (!execution.canceled) {
+          canceledBySignal = true;
+          execution.cancel();
+        }
+      };
+      execution.callback = function(error, ...rest) {
+        execution.callback = callback;
+        signal.removeEventListener("abort", onAbort);
+        if (canceledBySignal && error instanceof _errors.RequestError && error.code === "ECANCEL") {
+          error = abortError(signal);
+        }
+        callback.call(execution, error, ...rest);
+      };
+      replacedCallbacks.set(execution.callback, callback);
+      if (signal.aborted) {
+        onAbort();
+      } else {
+        signal.addEventListener("abort", onAbort, {
+          once: true
+        });
+      }
+    }
   }
 });
 
@@ -59156,36 +48907,36 @@ var require_primordials = __commonJS({
     };
     module2.exports = {
       AggregateError: AggregateError2,
-      ArrayIsArray(self2) {
-        return Array.isArray(self2);
+      ArrayIsArray(self) {
+        return Array.isArray(self);
       },
-      ArrayPrototypeIncludes(self2, el) {
-        return self2.includes(el);
+      ArrayPrototypeIncludes(self, el) {
+        return self.includes(el);
       },
-      ArrayPrototypeIndexOf(self2, el) {
-        return self2.indexOf(el);
+      ArrayPrototypeIndexOf(self, el) {
+        return self.indexOf(el);
       },
-      ArrayPrototypeJoin(self2, sep) {
-        return self2.join(sep);
+      ArrayPrototypeJoin(self, sep) {
+        return self.join(sep);
       },
-      ArrayPrototypeMap(self2, fn) {
-        return self2.map(fn);
+      ArrayPrototypeMap(self, fn) {
+        return self.map(fn);
       },
-      ArrayPrototypePop(self2, el) {
-        return self2.pop(el);
+      ArrayPrototypePop(self, el) {
+        return self.pop(el);
       },
-      ArrayPrototypePush(self2, el) {
-        return self2.push(el);
+      ArrayPrototypePush(self, el) {
+        return self.push(el);
       },
-      ArrayPrototypeSlice(self2, start, end) {
-        return self2.slice(start, end);
+      ArrayPrototypeSlice(self, start, end) {
+        return self.slice(start, end);
       },
       Error,
       FunctionPrototypeCall(fn, thisArgs, ...args) {
         return fn.call(thisArgs, ...args);
       },
-      FunctionPrototypeSymbolHasInstance(self2, instance) {
-        return Function.prototype[Symbol.hasInstance].call(self2, instance);
+      FunctionPrototypeSymbolHasInstance(self, instance) {
+        return Function.prototype[Symbol.hasInstance].call(self, instance);
       },
       MathFloor: Math.floor,
       Number,
@@ -59194,14 +48945,14 @@ var require_primordials = __commonJS({
       NumberMAX_SAFE_INTEGER: Number.MAX_SAFE_INTEGER,
       NumberMIN_SAFE_INTEGER: Number.MIN_SAFE_INTEGER,
       NumberParseInt: Number.parseInt,
-      ObjectDefineProperties(self2, props) {
-        return Object.defineProperties(self2, props);
+      ObjectDefineProperties(self, props) {
+        return Object.defineProperties(self, props);
       },
-      ObjectDefineProperty(self2, name, prop) {
-        return Object.defineProperty(self2, name, prop);
+      ObjectDefineProperty(self, name, prop) {
+        return Object.defineProperty(self, name, prop);
       },
-      ObjectGetOwnPropertyDescriptor(self2, name) {
-        return Object.getOwnPropertyDescriptor(self2, name);
+      ObjectGetOwnPropertyDescriptor(self, name) {
+        return Object.getOwnPropertyDescriptor(self, name);
       },
       ObjectKeys(obj) {
         return Object.keys(obj);
@@ -59210,11 +48961,11 @@ var require_primordials = __commonJS({
         return Object.setPrototypeOf(target, proto);
       },
       Promise,
-      PromisePrototypeCatch(self2, fn) {
-        return self2.catch(fn);
+      PromisePrototypeCatch(self, fn) {
+        return self.catch(fn);
       },
-      PromisePrototypeThen(self2, thenFn, catchFn) {
-        return self2.then(thenFn, catchFn);
+      PromisePrototypeThen(self, thenFn, catchFn) {
+        return self.then(thenFn, catchFn);
       },
       PromiseReject(err) {
         return Promise.reject(err);
@@ -59223,22 +48974,22 @@ var require_primordials = __commonJS({
         return Promise.resolve(val);
       },
       ReflectApply: Reflect.apply,
-      RegExpPrototypeTest(self2, value) {
-        return self2.test(value);
+      RegExpPrototypeTest(self, value) {
+        return self.test(value);
       },
       SafeSet: Set,
       String,
-      StringPrototypeSlice(self2, start, end) {
-        return self2.slice(start, end);
+      StringPrototypeSlice(self, start, end) {
+        return self.slice(start, end);
       },
-      StringPrototypeToLowerCase(self2) {
-        return self2.toLowerCase();
+      StringPrototypeToLowerCase(self) {
+        return self.toLowerCase();
       },
-      StringPrototypeToUpperCase(self2) {
-        return self2.toUpperCase();
+      StringPrototypeToUpperCase(self) {
+        return self.toUpperCase();
       },
-      StringPrototypeTrim(self2) {
-        return self2.trim();
+      StringPrototypeTrim(self) {
+        return self.trim();
       },
       Symbol,
       SymbolFor: Symbol.for,
@@ -59247,8 +48998,8 @@ var require_primordials = __commonJS({
       SymbolIterator: Symbol.iterator,
       SymbolDispose: Symbol.dispose || /* @__PURE__ */ Symbol("Symbol.dispose"),
       SymbolAsyncDispose: Symbol.asyncDispose || /* @__PURE__ */ Symbol("Symbol.asyncDispose"),
-      TypedArrayPrototypeSet(self2, buf, len) {
-        return self2.set(buf, len);
+      TypedArrayPrototypeSet(self, buf, len) {
+        return self.set(buf, len);
       },
       Boolean,
       Uint8Array
@@ -61238,15 +50989,15 @@ var require_destroy = __commonJS({
       }
       return this;
     }
-    function _destroy(self2, err, cb) {
+    function _destroy(self, err, cb) {
       let called = false;
       function onDestroy(err2) {
         if (called) {
           return;
         }
         called = true;
-        const r = self2._readableState;
-        const w = self2._writableState;
+        const r = self._readableState;
+        const w = self._writableState;
         checkError(err2, w, r);
         if (w) {
           w.closed = true;
@@ -61258,24 +51009,24 @@ var require_destroy = __commonJS({
           cb(err2);
         }
         if (err2) {
-          process10.nextTick(emitErrorCloseNT, self2, err2);
+          process10.nextTick(emitErrorCloseNT, self, err2);
         } else {
-          process10.nextTick(emitCloseNT, self2);
+          process10.nextTick(emitCloseNT, self);
         }
       }
       try {
-        self2._destroy(err || null, onDestroy);
+        self._destroy(err || null, onDestroy);
       } catch (err2) {
         onDestroy(err2);
       }
     }
-    function emitErrorCloseNT(self2, err) {
-      emitErrorNT(self2, err);
-      emitCloseNT(self2);
+    function emitErrorCloseNT(self, err) {
+      emitErrorNT(self, err);
+      emitCloseNT(self);
     }
-    function emitCloseNT(self2) {
-      const r = self2._readableState;
-      const w = self2._writableState;
+    function emitCloseNT(self) {
+      const r = self._readableState;
+      const w = self._writableState;
       if (w) {
         w.closeEmitted = true;
       }
@@ -61283,12 +51034,12 @@ var require_destroy = __commonJS({
         r.closeEmitted = true;
       }
       if (w !== null && w !== void 0 && w.emitClose || r !== null && r !== void 0 && r.emitClose) {
-        self2.emit("close");
+        self.emit("close");
       }
     }
-    function emitErrorNT(self2, err) {
-      const r = self2._readableState;
-      const w = self2._writableState;
+    function emitErrorNT(self, err) {
+      const r = self._readableState;
+      const w = self._writableState;
       if (w !== null && w !== void 0 && w.errorEmitted || r !== null && r !== void 0 && r.errorEmitted) {
         return;
       }
@@ -61298,7 +51049,7 @@ var require_destroy = __commonJS({
       if (r) {
         r.errorEmitted = true;
       }
-      self2.emit("error", err);
+      self.emit("error", err);
     }
     function undestroy() {
       const r = this._readableState;
@@ -61895,18 +51646,18 @@ var require_string_decoder = __commonJS({
       else if (byte >> 3 === 30) return 4;
       return byte >> 6 === 2 ? -1 : -2;
     }
-    function utf8CheckIncomplete(self2, buf, i) {
+    function utf8CheckIncomplete(self, buf, i) {
       var j = buf.length - 1;
       if (j < i) return 0;
       var nb = utf8CheckByte(buf[j]);
       if (nb >= 0) {
-        if (nb > 0) self2.lastNeed = nb - 1;
+        if (nb > 0) self.lastNeed = nb - 1;
         return nb;
       }
       if (--j < i || nb === -2) return 0;
       nb = utf8CheckByte(buf[j]);
       if (nb >= 0) {
-        if (nb > 0) self2.lastNeed = nb - 2;
+        if (nb > 0) self.lastNeed = nb - 2;
         return nb;
       }
       if (--j < i || nb === -2) return 0;
@@ -61914,25 +51665,25 @@ var require_string_decoder = __commonJS({
       if (nb >= 0) {
         if (nb > 0) {
           if (nb === 2) nb = 0;
-          else self2.lastNeed = nb - 3;
+          else self.lastNeed = nb - 3;
         }
         return nb;
       }
       return 0;
     }
-    function utf8CheckExtraBytes(self2, buf, p) {
+    function utf8CheckExtraBytes(self, buf, p) {
       if ((buf[0] & 192) !== 128) {
-        self2.lastNeed = 0;
+        self.lastNeed = 0;
         return "\uFFFD";
       }
-      if (self2.lastNeed > 1 && buf.length > 1) {
+      if (self.lastNeed > 1 && buf.length > 1) {
         if ((buf[1] & 192) !== 128) {
-          self2.lastNeed = 1;
+          self.lastNeed = 1;
           return "\uFFFD";
         }
-        if (self2.lastNeed > 2 && buf.length > 2) {
+        if (self.lastNeed > 2 && buf.length > 2) {
           if ((buf[2] & 192) !== 128) {
-            self2.lastNeed = 2;
+            self.lastNeed = 2;
             return "\uFFFD";
           }
         }
@@ -62718,20 +52469,20 @@ var require_readable = __commonJS({
       }
       return res;
     };
-    function updateReadableListening(self2) {
-      const state = self2._readableState;
-      state.readableListening = self2.listenerCount("readable") > 0;
+    function updateReadableListening(self) {
+      const state = self._readableState;
+      state.readableListening = self.listenerCount("readable") > 0;
       if (state.resumeScheduled && state[kPaused] === false) {
         state.flowing = true;
-      } else if (self2.listenerCount("data") > 0) {
-        self2.resume();
+      } else if (self.listenerCount("data") > 0) {
+        self.resume();
       } else if (!state.readableListening) {
         state.flowing = null;
       }
     }
-    function nReadingNextTick(self2) {
+    function nReadingNextTick(self) {
       debug("readable nexttick read 0");
-      self2.read(0);
+      self.read(0);
     }
     Readable.prototype.resume = function() {
       const state = this._readableState;
@@ -67485,6 +57236,8 @@ var require_env_change_token_parser = __commonJS({
     var _collation = require_collation();
     var _token = require_token();
     var _helpers = require_helpers3();
+    var MIN_PACKET_SIZE = 512;
+    var MAX_PACKET_SIZE = 32767;
     var types = {
       1: {
         name: "DATABASE",
@@ -67552,8 +57305,13 @@ var require_env_change_token_parser = __commonJS({
             value: oldValue
           } = (0, _helpers.readBVarChar)(buf, offset));
           switch (type.name) {
-            case "PACKET_SIZE":
-              return new _helpers.Result(new _token.PacketSizeEnvChangeToken(parseInt(newValue), parseInt(oldValue)), offset);
+            case "PACKET_SIZE": {
+              const newPacketSize = Number(newValue);
+              if (!Number.isInteger(newPacketSize) || newPacketSize < MIN_PACKET_SIZE || newPacketSize > MAX_PACKET_SIZE) {
+                throw new Error(`Server sent an invalid packet size: ${JSON.stringify(newValue)} (must be between ${MIN_PACKET_SIZE} and ${MAX_PACKET_SIZE})`);
+              }
+              return new _helpers.Result(new _token.PacketSizeEnvChangeToken(newPacketSize, parseInt(oldValue)), offset);
+            }
             case "DATABASE":
               return new _helpers.Result(new _token.DatabaseEnvChangeToken(newValue, oldValue), offset);
             case "LANGUAGE":
@@ -69777,6 +59535,7 @@ var require_bulk_load_payload = __commonJS({
         const buffer = new _writableTrackingBuffer.default();
         let done = false;
         let closed = false;
+        let rowIndex = 0;
         try {
           buffer.writeBuffer(bulkLoad.getColMetaData());
           while (true) {
@@ -69793,30 +59552,41 @@ var require_bulk_load_payload = __commonJS({
             if (isPromiseLike(row)) {
               row = await row;
             }
+            if (row === null || typeof row !== "object") {
+              throw new _errors.InputError(`Bulk load row at index ${rowIndex} is not an array or object`);
+            }
             buffer.writeBuffer(rowTokenBuffer);
             const isArray = Array.isArray(row);
             for (let i = 0; i < columns.length; i++) {
               const c = columns[i];
-              const value = c.type.validate(isArray ? row[i] : row[c.objName], c.collation);
+              let value;
+              try {
+                const input = isArray ? row[i] : row[c.objName];
+                value = c.type.validate(input, c.collation);
+              } catch (error) {
+                throw new _errors.InputError(`Column '${c.name}' could not be validated at row index ${rowIndex}`, {
+                  cause: error
+                });
+              }
               const parameter = {
                 length: c.length,
                 scale: c.scale,
                 precision: c.precision,
                 value
               };
-              if (isTextType[i] && value == null) {
-                buffer.writeBuffer(textPointerNullBuffer);
-              } else {
-                if (isTextType[i]) {
-                  buffer.writeBuffer(textPointerAndTimestampBuffer);
-                }
-                try {
+              try {
+                if (isTextType[i] && value == null) {
+                  buffer.writeBuffer(textPointerNullBuffer);
+                } else {
+                  if (isTextType[i]) {
+                    buffer.writeBuffer(textPointerAndTimestampBuffer);
+                  }
                   c.type.writeValue(buffer, parameter, options);
-                } catch (error) {
-                  throw new _errors.InputError(`Column '${c.name}' could not be serialized`, {
-                    cause: error
-                  });
                 }
+              } catch (error) {
+                throw new _errors.InputError(`Column '${c.name}' could not be serialized at row index ${rowIndex}`, {
+                  cause: error
+                });
               }
               if (buffer.length >= _writableTrackingBuffer.default.CHUNK_SIZE) {
                 for (const chunk of buffer.getBuffers()) {
@@ -69825,6 +59595,7 @@ var require_bulk_load_payload = __commonJS({
                 buffer.consume(buffer.length);
               }
             }
+            rowIndex++;
           }
         } catch (err) {
           closed = true;
@@ -69916,7 +59687,7 @@ var require_package = __commonJS({
       homepage: "https://github.com/tediousjs/tedious",
       bugs: "https://github.com/tediousjs/tedious/issues",
       license: "MIT",
-      version: "20.3.8",
+      version: "20.4.3",
       main: "./lib/tedious.js",
       types: "./lib/tedious.d.ts",
       repository: {
@@ -69949,9 +59720,8 @@ var require_package = __commonJS({
       },
       dependencies: {
         "@azure/core-auth": "^1.10.1",
-        "@azure/identity": "^4.13.1",
+        "@azure/identity": "^4.14.1",
         "@azure/keyvault-keys": "^4.10.2",
-        "@js-joda/core": "^6.0.1",
         "@types/node": ">=22",
         bl: "^6.1.4",
         "iconv-lite": "^0.7.0",
@@ -69980,7 +59750,7 @@ var require_package = __commonJS({
         chai: "^4.5.0",
         eslint: "^9.39.1",
         mitm: "^1.7.3",
-        mocha: "^11.7.5",
+        mocha: "^12.0.3",
         nyc: "^18.0.0",
         rimraf: "^6.1.3",
         "semantic-release": "^25.0.5",
@@ -70527,6 +60297,7 @@ var require_connection = __commonJS({
     var _login7Payload = _interopRequireDefault(require_login7_payload());
     var _ntlmPayload = _interopRequireDefault(require_ntlm_payload());
     var _request = _interopRequireDefault(require_request2());
+    var _executionOptions = require_execution_options();
     var _rpcrequestPayload = _interopRequireDefault(require_rpcrequest_payload());
     var _sqlbatchPayload = _interopRequireDefault(require_sqlbatch_payload());
     var _messageIo = _interopRequireDefault(require_message_io());
@@ -71344,7 +61115,7 @@ var require_connection = __commonJS({
       /**
        * The connection has ended.
        *
-       * This may be as a result of the client calling [[close]], the server
+       * This may be as a result of the client calling {@link close}, the server
        * closing the connection, or a network error.
        */
       /**
@@ -71413,7 +61184,7 @@ var require_connection = __commonJS({
       /**
        * Closes the connection to the database.
        *
-       * The [[Event_end]] will be emitted once the connection has been closed.
+       * The {@link Connection.on | `end` event} will be emitted once the connection has been closed.
        */
       close() {
         this.closeController?.abort(new _errors.ConnectionError("Connection closed before the connection was established.", "ECLOSE"));
@@ -71693,6 +61464,9 @@ var require_connection = __commonJS({
       requestTimeout() {
         this.requestTimer = void 0;
         const request = this.request;
+        if (request.canceled) {
+          return;
+        }
         request.cancel();
         const timeout = request.timeout !== void 0 ? request.timeout : this.config.options.requestTimeout;
         const message = "Timeout: Request failed to complete in " + timeout + "ms";
@@ -71986,16 +61760,25 @@ var require_connection = __commonJS({
         return options.join("\n");
       }
       /**
-       * Execute the SQL batch represented by [[Request]].
-       * There is no param support, and unlike [[execSql]],
+       * Execute the SQL batch represented by {@link Request}.
+       * There is no param support, and unlike {@link execSql},
        * it is not likely that SQL Server will reuse the execution plan it generates for the SQL.
        *
-       * In almost all cases, [[execSql]] will be a better choice.
+       * In almost all cases, {@link execSql} will be a better choice.
        *
-       * @param request A [[Request]] object representing the request.
+       * @param request A {@link Request} object representing the request.
        */
-      execSqlBatch(request) {
-        this.makeRequest(request, _packet.TYPE.SQL_BATCH, new _sqlbatchPayload.default(request.sqlTextOrProcedure, this.currentTransactionDescriptor(), this.config.options));
+      /**
+       * Execute the SQL batch represented by {@link Request}, with the given
+       * options for this execution, e.g. an abort signal to cancel it with.
+       *
+       * @experimental
+       *
+       * @param request A {@link Request} object representing the request.
+       * @param options Options of this execution.
+       */
+      execSqlBatch(request, options) {
+        this.makeRequest(request, _packet.TYPE.SQL_BATCH, new _sqlbatchPayload.default(request.sqlTextOrProcedure, this.currentTransactionDescriptor(), this.config.options), options?.signal);
       }
       /**
        * @private
@@ -72004,28 +61787,37 @@ var require_connection = __commonJS({
         return (0, _dataType.resolveParameter)(parameter, this.databaseCollation, this.config.options);
       }
       /**
-       *  Execute the SQL represented by [[Request]].
+       *  Execute the SQL represented by {@link Request}.
        *
        * As `sp_executesql` is used to execute the SQL, if the same SQL is executed multiples times
        * using this function, the SQL Server query optimizer is likely to reuse the execution plan it generates
        * for the first execution. This may also result in SQL server treating the request like a stored procedure
-       * which can result in the [[Event_doneInProc]] or [[Event_doneProc]] events being emitted instead of the
-       * [[Event_done]] event you might expect. Using [[execSqlBatch]] will prevent this from occurring but may have a negative performance impact.
+       * which can result in the {@link Request.on | `doneInProc`} or {@link Request.on | `doneProc`} events being emitted instead of the
+       * {@link Request.on | `done`} event you might expect. Using {@link execSqlBatch} will prevent this from occurring but may have a negative performance impact.
        *
        * Beware of the way that scoping rules apply, and how they may [affect local temp tables](http://weblogs.sqlteam.com/mladenp/archive/2006/11/03/17197.aspx)
-       * If you're running in to scoping issues, then [[execSqlBatch]] may be a better choice.
+       * If you're running in to scoping issues, then {@link execSqlBatch} may be a better choice.
        * See also [issue #24](https://github.com/pekim/tedious/issues/24)
        *
-       * @param request A [[Request]] object representing the request.
+       * @param request A {@link Request} object representing the request.
        */
-      execSql(request) {
+      /**
+       * Execute the SQL represented by {@link Request}, with the given options
+       * for this execution, e.g. an abort signal to cancel it with.
+       *
+       * @experimental
+       *
+       * @param request A {@link Request} object representing the request.
+       * @param options Options of this execution.
+       */
+      execSql(request, options) {
         try {
           request.validateParameters(this.databaseCollation, this.config.options);
         } catch (error) {
           request.error = error;
           process.nextTick(() => {
             this.debug.log(error.message);
-            request.callback(error);
+            (0, _executionOptions.originalCallback)(request).call(request, error);
           });
           return;
         }
@@ -72051,12 +61843,22 @@ var require_connection = __commonJS({
           }));
           parameters.push(...request.resolvedParameters);
         }
-        this.makeRequest(request, _packet.TYPE.RPC_REQUEST, new _rpcrequestPayload.default(_specialStoredProcedure.default.Sp_ExecuteSql, parameters, this.currentTransactionDescriptor(), this.config.options));
+        this.makeRequest(request, _packet.TYPE.RPC_REQUEST, new _rpcrequestPayload.default(_specialStoredProcedure.default.Sp_ExecuteSql, parameters, this.currentTransactionDescriptor(), this.config.options), options?.signal);
       }
       /**
        * Creates a new BulkLoad instance.
        *
-       * @param table The name of the table to bulk-insert into.
+       * `table` is inserted into the generated SQL as-is, so it can be any T-SQL
+       * table reference, like `MyTable`, `dbo.MyTable`, `[my schema].[my table]` or
+       * `#tempTable`. Because it is not quoted or escaped, never build it from
+       * untrusted input. If a name can contain special characters, quote each part
+       * yourself as a delimited identifier, doubling any `]` (e.g. `[my]]table]`).
+       *
+       * The same applies to the column names used as keys of `options.order`.
+       * Column names passed to {@link BulkLoad.addColumn} are quoted and escaped
+       * by tedious.
+       *
+       * @param table The T-SQL reference of the table to bulk-insert into. It is used as-is, without quoting or escaping.
        * @param options A set of bulk load options.
        */
       newBulkLoad(table, callbackOrOptions, callback) {
@@ -72073,7 +61875,7 @@ var require_connection = __commonJS({
         return new _bulkLoad.default(table, this.databaseCollation, this.config.options, options, callback);
       }
       /**
-       * Execute a [[BulkLoad]].
+       * Execute a {@link BulkLoad}.
        *
        * ```js
        * // We want to perform a bulk load into a table with the following format:
@@ -72133,11 +61935,22 @@ var require_connection = __commonJS({
        * connection.execBulkLoad(bulkLoad, employees());
        * ```
        *
-       * @param bulkLoad A previously created [[BulkLoad]].
-       * @param rows A [[Iterable]] or [[AsyncIterable]] that contains the rows that should be bulk loaded.
+       * @param bulkLoad A previously created {@link BulkLoad}.
+       * @param rows A {@link Iterable} or {@link AsyncIterable} that contains the rows that should be bulk loaded.
        */
-      execBulkLoad(bulkLoad, rows) {
+      /**
+       * Execute a {@link BulkLoad}, with the given options for this execution,
+       * e.g. an abort signal to cancel it with.
+       *
+       * @experimental
+       *
+       * @param bulkLoad A previously created {@link BulkLoad}.
+       * @param rows A {@link Iterable} or {@link AsyncIterable} that contains the rows that should be bulk loaded.
+       * @param options Options of this execution.
+       */
+      execBulkLoad(bulkLoad, rows, options) {
         bulkLoad.executionStarted = true;
+        const signal = options?.signal;
         const payload = new _bulkLoadPayload.BulkLoadPayload(bulkLoad, rows ?? []);
         const onCancel = () => {
           request.cancel();
@@ -72150,27 +61963,39 @@ var require_connection = __commonJS({
             }
             payload.close();
             bulkLoad.error = error;
-            bulkLoad.callback(error);
+            (0, _executionOptions.originalCallback)(bulkLoad).call(bulkLoad, error);
             return;
           }
           if (bulkLoad.canceled || this.state !== this.STATE.LOGGED_IN) {
             payload.close();
           }
-          this.makeRequest(bulkLoad, _packet.TYPE.BULK_LOAD, payload);
+          this.makeRequest(bulkLoad, _packet.TYPE.BULK_LOAD, payload, signal);
         });
         bulkLoad.once("cancel", onCancel);
-        this.execSqlBatch(request);
+        this.execSqlBatch(request, {
+          signal
+        });
       }
       /**
        * Prepare the SQL represented by the request.
        *
        * The request can then be used in subsequent calls to
-       * [[execute]] and [[unprepare]]
+       * {@link execute} and {@link unprepare}
        *
-       * @param request A [[Request]] object representing the request.
+       * @param request A {@link Request} object representing the request.
        *   Parameters only require a name and type. Parameter values are ignored.
        */
-      prepare(request) {
+      /**
+       * Prepare the SQL represented by the request, with the given options for
+       * this execution, e.g. an abort signal to cancel it with.
+       *
+       * @experimental
+       *
+       * @param request A {@link Request} object representing the request.
+       *   Parameters only require a name and type. Parameter values are ignored.
+       * @param options Options of this execution.
+       */
+      prepare(request, options) {
         const parameters = [];
         parameters.push(this.resolveRequestParameter({
           type: _dataType.TYPES.Int,
@@ -72200,12 +62025,12 @@ var require_connection = __commonJS({
           scale: void 0
         }));
         request.preparing = true;
-        this.makeRequest(request, _packet.TYPE.RPC_REQUEST, new _rpcrequestPayload.default(_specialStoredProcedure.default.Sp_Prepare, parameters, this.currentTransactionDescriptor(), this.config.options));
+        this.makeRequest(request, _packet.TYPE.RPC_REQUEST, new _rpcrequestPayload.default(_specialStoredProcedure.default.Sp_Prepare, parameters, this.currentTransactionDescriptor(), this.config.options), options?.signal);
       }
       /**
        * Release the SQL Server resources associated with a previously prepared request.
        *
-       * @param request A [[Request]] object representing the request.
+       * @param request A {@link Request} object representing the request.
        *   Parameters only require a name and type.
        *   Parameter values are ignored.
        */
@@ -72226,13 +62051,26 @@ var require_connection = __commonJS({
       /**
        * Execute previously prepared SQL, using the supplied parameters.
        *
-       * @param request A previously prepared [[Request]].
+       * @param request A previously prepared {@link Request}.
        * @param parameters  An object whose names correspond to the names of
-       *   parameters that were added to the [[Request]] before it was prepared.
+       *   parameters that were added to the {@link Request} before it was prepared.
        *   The object's values are passed as the parameters' values when the
        *   request is executed.
        */
-      execute(request, parameters) {
+      /**
+       * Execute previously prepared SQL, using the supplied parameters, with the
+       * given options for this execution, e.g. an abort signal to cancel it with.
+       *
+       * @experimental
+       *
+       * @param request A previously prepared {@link Request}.
+       * @param parameters  An object whose names correspond to the names of
+       *   parameters that were added to the {@link Request} before it was prepared.
+       *   The object's values are passed as the parameters' values when the
+       *   request is executed.
+       * @param options Options of this execution.
+       */
+      execute(request, parameters, options) {
         const executeParameters = [];
         executeParameters.push(this.resolveRequestParameter({
           type: _dataType.TYPES.Int,
@@ -72256,29 +62094,38 @@ var require_connection = __commonJS({
           request.error = error;
           process.nextTick(() => {
             this.debug.log(error.message);
-            request.callback(error);
+            (0, _executionOptions.originalCallback)(request).call(request, error);
           });
           return;
         }
-        this.makeRequest(request, _packet.TYPE.RPC_REQUEST, new _rpcrequestPayload.default(_specialStoredProcedure.default.Sp_Execute, executeParameters, this.currentTransactionDescriptor(), this.config.options));
+        this.makeRequest(request, _packet.TYPE.RPC_REQUEST, new _rpcrequestPayload.default(_specialStoredProcedure.default.Sp_Execute, executeParameters, this.currentTransactionDescriptor(), this.config.options), options?.signal);
       }
       /**
-       * Call a stored procedure represented by [[Request]].
+       * Call a stored procedure represented by {@link Request}.
        *
-       * @param request A [[Request]] object representing the request.
+       * @param request A {@link Request} object representing the request.
        */
-      callProcedure(request) {
+      /**
+       * Call a stored procedure represented by {@link Request}, with the given
+       * options for this execution, e.g. an abort signal to cancel it with.
+       *
+       * @experimental
+       *
+       * @param request A {@link Request} object representing the request.
+       * @param options Options of this execution.
+       */
+      callProcedure(request, options) {
         try {
           request.validateParameters(this.databaseCollation, this.config.options);
         } catch (error) {
           request.error = error;
           process.nextTick(() => {
             this.debug.log(error.message);
-            request.callback(error);
+            (0, _executionOptions.originalCallback)(request).call(request, error);
           });
           return;
         }
-        this.makeRequest(request, _packet.TYPE.RPC_REQUEST, new _rpcrequestPayload.default(request.sqlTextOrProcedure, request.resolvedParameters, this.currentTransactionDescriptor(), this.config.options));
+        this.makeRequest(request, _packet.TYPE.RPC_REQUEST, new _rpcrequestPayload.default(request.sqlTextOrProcedure, request.resolvedParameters, this.currentTransactionDescriptor(), this.config.options), options?.signal);
       }
       /**
        * Start a transaction.
@@ -72318,7 +62165,7 @@ var require_connection = __commonJS({
       /**
        * Commit a transaction.
        *
-       * There should be an active transaction - that is, [[beginTransaction]]
+       * There should be an active transaction - that is, {@link beginTransaction}
        * should have been previously called.
        *
        * @param callback
@@ -72342,7 +62189,7 @@ var require_connection = __commonJS({
       /**
        * Rollback a transaction.
        *
-       * There should be an active transaction - that is, [[beginTransaction]]
+       * There should be an active transaction - that is, {@link beginTransaction}
        * should have been previously called.
        *
        * @param callback
@@ -72367,7 +62214,7 @@ var require_connection = __commonJS({
       /**
        * Set a savepoint within a transaction.
        *
-       * There should be an active transaction - that is, [[beginTransaction]]
+       * There should be an active transaction - that is, {@link beginTransaction}
        * should have been previously called.
        *
        * @param callback
@@ -72390,8 +62237,8 @@ var require_connection = __commonJS({
        * Run the given callback after starting a transaction, and commit or
        * rollback the transaction afterwards.
        *
-       * This is a helper that employs [[beginTransaction]], [[commitTransaction]],
-       * [[rollbackTransaction]], and [[saveTransaction]] to greatly simplify the
+       * This is a helper that employs {@link beginTransaction}, {@link commitTransaction},
+       * {@link rollbackTransaction}, and {@link saveTransaction} to greatly simplify the
        * use of database transactions and automatically handle transaction nesting.
        *
        * @param cb
@@ -72458,13 +62305,16 @@ var require_connection = __commonJS({
       /**
        * @private
        */
-      makeRequest(request, packetType, payload) {
+      makeRequest(request, packetType, payload, signal) {
         request.error = void 0;
         if (this.state !== this.STATE.LOGGED_IN) {
           const message = "Requests can only be made in the " + this.STATE.LOGGED_IN.name + " state, not the " + this.state.name + " state";
           this.debug.log(message);
-          request.callback(new _errors.RequestError(message, "EINVALIDSTATE"));
-        } else if (request.canceled) {
+          (0, _executionOptions.originalCallback)(request).call(request, new _errors.RequestError(message, "EINVALIDSTATE"));
+          return;
+        }
+        (0, _executionOptions.abortOnSignal)(request, signal);
+        if (request.canceled) {
           process.nextTick(() => {
             request.callback(new _errors.RequestError("Canceled.", "ECANCEL"));
           });
@@ -73276,6 +63126,7 @@ var require_transaction3 = __commonJS({
     var { IDS } = require_utils2();
     var TransactionError = require_transaction_error();
     var { CHANNELS, publish } = require_diagnostics();
+    var quoteTransactionName = (name) => name === "" ? name : `[${name.replace(/]/g, "]]")}]`;
     var Transaction = class extends BaseTransaction {
       constructor(parent, overrides) {
         super(parent, overrides);
@@ -73286,6 +63137,7 @@ var require_transaction3 = __commonJS({
             this._acquiredConnection.removeListener("rollbackTransaction", this._abort);
             this._acquiredConnection = null;
             this._acquiredConfig = null;
+            this._activeRequest = null;
             this._aborted = true;
             this._abortReason = this._abortReason || new Error("Transaction was rolled back by the server");
             publish(CHANNELS.TRANSACTION_ROLLBACK, () => ({
@@ -73299,6 +63151,19 @@ var require_transaction3 = __commonJS({
       _begin(isolationLevel, callback) {
         super._begin(isolationLevel, (err) => {
           if (err) return callback(err);
+          let name;
+          try {
+            name = this.name;
+          } catch (err2) {
+            return callback(err2);
+          }
+          if (name == null) name = "";
+          if (typeof name !== "string") {
+            return callback(new TransactionError("Invalid transaction name. A transaction name must be a string.", "EINJECT"));
+          }
+          if (name.length > 32) {
+            return callback(new TransactionError("Invalid transaction name. A transaction name may be at most 32 characters long.", "EINJECT"));
+          }
           debug("transaction(%d): begin", IDS.get(this));
           this.parent.acquire(this, (err2, connection, config) => {
             if (err2) return callback(err2);
@@ -73324,7 +63189,8 @@ var require_transaction3 = __commonJS({
               });
             };
             try {
-              connection.beginTransaction((err3) => done(err3, true), this.name, this.isolationLevel);
+              const sentName = connection.config.options.tdsVersion < "7_2" ? quoteTransactionName(name) : name;
+              connection.beginTransaction((err3) => done(err3, true), sentName, this.isolationLevel);
             } catch (err3) {
               done(err3, false);
             }
@@ -73595,8 +63461,9 @@ var require_request3 = __commonJS({
     var tds = require_tedious();
     var debug = require_src()("mssql:tedi");
     var BaseRequest = require_request();
+    var BaseTransaction = require_transaction();
     var RequestError = require_request_error();
-    var { IDS, objectHasProperty: objectHasProperty2, assertSafeColumnName, assertSafeTypeName, assertSafeTypeSize, assertSafeProcedureName } = require_utils2();
+    var { IDS, objectHasProperty: objectHasProperty2, assertSafeColumnName, assertSafeTableName, assertSafeTypeName, assertSafeTypeSize, assertSafeProcedureName } = require_utils2();
     var { TYPES, DECLARATIONS, declare, cast } = require_datatypes();
     var Table = require_table();
     var { PARSERS: UDT } = require_udt2();
@@ -73612,6 +63479,13 @@ var require_request3 = __commonJS({
       IntN: 38,
       MoneyN: 110,
       NumericN: 108
+    };
+    var getTediousBulkType = function(col) {
+      const type = getTediousType(col.type);
+      if (!type || typeof type.declaration !== "function") {
+        throw new Error(`Column '${col.name}' has a type that the tedious driver cannot bulk load.`);
+      }
+      return type;
     };
     var getTediousType = function(type) {
       switch (type) {
@@ -73855,6 +63729,20 @@ var require_request3 = __commonJS({
     };
     var Request = class extends BaseRequest {
       /*
+      Record the error that made the server roll back the transaction that the request ran in.
+      The request of a prepared statement has the statement as its parent, so the transaction
+      is the parent of the statement.
+      */
+      _recordAbortReason(reason) {
+        let transaction = this.parent;
+        while (transaction && !(transaction instanceof BaseTransaction)) {
+          transaction = transaction.parent;
+        }
+        if (reason && transaction && transaction._aborted) {
+          transaction._abortReason = reason;
+        }
+      }
+      /*
       Execute specified sql batch.
       */
       _batch(batch, callback) {
@@ -73869,7 +63757,12 @@ var require_request3 = __commonJS({
           if (err) return callback(err);
           try {
             table._makeBulk();
-            table.columns.forEach((col) => assertSafeColumnName(col.name));
+            table.columns.forEach((col) => {
+              assertSafeColumnName(col.name);
+              getTediousBulkType(col);
+            });
+            assertSafeTableName(table.path);
+            if (table.create) table.declare();
           } catch (e) {
             return callback(new RequestError(e, "EREQUEST"));
           }
@@ -73919,10 +63812,7 @@ var require_request3 = __commonJS({
                 this.parent.release(connection);
               } catch (e) {
               }
-              if (this.parent._aborted) {
-                const reason = err3 || errors[errors.length - 1];
-                if (reason) this.parent._abortReason = reason;
-              }
+              this._recordAbortReason(err3 || errors[errors.length - 1]);
               callback(err3, ...args);
             };
             if (err2) return callbackWithRelease(err2);
@@ -73971,14 +63861,14 @@ var require_request3 = __commonJS({
                   order: Object.fromEntries(Object.entries(options.order).map(([key, direction]) => [assertSafeTypeName(key), direction]))
                 });
               }
-              bulk = connection.newBulkLoad(table.path, bulkOptions, done);
+              bulk = connection.newBulkLoad(assertSafeTableName(table.path), bulkOptions, done);
               for (const col of table.columns) {
-                const type = getTediousType(col.type);
+                const type = getTediousBulkType(col);
                 const length = assertSafeTypeSize(col.length);
                 bulk.addColumn(assertSafeColumnName(col.name), type, { nullable: col.nullable, length: length == null && table.create && MAX_LENGTH_TYPES.has(type) ? MAX : tediousLength(length), scale: assertSafeTypeSize(col.scale), precision: assertSafeTypeSize(col.precision) });
               }
               if (table.create) {
-                const objectid = table.temporary ? `tempdb..[${table.name}]` : table.path;
+                const objectid = table.temporary ? `tempdb..[${table.name}]` : assertSafeTableName(table.path);
                 statement = `if object_id('${objectid.replace(/'/g, "''")}') is null ${table.declare()}`;
               }
             } catch (e) {
@@ -74107,10 +63997,7 @@ var require_request3 = __commonJS({
                   connection.removeListener(event, errorHandlers[event]);
                 }
                 this.parent.release(connection);
-                if (this.parent._aborted) {
-                  const reason = error || errors[errors.length - 1];
-                  if (reason) this.parent._abortReason = reason;
-                }
+                this._recordAbortReason(error || errors[errors.length - 1]);
                 hasReturned = true;
                 if (error) {
                   debug("request(%d): failed", IDS.get(this), error);
@@ -74427,10 +64314,7 @@ var require_request3 = __commonJS({
                   connection.removeListener(event, errorHandlers[event]);
                 }
                 this.parent.release(connection);
-                if (this.parent._aborted) {
-                  const reason = error || errors[errors.length - 1];
-                  if (reason) this.parent._abortReason = reason;
-                }
+                this._recordAbortReason(error || errors[errors.length - 1]);
                 hasReturned = true;
                 if (error) {
                   debug("request(%d): failed", IDS.get(this), error);

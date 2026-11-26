@@ -26541,7 +26541,10 @@ var Tokenizer = class {
         type: TokenType.RESERVED_KEYWORD,
         regex: reservedWord(cfg.reservedKeywords, cfg.identChars),
         text: toCanonical
-      }
+      },
+      // Match strings before parameters,
+      // this will ensure we match $foo$...$foo$ strings before $foo parameters.
+      { type: TokenType.STRING, regex: string2(cfg.stringTypes) }
     ]);
   }
   // These rules can also be cached as they only depend on
@@ -26553,7 +26556,6 @@ var Tokenizer = class {
         type: TokenType.VARIABLE,
         regex: cfg.variableTypes ? variable(cfg.variableTypes) : void 0
       },
-      { type: TokenType.STRING, regex: string2(cfg.stringTypes) },
       {
         type: TokenType.IDENTIFIER,
         regex: identifier(cfg.identChars)
