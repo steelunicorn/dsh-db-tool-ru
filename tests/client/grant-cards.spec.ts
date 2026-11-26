@@ -238,8 +238,11 @@ describe('1 渲染结构：授权视图卡片化（对齐连接管理）', () =>
 			for (const r of rs) expect(r.props.style.flex).toBe('1 1 0');
 		}
 		// aria-label 逐卡绑定连接名；当前模式 aria-checked 唯一
+		// 段内是「пиктограмма + 底т写」两层：图标 aria-hidden，文字进 flatText
 		const pg = radiosForCard(pane, conns[0]!);
-		expect(pg.map((r) => flatText(r))).toEqual(['未授权', '只读', '读写']);
+		expect(pg.map((r) => flatText(r))).toEqual(['⊘未授权', 'RO只读', 'RW读写']);
+		expect(pg.map((r) => r.props['aria-label'])).toEqual(['未授权', '只读', '读写']);
+		for (const r of pg) expect(flatText(r)).not.toBe('');
 		expect(pg.map((r) => r.props['aria-checked'])).toEqual([false, false, true]);
 		const rd = radiosForCard(pane, conns[2]!);
 		expect(rd.map((r) => r.props['aria-checked'])).toEqual([true, false, false]);

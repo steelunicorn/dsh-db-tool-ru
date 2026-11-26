@@ -80,6 +80,26 @@ describe('项目授权：卡片网格 + 三态着色', () => {
 		expect(region.join('\n')).toContain('groupByKind(conns).map(([kind, list])');
 		expect(region.join('\n')).toContain('{ className: "dbt-conncards" }, list.map(grantCard)');
 	});
+
+	it('模式段是「пиктограмма + подпись»：图标 ⊘/RO/RW，文案在 label 里', () => {
+		expect(cardText).toContain('className: "dbt-modecell"');
+		expect(cardText).toContain('className: "dbt-modeicon"');
+		expect(cardText).toContain('className: "dbt-modelabel"');
+		expect(cardText).toContain('const glyph = mode === "" ? "⊘" : mode === "ro" ? "RO" : "RW";');
+		expect(cardText).toContain('const label = mode === "" ? t("modeNone") : mode === "ro" ? t("modeRo") : t("modeRw");');
+		// 图标对读屏隐藏，语义留在按钮的 aria-label/title 上
+		expect(cardText).toContain('"aria-hidden": "true"');
+		expect(cardText).toContain('"aria-label": label,');
+		expect(cardText).toContain('title: label,');
+		// 长文案不再直接作为 button 文本（那是互相撞车的根因）
+		expect(cardText).not.toContain('}, mode === "" ? t("modeNone")');
+	});
+
+	it('窄卡只留图标：样式表按容器宽度隐藏 label', () => {
+		expect(src).toContain('.dbt-seg{container-type:inline-size;}');
+		expect(src).toContain('@container (max-width: 400px){.dbt-modecell .dbt-modelabel{display:none;}}');
+		expect(src).toContain('.dbt-modelabel{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}');
+	});
 });
 
 describe('库白名单选择器：折叠列表 + 勾选', () => {

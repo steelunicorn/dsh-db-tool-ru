@@ -1403,6 +1403,14 @@ window.__ModuleLoader__.load({
 				".dbt-view{display:flex;flex-direction:column;gap:10px;animation:dbt-in .22s var(--dbt-ease);}",
 				"/* ===== mini segmented（ro/rw 等切换） ===== */",
 				".dbt-seg{display:flex;gap:2px;background:var(--dbt-surface);border-radius:var(--dbt-radius-ctrl);padding:2px;}",
+				// 授权模式段：窄卡里三段文案（нет доступа / только чтение / чтение и запись）会互相撞车，
+				// 因此每段是「пиктограмма + подпись»：пиктограмма (⊘ / RO / RW) 与卡角徽标同一语言，
+				// 容器窄到放不下时只保留 пиктограмму —— 文案仍在 title / aria-label 里，语义不丢。
+				".dbt-seg{container-type:inline-size;}",
+				".dbt-modecell{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%;}",
+				".dbt-modeicon{flex:none;font-family:var(--dbt-mono-font, ui-monospace, SFMono-Regular, Menlo, monospace);font-size:var(--dbt-caption, 11px);font-weight:600;letter-spacing:.02em;}",
+				".dbt-modelabel{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}",
+				"@container (max-width: 400px){.dbt-modecell .dbt-modelabel{display:none;}}",
 				".dbt-seg button{flex:none;display:inline-flex;align-items:center;justify-content:center;height:calc(var(--dbt-ctrl-h,28px) - 4px);box-sizing:border-box;border:none;background:transparent;color:inherit;font-size:12px;line-height:1;padding:0 12px;border-radius:var(--dbt-radius-pill);cursor:pointer;transition:background .18s var(--dbt-ease),box-shadow .18s var(--dbt-ease);}",
 				".dbt-seg button.active{background:var(--dbt-seg-active);font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,.12);}",
 				"/* ===== hover 仅精确指针（触屏 tap 不残留 hover 底色） ===== */",
@@ -2966,17 +2974,25 @@ window.__ModuleLoader__.load({
 					React.createElement(
 						"div",
 						{ className: "dbt-seg", role: "radiogroup", "aria-label": t("grantModeGroup", { name: c.name || c.id }), style: { marginTop: "auto", width: "100%", boxSizing: "border-box" } },
-						["", "ro", "rw"].map((mode) =>
-							React.createElement("button", {
+						["", "ro", "rw"].map((mode) => {
+							// 文案既要有 пиктограмму, так и полную подпись: подпись скрывается CSS-контейнером,
+							// когда карточка узкая, поэтому доступное имя дублируем в aria-label и title.
+							const label = mode === "" ? t("modeNone") : mode === "ro" ? t("modeRo") : t("modeRw");
+							const glyph = mode === "" ? "⊘" : mode === "ro" ? "RO" : "RW";
+							return React.createElement("button", {
 								key: mode || "none",
 								className: mode === m ? "active" : "",
 								role: "radio",
 								"aria-checked": mode === m,
-								style: { flex: "1 1 0", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", padding: "0 8px" },
+								"aria-label": label,
+								title: label,
+								style: { flex: "1 1 0", minWidth: 0, overflow: "hidden", padding: "0 4px" },
 								disabled: props.busy === "grant",
 								onClick: () => setGrant(c.id, mode),
-							}, mode === "" ? t("modeNone") : mode === "ro" ? t("modeRo") : t("modeRw")),
-						),
+							}, React.createElement("span", { className: "dbt-modecell" },
+								React.createElement("span", { className: "dbt-modeicon", "aria-hidden": "true" }, glyph),
+								React.createElement("span", { className: "dbt-modelabel" }, label)));
+						}),
 					),
 					// 库范围：只在已授权时出现（未授权时没有库清单可言），改动即时保存
 					m ? React.createElement(GrantDbPicker, {
