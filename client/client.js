@@ -186,7 +186,7 @@ window.__ModuleLoader__.load({
 			pickFile: "选择文件",
 			// 授权
 			grantsHint: "为当前项目授权连接。只读=仅查询/浏览，读写=允许执行语句与脚本。未授权的连接在业务操作中一律拒绝。",
-			grantsEmptyHint: "当前项目尚未授权任何连接，在下方每行选择「只读」或「读写」即可完成授权。",
+			grantsEmptyHint: "当前项目尚未授权任何连接，在下方每张卡片选择「只读」或「读写」即可完成授权。",
 			grantsSummary: "已授权 {granted}/{total} 个连接",
 			modeBadgeRo: "只读",
 			modeBadgeRw: "读写",
@@ -510,7 +510,7 @@ window.__ModuleLoader__.load({
 			importDecryptFail: "Wrong passphrase or corrupted file",
 			pickFile: "Pick file",
 			grantsHint: "Grant connections to the current project. ro = read-only (query/browse), rw = read-write (execute/script allowed). Unauthorized connections are always rejected.",
-			grantsEmptyHint: "No connections granted to this project yet. Pick read-only or read-write on a row below to grant.",
+			grantsEmptyHint: "No connections granted to this project yet. Pick read-only or read-write on a card below to grant.",
 			grantsSummary: "{granted}/{total} connections granted",
 			modeBadgeRo: "RO",
 			modeBadgeRw: "RW",
@@ -831,7 +831,7 @@ window.__ModuleLoader__.load({
 			importDecryptFail: "Неверная парольная фраза или повреждённый файл",
 			pickFile: "Выбрать файл",
 			grantsHint: "Выдайте проекту доступ к подключениям. ro = только чтение (запросы и просмотр), rw = чтение и запись (выполнение и скрипты). Подключения без доступа всегда отклоняются.",
-			grantsEmptyHint: "Проекту пока не выдан доступ ни к одному подключению. Выберите в строке ниже «только чтение» или «чтение и запись».",
+			grantsEmptyHint: "Проекту пока не выдан доступ ни к одному подключению. Выберите в карточке ниже «только чтение» или «чтение и запись».",
 			grantsSummary: "Доступ разрешён: {granted}/{total}",
 			modeBadgeRo: "RO",
 			modeBadgeRw: "RW",
@@ -2906,24 +2906,80 @@ window.__ModuleLoader__.load({
 					await props.reload();
 				});
 			}
-			// 模式徽标：语义色描边胶囊（rw=系统绿成功语义、ro=次级灰中性），颜色+文字双编码；
+			// 授权语义色（三态，与授权模式一一同色）：未授权=灰（中性/不可用）、只读=绿（安全）、
+			// 读写=红（可写=高风险，与语句确认弹窗目标条 rw=danger 同语义）；复用既有 token，light 反转自动跟随
+			const MODE_TONES = {
+				"": "var(--dbt-text-secondary, rgba(235,235,245,.6))",
+				ro: "var(--dbt-success, #30d158)",
+				rw: "var(--dbt-danger, #ff453a)",
+			};
+			// 模式徽标：语义色描边胶囊（颜色+文字双编码），三态都渲染（未授权也显灰徽标，不再留空）；
 			// 描边胶囊复用 NULL chip 语言（11px/600、1px 8px、999px），light 模式自动跟 token 反转
 			function modeBadge(m) {
-				if (m !== "ro" && m !== "rw") return null;
-				const color = m === "rw" ? "var(--dbt-success, #30d158)" : "var(--dbt-text-secondary, rgba(235,235,245,.6))";
+				if (!(m in MODE_TONES)) return null;
 				return React.createElement("span", {
 					"aria-hidden": "true",
 					style: {
 						flex: "none",
-						border: "1px solid " + color,
-						color: color,
+						border: "1px solid " + MODE_TONES[m],
+						color: MODE_TONES[m],
 						borderRadius: "999px",
 						padding: "1px 8px",
 						fontSize: "var(--dbt-caption, 11px)",
 						fontWeight: 600,
 						lineHeight: 1.45,
 					},
-				}, m === "rw" ? t("modeBadgeRw") : t("modeBadgeRo"));
+				}, m === "rw" ? t("modeBadgeRw") : m === "ro" ? t("modeBadgeRo") : t("modeNone"));
+			}
+			// 授权卡片（对齐连接管理卡片语言）：头行 kind 胶囊（带数据库图标）+ 名称 + 模式徽标，
+			// 地址副行帮助区分同名连接；整卡描边与徽标同色（三态着色，一眼可辨授权等级）；
+			// seg 为权威状态源，徽标 aria-hidden 免重复播报；seg 之下是本分叉新增的库范围选择
+			function grantCard(c) {
+				const m = modeOf(c.id);
+				return React.createElement(
+					"div",
+					{ className: "dbt-conncard", key: c.id, style: { borderColor: MODE_TONES[m] } },
+					React.createElement(
+						"div",
+						{ className: "dbt-conncard-head" },
+						React.createElement("span", { className: "dbt-kindchip", style: { fontFamily: MONO_FONT } }, icon(12), kindLabel(c.kind)),
+						React.createElement("strong", { className: "dbt-conncard-name" }, c.name || c.id),
+						modeBadge(m),
+					),
+					(c.safeUrl || c.host) ? React.createElement(
+						"div",
+						{ className: "dbt-conncard-sub", title: c.safeUrl || (c.host + ":" + (c.port || "")) },
+						c.safeUrl || (c.host + ":" + (c.port || "")),
+					) : null,
+					// seg 拉通整卡宽 + 三段均分（inline 覆盖 .dbt-seg button 的 flex:none）：目标更大更易选；
+					// border-box 让 width:100% 含 seg 自身 2px padding，不溢出卡片内容盒；
+					// min-width:0 + 单行省略让窄卡长英文文案优雅降级（中文短文案不触发）
+					React.createElement(
+						"div",
+						{ className: "dbt-seg", role: "radiogroup", "aria-label": t("grantModeGroup", { name: c.name || c.id }), style: { marginTop: "auto", width: "100%", boxSizing: "border-box" } },
+						["", "ro", "rw"].map((mode) =>
+							React.createElement("button", {
+								key: mode || "none",
+								className: mode === m ? "active" : "",
+								role: "radio",
+								"aria-checked": mode === m,
+								style: { flex: "1 1 0", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", padding: "0 8px" },
+								disabled: props.busy === "grant",
+								onClick: () => setGrant(c.id, mode),
+							}, mode === "" ? t("modeNone") : mode === "ro" ? t("modeRo") : t("modeRw")),
+						),
+					),
+					// 库范围：只在已授权时出现（未授权时没有库清单可言），改动即时保存
+					m ? React.createElement(GrantDbPicker, {
+						key: c.id + ":db",
+						grant: grants.find((x) => x.connId === c.id),
+						conn: c,
+						projectPath: projectPath,
+						run: props.run,
+						reload: props.reload,
+						busy: props.busy,
+					}) : null,
+				);
 			}
 			return React.createElement(
 				"div",
@@ -2936,53 +2992,19 @@ window.__ModuleLoader__.load({
 						{ className: "dbt-muted", "aria-live": "polite" },
 						grantedCount === 0 ? t("grantsEmptyHint") : t("grantsSummary", { granted: grantedCount, total: conns.length }),
 					),
-					// iOS inset grouped：授权行装一张卡，行间 hairline（授权链路：seg 点击 → PUT/DELETE /grants）
-					React.createElement(
+					// 卡片网格（对齐连接管理）：按数据库类型分组小节 + auto-fill 自适应列数，
+					// 每张连接一张授权卡（授权链路不变：seg 点击 → PUT/DELETE /grants；卡内另有库范围）
+					groupByKind(conns).map(([kind, list]) => React.createElement(
 						"div",
-						{ className: "dbt-group" },
-						conns.map((c) => {
-							const m = modeOf(c.id);
-							return React.createElement(
-								"div",
-								{
-									className: "dbt-listrow",
-									key: c.id,
-									style: { flexDirection: "column", alignItems: "stretch", gap: 4 },
-								},
-								// 主行对齐连接管理：kind 填充 pill + 名称 13px semibold + 模式徽标 + ro/rw seg
-								React.createElement(
-									"div",
-									{ className: "dbt-row", style: { width: "100%", minWidth: 0 } },
-									React.createElement("span", { className: "dbt-kindchip", style: { fontFamily: MONO_FONT } }, kindLabel(c.kind)),
-									React.createElement("strong", { style: { fontSize: 13, fontWeight: 600, flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, c.name || c.id),
-									modeBadge(m),
-									React.createElement(
-										"div",
-										{ className: "dbt-seg", role: "radiogroup", "aria-label": t("grantModeGroup", { name: c.name || c.id }) },
-										["", "ro", "rw"].map((mode) =>
-											React.createElement("button", {
-												key: mode || "none",
-												className: mode === m ? "active" : "",
-												role: "radio",
-												"aria-checked": mode === m,
-												disabled: props.busy === "grant",
-												onClick: () => setGrant(c.id, mode),
-											}, mode === "" ? t("modeNone") : mode === "ro" ? t("modeRo") : t("modeRw")),
-										),
-									),
-								),
-								m ? React.createElement(GrantDbPicker, {
-									key: c.id,
-									grant: grants.find((x) => x.connId === c.id),
-									conn: c,
-									projectPath: projectPath,
-									run: props.run,
-									reload: props.reload,
-									busy: props.busy,
-								}) : null,
-							);
-						}),
-					),
+						{ className: "dbt-kindgroup", key: kind },
+						React.createElement(
+							"div",
+							{ className: "dbt-kindgroup-head" },
+							React.createElement("span", { className: "dbt-kindgroup-title" }, icon(12), kindLabel(kind)),
+							React.createElement("span", { className: "dbt-kindgroup-count" }, String(list.length)),
+						),
+						React.createElement("div", { className: "dbt-conncards" }, list.map(grantCard)),
+					)),
 			);
 		}
 

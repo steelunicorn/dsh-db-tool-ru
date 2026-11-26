@@ -212,11 +212,11 @@ describe('1 卡片网格样式（源码断言）', () => {
 		expect(grid![1]).toContain('minmax(var(--dbt-card-min,280px),1fr)');
 	});
 
-	it('连接管理改用卡片网格，不再渲染 inset grouped 行（dbt-group/listrow 留给授权等其他视图）', () => {
-		// 网格容器与卡片本体各出现一次（容器在 ManageView 分组 map 内，卡片在 list.map 回调内）
-		expect((src.match(/className: "dbt-conncards"/g) ?? []).length).toBe(1);
-		expect((src.match(/className: "dbt-conncard", key: c\.id/g) ?? []).length).toBe(1);
-		// kind 胶囊全仓仍两处：连接卡片 + 授权行（既有契约不变）
+	it('连接管理与项目授权都用卡片网格，不再渲染 inset grouped 行', () => {
+		// 网格容器与卡片本体各出现两次：ManageView 与 GrantsView（上游 #54 把授权也改成卡片）
+		expect((src.match(/className: "dbt-conncards"/g) ?? []).length).toBe(2);
+		expect((src.match(/className: "dbt-conncard"(, key: c\.id)?/g) ?? []).length).toBe(2);
+		// kind 胶囊两处：连接卡片 + 授权卡片（既有契约不变）
 		const chips = src.match(/className: "dbt-kindchip"/g) ?? [];
 		expect(chips.length).toBe(2);
 	});

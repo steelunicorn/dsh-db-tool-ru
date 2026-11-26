@@ -80,6 +80,8 @@ Grants are stored in three levels (project path → connection → mode) in `gra
 
 An unauthorized project is rejected for every connection. Changing a grant mode (including rw → ro downgrade) invalidates old sessions immediately, no reconnect needed.
 
+Grants are shown as cards, like connections: a grouped grid, with the card border and the mode badge painted in the same colour — grey (no access), green (ro), red (rw). The colour duplicates the label, so the mode is readable without colour.
+
 On Windows, paths are normalized with NTFS semantics (case-insensitive), so `E:\GitHub\MyApp` and `e:\github\myapp` are the same project.
 
 **Database-level allowlist**: each grant may carry a `databases` field (the "Databases" field in the "Project grants" panel) that narrows the visible databases within that connection. Ticks are saved immediately — there is no separate save button — and access opens only for the databases the user deliberately ticked: a freshly granted connection starts with an empty list, so no database is reachable until something is ticked. The field is absent only on grants created before it existed (and on programmatic grants without a list); such records still mean "every database", while an empty array `[]` means "no database". Names are matched case-insensitively; the panel offers an expandable checkbox list with a name filter and «Select all» / «Clear all» (the filter narrows only the visible list, while «select all» / «clear all» apply to the visible databases and the stored value still covers the full set). For PostgreSQL / GaussDB a target written as `db.schema` is judged by the `db` part; SQLite is exempt (its "database" is a file path).

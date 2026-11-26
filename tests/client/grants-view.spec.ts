@@ -1,13 +1,14 @@
 /**
  * 「项目授权」页布局与库白名单控件回归测试（源码结构断言）。
  *
- * 回归背景：授权行内新增「库白名单」控件时，曾把 ro/rw 分段控件挪到连接名的
- * 下一行，侧栏里授权按钮与连接名脱节。契约：
- *  1) 授权行仍是「kind 徽标 + 名称 + 模式徽标 + ro/rw 分段」同一行；
- *  2) 分段控件嵌在 `dbt-row` 内（缩进比 `dbt-row` 深一层），不是它的兄弟；
- *  3) 名称列可收缩（flex + minWidth: 0 + ellipsis），不会把分段控件挤出容器；
- *  4) 库白名单是折叠列表（`GrantDbPicker`）另起一行，且仅在已授权时渲染；
- *  5) 列表用 checkbox 勾选，带「全选/全不选」，勾满全部库时保存为空数组（＝不限库）。
+ * 布局来自上游 #54：授权列表改为卡片网格（按数据库类型分组），整卡描边与
+ * 模式徽标同色（未授权灰 / 只读绿 / 读写红）。本分叉在卡片内追加库白名单
+ * 选择器。契约：
+ *  1) `grantCard` 渲染 `.dbt-conncard`，`borderColor` 取 `MODE_TONES[m]`；
+ *  2) 卡头依次是 kind 胶囊、名称（可收缩）、模式徽标；名称列 flex + minWidth: 0；
+ *  3) ro/rw 分段是卡片内独立一块（不是卡头的兄弟行），排在卡头之后；
+ *  4) 库白名单（`GrantDbPicker`）在分段之后，且仅在已授权时渲染；
+ *  5) 网格用 `groupByKind` + `.dbt-conncards`，卡片按 `list.map(grantCard)` 展开。
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -40,36 +41,44 @@ function functionBody(name: string): string[] {
 	return lines.slice(start, end);
 }
 
-describe('项目授权行：ro/rw 分段与连接名同一行', () => {
+describe('项目授权：卡片网格 + 三态着色', () => {
 	const region = functionBody('GrantsView');
-	const rowIdx = region.findIndex((l) => l.includes('{ className: "dbt-row", style: { width: "100%", minWidth: 0 } },'));
-	const segIdx = region.findIndex((l) => l.includes('className: "dbt-seg"'));
-	const dbRowIdx = region.findIndex((l) => l.includes('React.createElement(GrantDbPicker'));
+	const cardIdx = region.findIndex((l) => l.includes('function grantCard(c) {'));
+	const card = cardIdx > 0 ? region.slice(cardIdx) : [];
+	const cardText = card.join('\n');
+	const headIdx = card.findIndex((l) => l.includes('className: "dbt-conncard-head"'));
+	const segIdx = card.findIndex((l) => l.includes('className: "dbt-seg"'));
+	const dbIdx = card.findIndex((l) => l.includes('React.createElement(GrantDbPicker'));
 
-	it('授权行按「同一行容器 → 分段控件 → 库白名单选择器」排列', () => {
-		expect(rowIdx).toBeGreaterThan(-1);
-		expect(segIdx).toBeGreaterThan(rowIdx);
-		expect(dbRowIdx).toBeGreaterThan(segIdx);
+	it('卡片按模式着色，卡头含 kind 胶囊、名称与模式徽标', () => {
+		expect(cardText).toContain('className: "dbt-conncard"');
+		expect(cardText).toContain('style: { borderColor: MODE_TONES[m] }');
+		expect(headIdx).toBeGreaterThan(-1);
+		expect(card[headIdx + 1]).toContain('dbt-kindchip');
+		expect(card[headIdx + 2]).toContain('dbt-conncard-name');
+		expect(card[headIdx + 3]).toContain('modeBadge(m)');
 	});
 
-	it('分段控件嵌在 dbt-row 内，而不是独立成行', () => {
-		const rowOpen = rowIdx - 2;
-		expect(region[rowOpen]).toContain('React.createElement(');
-		let segOpen = segIdx;
-		while (segOpen > 0 && !region[segOpen]!.includes('React.createElement(')) segOpen--;
-		expect(tabsOf(region[segOpen]!)).toBe(tabsOf(region[rowOpen]!) + 1);
-	});
-
-	it('名称列可收缩，避免挤掉分段控件', () => {
-		const nameLine = region.slice(rowIdx, segIdx).find((l) => l.includes('c.name || c.id)'));
+	it('名称列可收缩，长名不会挤掉徽标', () => {
+		expect(cardText).toContain('className: "dbt-conncard-name"');
+		// 名称省略由样式表负责（.dbt-conncard-name），源码里不应再写 inline flex
+		const nameLine = card.find((l) => l.includes('dbt-conncard-name'))!;
 		expect(nameLine).toBeDefined();
-		expect(nameLine).toContain('flex: "1 1 auto"');
-		expect(nameLine).toContain('minWidth: 0');
-		expect(nameLine).toContain('textOverflow: "ellipsis"');
+		expect(nameLine).not.toContain('whiteSpace: "nowrap"');
 	});
 
-	it('库白名单选择器仅在已授权时渲染', () => {
-		expect(region[dbRowIdx]!.trimStart().startsWith('m ? React.createElement(GrantDbPicker')).toBe(true);
+	it('ro/rw 分段排在卡头之后，库白名单在分段之后', () => {
+		expect(segIdx).toBeGreaterThan(headIdx);
+		expect(dbIdx).toBeGreaterThan(segIdx);
+	});
+
+	it('库白名单仅在已授权时渲染', () => {
+		expect(card[dbIdx]!.trimStart().startsWith('m ? React.createElement(GrantDbPicker')).toBe(true);
+	});
+
+	it('网格按类型分组，卡片走 list.map(grantCard)', () => {
+		expect(region.join('\n')).toContain('groupByKind(conns).map(([kind, list])');
+		expect(region.join('\n')).toContain('{ className: "dbt-conncards" }, list.map(grantCard)');
 	});
 });
 
