@@ -614,7 +614,7 @@ export async function createPgLikeAdapter(kind, Driver, conn, opts) {
             const res = db ? await poolFor(db).query(sql, [lim, off]) : await run(sql, [lim, off]);
             return toQueryResult(res);
         }),
-        countRows: (table, database, search, filters, logic) => humanize(`${kind} count rows`, async () => {
+        countRows: (table, database, search, filters, logic, logics) => humanize(`${kind} count rows`, async () => {
             const { db, schema } = parseBrowseTarget(database, 'schema');
             const tbl = assertIdent(table, 'table name');
             const target = `${quoteIdent(schema)}.${quoteIdent(tbl)}`;
@@ -625,7 +625,7 @@ export async function createPgLikeAdapter(kind, Driver, conn, opts) {
                 const conds = parseBrowseFilters(filters);
                 if (conds.length === 0)
                     return 0;
-                const built = buildFilterWhereSql(conds, logic ?? 'and', filterDialect);
+                const built = buildFilterWhereSql(conds, logic ?? 'and', filterDialect, logics);
                 where = ' WHERE ' + built.where;
                 params = built.params;
             }
@@ -654,7 +654,7 @@ export async function createPgLikeAdapter(kind, Driver, conn, opts) {
             const res = db ? await poolFor(db).query(sql, params) : await run(sql, params);
             return toQueryResult(res);
         }),
-        filterRows: (table, filters, logic, limit, database, offset) => humanize(`${kind} filter rows`, async () => {
+        filterRows: (table, filters, logic, limit, database, offset, logics) => humanize(`${kind} filter rows`, async () => {
             const { db, schema } = parseBrowseTarget(database, 'schema');
             const tbl = assertIdent(table, 'table name');
             const lim = clampLimit(limit);
@@ -662,7 +662,7 @@ export async function createPgLikeAdapter(kind, Driver, conn, opts) {
             const conds = parseBrowseFilters(filters);
             if (conds.length === 0)
                 return { columns: [], rows: [], rowCount: 0 };
-            const { where, params } = buildFilterWhereSql(conds, logic, filterDialect);
+            const { where, params } = buildFilterWhereSql(conds, logic, filterDialect, logics);
             const sql = `SELECT * FROM ${quoteIdent(schema)}.${quoteIdent(tbl)} WHERE ${where} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
             const all = [...params, lim, off];
             // 当前库保持事务路由（run）；跨库必须用该库自己的池（与 searchRows 同路由）

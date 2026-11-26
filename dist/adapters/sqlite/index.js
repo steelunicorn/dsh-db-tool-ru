@@ -194,7 +194,7 @@ export async function createSqliteAdapter(conn, opts) {
             const raw = stmt.all(lim, off);
             return toQueryResult(raw, stmtColumns(stmt, raw));
         }),
-        countRows: (table, _database, search, filters, logic) => humanize('sqlite count rows', async () => {
+        countRows: (table, _database, search, filters, logic, logics) => humanize('sqlite count rows', async () => {
             const tbl = quoteIdent(assertIdent(table, 'table name'));
             let sql = `SELECT COUNT(*) AS n FROM ${tbl}`;
             let params = [];
@@ -203,7 +203,7 @@ export async function createSqliteAdapter(conn, opts) {
                 const conds = parseBrowseFilters(filters);
                 if (conds.length === 0)
                     return 0;
-                const built = buildFilterWhereSql(conds, logic ?? 'and', sqliteFilterDialect);
+                const built = buildFilterWhereSql(conds, logic ?? 'and', sqliteFilterDialect, logics);
                 sql += ' WHERE ' + built.where;
                 params = built.params;
             }
@@ -228,14 +228,14 @@ export async function createSqliteAdapter(conn, opts) {
             const raw = stmt.all(...cols.map(() => '%' + escapeLikePattern(keyword) + '%'), lim, off);
             return toQueryResult(raw, stmtColumns(stmt, raw));
         }),
-        filterRows: (table, filters, logic, limit, _database, offset) => humanize('sqlite filter rows', async () => {
+        filterRows: (table, filters, logic, limit, _database, offset, logics) => humanize('sqlite filter rows', async () => {
             const tbl = quoteIdent(assertIdent(table, 'table name'));
             const lim = clampLimit(limit);
             const off = clampOffset(offset);
             const conds = parseBrowseFilters(filters);
             if (conds.length === 0)
                 return { columns: [], rows: [], rowCount: 0 };
-            const { where, params } = buildFilterWhereSql(conds, logic, sqliteFilterDialect);
+            const { where, params } = buildFilterWhereSql(conds, logic, sqliteFilterDialect, logics);
             const stmt = db.prepare(`SELECT * FROM ${tbl} WHERE ${where} LIMIT ? OFFSET ?`);
             const raw = stmt.all(...params, lim, off);
             return toQueryResult(raw, stmtColumns(stmt, raw));

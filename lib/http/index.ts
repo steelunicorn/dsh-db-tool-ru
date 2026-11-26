@@ -327,12 +327,15 @@ async function route(
     const filtersRaw = q.get('filters');
     if (filtersRaw != null && filtersRaw !== '') {
       let filters: unknown;
+      let logics: unknown;
       try {
         filters = JSON.parse(filtersRaw);
+        const logicsRaw = q.get('logics');
+        logics = logicsRaw ? JSON.parse(logicsRaw) : undefined;
       } catch {
-        throw new DbToolError('INVALID_ARGUMENT', 'filters must be valid JSON');
+        throw new DbToolError('INVALID_ARGUMENT', 'filters and logics must be valid JSON');
       }
-      return sendOk(res, await service.previewFilters(projectOf(q), required(q, 'connId'), required(q, 'table'), filters, q.get('logic') ?? undefined, limit, q.get('database') ?? undefined, offset));
+      return sendOk(res, await service.previewFilters(projectOf(q), required(q, 'connId'), required(q, 'table'), filters, q.get('logic') ?? undefined, limit, q.get('database') ?? undefined, offset, logics));
     }
     const search = q.get('search') ?? '';
     if (search !== '') {

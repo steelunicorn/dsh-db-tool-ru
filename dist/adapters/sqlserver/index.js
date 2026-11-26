@@ -1387,7 +1387,7 @@ export async function createSqlserverAdapter(conn, opts) {
             const res = await req.query(`SELECT t.* FROM (SELECT *, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS [__dsh_rn] FROM ${target}) AS t WHERE t.[__dsh_rn] > @p1 AND t.[__dsh_rn] <= @p2`);
             return toQueryResult(res, ['__dsh_rn']);
         }),
-        countRows: (table, database, search, filters, logic) => wrap('sqlserver count rows', async () => {
+        countRows: (table, database, search, filters, logic, logics) => wrap('sqlserver count rows', async () => {
             const { db, schema } = parseBrowseTarget(database, 'schema');
             const tbl = assertIdent(table, 'table name');
             const q = (name) => `[${name.replaceAll(']', ']]')}]`;
@@ -1400,7 +1400,7 @@ export async function createSqlserverAdapter(conn, opts) {
                 const conds = parseBrowseFilters(filters);
                 if (conds.length === 0)
                     return 0;
-                const built = buildFilterWhereSql(conds, logic ?? 'and', filterDialect);
+                const built = buildFilterWhereSql(conds, logic ?? 'and', filterDialect, logics);
                 sql += ' WHERE ' + built.where;
                 built.params.forEach((v, i) => req.input(`p${i + 1}`, v));
             }
@@ -1443,7 +1443,7 @@ export async function createSqlserverAdapter(conn, opts) {
             const res = await req.query(`SELECT t.* FROM (SELECT *, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS [__dsh_rn] FROM ${target} WHERE ${where}) AS t WHERE t.[__dsh_rn] > @dsh_off AND t.[__dsh_rn] <= @dsh_end`);
             return toQueryResult(res, ['__dsh_rn']);
         }),
-        filterRows: (table, filters, logic, limit, database, offset) => wrap('sqlserver filter rows', async () => {
+        filterRows: (table, filters, logic, limit, database, offset, logics) => wrap('sqlserver filter rows', async () => {
             const { db, schema } = parseBrowseTarget(database, 'schema');
             const tbl = assertIdent(table, 'table name');
             const lim = clampLimit(limit);
@@ -1455,7 +1455,7 @@ export async function createSqlserverAdapter(conn, opts) {
             const conds = parseBrowseFilters(filters);
             if (conds.length === 0)
                 return { columns: [], rows: [], rowCount: 0 };
-            const { where, params } = buildFilterWhereSql(conds, logic, filterDialect);
+            const { where, params } = buildFilterWhereSql(conds, logic, filterDialect, logics);
             const req = box.pool.request();
             params.forEach((v, i) => req.input(`p${i + 1}`, v));
             if (major >= 11) {

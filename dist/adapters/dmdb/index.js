@@ -570,7 +570,7 @@ export async function createDmAdapter(conn, opts) {
                 throw humanizeDmError(e);
             }
         },
-        async countRows(table, database, search, filters, logic) {
+        async countRows(table, database, search, filters, logic, logics) {
             const owner = ownerOf(database);
             const tab = sanitizeIdentifier(table, 'table name'); // 拼接前经 escIdent 转义
             try {
@@ -581,7 +581,7 @@ export async function createDmAdapter(conn, opts) {
                     const conds = parseBrowseFilters(filters);
                     if (conds.length === 0)
                         return 0;
-                    const built = buildFilterWhereSql(conds, logic ?? 'and', filterDialect);
+                    const built = buildFilterWhereSql(conds, logic ?? 'and', filterDialect, logics);
                     sql += ' WHERE ' + built.where;
                     binds.push(...built.params);
                 }
@@ -617,7 +617,7 @@ export async function createDmAdapter(conn, opts) {
                 throw humanizeDmError(e);
             }
         },
-        async filterRows(table, filters, logic, limit, database, offset) {
+        async filterRows(table, filters, logic, limit, database, offset, logics) {
             const owner = ownerOf(database);
             const tab = sanitizeIdentifier(table, 'table name'); // 拼接前经 escIdent 转义
             const n = Math.max(1, Math.min(Math.floor(limit) || 20, ROWS_MAX));
@@ -626,7 +626,7 @@ export async function createDmAdapter(conn, opts) {
                 const conds = parseBrowseFilters(filters);
                 if (conds.length === 0)
                     return { columns: [], rows: [], rowCount: 0 };
-                const { where, params } = buildFilterWhereSql(conds, logic, filterDialect);
+                const { where, params } = buildFilterWhereSql(conds, logic, filterDialect, logics);
                 // OFFSET/FETCH 内联整数（同 previewRows 的契约注释）；筛选谓词绑定正常位置
                 const r = await withConn((c) => c.execute(`SELECT * FROM "${escIdent(owner)}"."${escIdent(tab)}" WHERE ${where} OFFSET ${off} ROWS FETCH FIRST ${n} ROWS ONLY`, [...params], execOpts));
                 return await rowsToQueryResult(r);

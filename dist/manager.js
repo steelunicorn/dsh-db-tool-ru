@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { getAdapter } from './adapters/index.js';
 import { friendlyConnectError } from './adapters/connect-feedback.js';
-import { normalizeFilterLogic, parseBrowseFilters } from './adapters/sql-shared/filters.js';
+import { normalizeFilterLogic, parseBrowseFilters, parseFilterLogics } from './adapters/sql-shared/filters.js';
 import { ChallengeStore, classifyStatement, sqlHead, SQL_READ_HEADS, } from './guard/index.js';
 import { mergeUrlCredentials, normalizeProjectKey, DECRYPT_FAIL_MESSAGE, DEFAULT_TRANSFER_CONFIG, } from './store/index.js';
 import { runScriptInChild } from './script/runner.js';
@@ -524,17 +524,20 @@ export class DbToolService {
      * 适配器未实现 filterRows（KV 型 Redis 无行级筛选语义）时报 INVALID_ARGUMENT，
      * 浏览端按 kind 隐藏筛选入口（与内容搜索同一能力面）。
      */
-    async previewFilters(projectPath, connId, table, filtersRaw, logicRaw, limit, database, offset) {
+    async previewFilters(projectPath, connId, table, filtersRaw, logicRaw, limit, database, offset, logicsRaw) {
         const t = assertNonEmpty(table, 'table');
         let filters;
+        let logics;
         try {
             filters = parseBrowseFilters(filtersRaw);
+            if (filters.length === 0)
+                throw new Error('Filter conditions must not be empty');
+            const logic0 = normalizeFilterLogic(logicRaw);
+            logics = parseFilterLogics(logicsRaw, filters.length, logic0);
         }
         catch (e) {
             throw new DbToolError('INVALID_ARGUMENT', e instanceof Error ? e.message : String(e));
         }
-        if (filters.length === 0)
-            throw new DbToolError('INVALID_ARGUMENT', 'Filter conditions must not be empty');
         const logic = normalizeFilterLogic(logicRaw);
         const capped = Math.max(1, Math.min(50, Math.floor(Number(limit) || 10)));
         const off = Math.max(0, Math.floor(Number(offset) || 0));
@@ -544,21 +547,22 @@ export class DbToolService {
         }
         const auditDesc = JSON.stringify(filters);
         const auditKw = auditDesc.length > 100 ? auditDesc.slice(0, 100) + '…' : auditDesc;
+        const hasRowLogics = logics.some((l) => l !== logic);
         try {
-            const result = await adapter.filterRows(t, filters, logic, capped, database, off);
+            const result = await adapter.filterRows(t, filters, logic, capped, database, off, logics);
             let counted = false;
             if (adapter.countRows) {
                 try {
-                    result.total = await adapter.countRows(t, database, undefined, filters, logic);
+                    result.total = await adapter.countRows(t, database, undefined, filters, logic, logics);
                     counted = true;
                 }
                 catch { /* 保持 undefined */ }
             }
-            this.audit(key, connId, 'preview', `PREVIEW ${t} FILTER ${auditKw} ${logic.toUpperCase()} LIMIT ${capped} OFFSET ${off}${counted ? ' COUNT' : ''}`, 'none', false, true, undefined, result.rowCount);
+            this.audit(key, connId, 'preview', `PREVIEW ${t} FILTER ${auditKw} ${hasRowLogics ? 'LOGICS ' + logics.map((l) => l.toUpperCase()).join('-') : logic.toUpperCase()} LIMIT ${capped} OFFSET ${off}${counted ? ' COUNT' : ''}`, 'none', false, true, undefined, result.rowCount);
             return result;
         }
         catch (e) {
-            this.audit(key, connId, 'preview', `PREVIEW ${t} FILTER ${auditKw} ${logic.toUpperCase()} LIMIT ${capped} OFFSET ${off}`, 'none', false, false, this.errText(e));
+            this.audit(key, connId, 'preview', `PREVIEW ${t} FILTER ${auditKw} ${hasRowLogics ? 'LOGICS ' + logics.map((l) => l.toUpperCase()).join('-') : logic.toUpperCase()} LIMIT ${capped} OFFSET ${off}`, 'none', false, false, this.errText(e));
             throw this.toDriverError(e);
         }
     }

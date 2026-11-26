@@ -110,11 +110,30 @@ function listValues(v) {
     return v.split(',').map((s) => s.trim()).filter((s) => s !== '');
 }
 /**
+ * 解析 Navicat 构建器的逐行逻辑连接符（logics[i] 连接第 i 与第 i+1 个条件）。
+ * 缺省回退全局 logic；非法值/长度不符 → 抛错（与条件数组同级的入参边界）。
+ */
+export function parseFilterLogics(raw, count, dflt) {
+    if (raw == null)
+        return Array.from({ length: Math.max(0, count - 1) }, () => dflt);
+    if (!Array.isArray(raw))
+        throw new Error('Filter logic must be an array');
+    if (raw.length !== Math.max(0, count - 1)) {
+        throw new Error(`Filter logic must have one entry per gap between conditions (${Math.max(0, count - 1)} expected)`);
+    }
+    return raw.map((v) => {
+        if (v !== 'and' && v !== 'or')
+            throw new Error(`Filter logic entries must be "and" or "or": ${JSON.stringify(String(v))}`);
+        return v;
+    });
+}
+/**
  * 构造 WHERE 谓词（不含 WHERE 关键字）。占位符序号与 params 顺序严格一致，
  * 调用方按各自方言把 params 映射到绑定（位置数组 / 命名 input）。
- * 条件间连接：logic === 'or' 用 OR，否则 AND（Navicat 构建器缺省 and）。
+ * 条件间连接（Navicat 构建器语义）：logics[i] 连接第 i 与第 i+1 个条件；混合
+ * 连接符按左结合加括号——((c1 AND c2) OR c3)；logics 缺省时全部用 logic。
  */
-export function buildFilterWhereSql(filters, logic, d) {
+export function buildFilterWhereSql(filters, logic, d, logics) {
     const parts = [];
     const params = [];
     let i = 0;
@@ -197,6 +216,15 @@ export function buildFilterWhereSql(filters, logic, d) {
             default: throw new Error(`Unknown filter operator: ${JSON.stringify(f.op)}`); // 白名单收敛，理论不可达
         }
     }
-    const glue = logic === 'or' ? ' OR ' : ' AND ';
-    return { where: parts.join(glue), params };
+    // 连接：无 logics → 统一 glue；有 logics → 左结合括号（Navicat 混合连接符语义）
+    if (!logics || logics.length === 0 || parts.length <= 1) {
+        const glue = logic === 'or' ? ' OR ' : ' AND ';
+        return { where: parts.join(glue), params };
+    }
+    let expr = parts[0];
+    for (let k = 1; k < parts.length; k++) {
+        const glue = logics[k - 1] === 'or' ? ' OR ' : ' AND ';
+        expr = `(${expr}${glue}${parts[k]})`;
+    }
+    return { where: expr, params };
 }

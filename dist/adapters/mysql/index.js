@@ -297,7 +297,7 @@ export async function createMysqlAdapter(conn, opts) {
                 return { columns: [], rows: [], rowCount: 0 };
             return toQueryResult(rows, fields);
         }),
-        countRows: (table, database, search, filters, logic) => humanize('mysql count rows', async () => {
+        countRows: (table, database, search, filters, logic, logics) => humanize('mysql count rows', async () => {
             const db = quoteIdent(database ? assertIdent(database, '库名') : defaultDb(), '`');
             const tbl = quoteIdent(assertIdent(table, 'table name'), '`');
             let where = '';
@@ -307,7 +307,7 @@ export async function createMysqlAdapter(conn, opts) {
                 const conds = parseBrowseFilters(filters);
                 if (conds.length === 0)
                     return 0;
-                const built = buildFilterWhereSql(conds, logic ?? 'and', filterDialect);
+                const built = buildFilterWhereSql(conds, logic ?? 'and', filterDialect, logics);
                 where = ' WHERE ' + built.where;
                 params = built.params;
             }
@@ -335,7 +335,7 @@ export async function createMysqlAdapter(conn, opts) {
                 return { columns: [], rows: [], rowCount: 0 };
             return toQueryResult(rows, fields);
         }),
-        filterRows: (table, filters, logic, limit, database, offset) => humanize('mysql filter rows', async () => {
+        filterRows: (table, filters, logic, limit, database, offset, logics) => humanize('mysql filter rows', async () => {
             const db = quoteIdent(database ? assertIdent(database, '库名') : defaultDb(), '`');
             const tbl = quoteIdent(assertIdent(table, 'table name'), '`');
             const lim = clampLimit(limit);
@@ -343,7 +343,7 @@ export async function createMysqlAdapter(conn, opts) {
             const conds = parseBrowseFilters(filters);
             if (conds.length === 0)
                 return { columns: [], rows: [], rowCount: 0 };
-            const { where, params } = buildFilterWhereSql(conds, logic, filterDialect);
+            const { where, params } = buildFilterWhereSql(conds, logic, filterDialect, logics);
             const [rows, fields] = await pool.query(`SELECT * FROM ${db}.${tbl} WHERE ${where} LIMIT ? OFFSET ?`, [...params, lim, off]);
             if (!Array.isArray(rows))
                 return { columns: [], rows: [], rowCount: 0 };

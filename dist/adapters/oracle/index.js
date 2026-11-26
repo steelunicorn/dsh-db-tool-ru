@@ -572,7 +572,7 @@ export async function createOracleAdapter(conn, opts) {
                 throw humanizeOraError(e);
             }
         },
-        async countRows(table, database, search, filters, logic) {
+        async countRows(table, database, search, filters, logic, logics) {
             const owner = ownerOf(database);
             const tab = sanitizeIdentifier(table, 'table name'); // 拼接前经 escIdent 转义
             try {
@@ -583,7 +583,7 @@ export async function createOracleAdapter(conn, opts) {
                     const conds = parseBrowseFilters(filters);
                     if (conds.length === 0)
                         return 0;
-                    const built = buildFilterWhereSql(conds, logic ?? 'and', filterDialect);
+                    const built = buildFilterWhereSql(conds, logic ?? 'and', filterDialect, logics);
                     sql += ' WHERE ' + built.where;
                     binds.push(...built.params);
                 }
@@ -618,7 +618,7 @@ export async function createOracleAdapter(conn, opts) {
                 throw humanizeOraError(e);
             }
         },
-        async filterRows(table, filters, logic, limit, database, offset) {
+        async filterRows(table, filters, logic, limit, database, offset, logics) {
             const owner = ownerOf(database);
             const tab = sanitizeIdentifier(table, 'table name'); // 拼接前经 escIdent 转义
             const n = Math.max(1, Math.min(Math.floor(limit) || 20, ROWS_MAX));
@@ -627,7 +627,7 @@ export async function createOracleAdapter(conn, opts) {
                 const conds = parseBrowseFilters(filters);
                 if (conds.length === 0)
                     return { columns: [], rows: [], rowCount: 0 };
-                const { where, params } = buildFilterWhereSql(conds, logic, filterDialect);
+                const { where, params } = buildFilterWhereSql(conds, logic, filterDialect, logics);
                 const r = await withConn((c) => c.execute(`SELECT * FROM "${escIdent(owner)}"."${escIdent(tab)}" WHERE ${where} OFFSET :o ROWS FETCH NEXT :n ROWS ONLY`, [...params, off, n], execOpts));
                 return await rowsToQueryResult(r);
             }
