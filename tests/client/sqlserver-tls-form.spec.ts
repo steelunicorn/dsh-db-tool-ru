@@ -365,12 +365,18 @@ describe('4 版本号胶囊接线', () => {
     expect(src).toMatch(/flex:\s*"none"/);
   });
 
-  it('版本标签在只读态与编辑态两处都渲染（进入编辑后不应消失）', () => {
+  it('版本标签在项目键常驻行渲染一次，进入编辑态也不消失', () => {
     const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../client/client.js'), 'utf8');
-    // 抽成 versionBadge 局部变量并至少被引用两次（只读行 + 编辑行）
     expect(src).toContain('const versionBadge');
     const refs = src.split('versionBadge').length - 1;
-    expect(refs).toBeGreaterThanOrEqual(3); // 1 次定义 + 2 次使用
+    // 1 次定义 + 1 次使用：常驻行（编辑块只追加在它下面，不再另渲染一份徽标）
+    expect(refs).toBe(2);
+    // 编辑块里不得再出现徽标：否则点击铅笔会出现两个版本号
+    const editStart = src.indexOf('// 编辑块挂在常驻行下面');
+    expect(editStart).toBeGreaterThan(0);
+    const editEnd = src.indexOf('error ? React.createElement("div", { className: "dbt-err"', editStart);
+    expect(editEnd).toBeGreaterThan(editStart);
+    expect(src.slice(editStart, editEnd)).not.toContain('versionBadge');
   });
 
   it('版本号请求失败不影响面板：catch 分支不 setError', () => {

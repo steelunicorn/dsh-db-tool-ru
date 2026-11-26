@@ -157,6 +157,9 @@ window.__ModuleLoader__.load({
 			testAll: "一键测试",
 			testAllDone: "一键测试完成：{ok} 个成功，{fail} 个失败",
 			edit: "编辑",
+			projectEditTitle: "修改面板使用的项目键（不是代理的工作目录）",
+			projectKeyHint: "这里只改变面板授权所适用的项目；代理仍在会话目录中工作，面板无法修改该路径。",
+			projectEditClose: "结束编辑面板项目键",
 			trRefresh: "刷新（重新拉取已展开的库/模式/表）",
 			delete: "删除",
 			deleteConnConfirm: "确定删除连接「{name}」？将级联删除其密钥与所有项目的授权。",
@@ -488,6 +491,9 @@ window.__ModuleLoader__.load({
 			testAll: "Test all",
 			testAllDone: "Test all done: {ok} passed, {fail} failed",
 			edit: "Edit",
+			projectEditTitle: "Change the project key used by the panel (not the agent's working directory)",
+			projectKeyHint: "This only changes which project the panel's grants apply to. The agent keeps working in the session directory — the panel cannot change that path.",
+			projectEditClose: "Stop editing the panel project key",
 			trRefresh: "Refresh (reload expanded databases/schemas/tables)",
 			delete: "Delete",
 			deleteConnConfirm: "Delete connection \"{name}\"? Its secrets and all project grants will be removed.",
@@ -812,6 +818,9 @@ window.__ModuleLoader__.load({
 			testOk: "Подключение успешно",
 			testFail: "Не удалось подключиться",
 			edit: "Изменить",
+			projectEditTitle: "Изменить ключ проекта для панели (не рабочий каталог агента)",
+			projectKeyHint: "Здесь меняется только проект, к которому применяются доступы панели. Агент по-прежнему работает в каталоге сессии — этот путь панель изменить не может.",
+			projectEditClose: "Закрыть редактирование ключа проекта панели",
 			trRefresh: "Обновить (перечитать раскрытые базы, схемы и таблицы)",
 			delete: "Удалить",
 			deleteConnConfirm: "Удалить подключение «{name}»? Его секреты и доступы всех проектов будут удалены.",
@@ -1278,6 +1287,7 @@ window.__ModuleLoader__.load({
 				".dbt-conncard-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:auto;}",
 				// 动作按钮收在卡片内：允许收缩 + 省略号，卡片再窄也不会顶出边框（no-wrap 的 .dbt-btn 默认不收缩）
 				".dbt-conncard-actions .dbt-btn{flex:0 1 auto;min-width:0;padding:0 8px;overflow:hidden;text-overflow:ellipsis;}",
+		".dbt-btn.active{background:var(--dbt-seg-active);color:var(--dbt-accent);box-shadow:inset 0 0 0 1px var(--dbt-accent);}",
 				"/* ===== 按数据库类型分组的小节 ===== */",
 				".dbt-kindgroup{display:flex;flex-direction:column;gap:8px;}",
 				".dbt-kindgroup-head{display:flex;gap:6px;align-items:center;}",
@@ -5303,6 +5313,8 @@ window.__ModuleLoader__.load({
 			}, [view]);
 
 			const shared = { conns, grants, projectPath, busy, run, reload, onError, askConfirm };
+			// 项目键编辑块的可见性：路径未知时强制显示（否则用户无处输入），否则跟随铅笔开关
+			const projectEditing = projectEdited || !projectPath;
 			// 版本号胶囊：钉在项目行最右侧。抽成局部变量让「只读态」与「编辑态」两种行都能复用，
 			// 否则用户点了铅笔进入编辑后版本号就消失了。拿不到版本时不渲染，避免空白胶囊。
 			const versionBadge = pluginVer
@@ -5340,47 +5352,60 @@ window.__ModuleLoader__.load({
 							onClick: () => setView(v),
 						}, label)),
 				),
-				(projectEdited || !projectPath)
+				// 项目键行常驻：编辑时按钮不再被输入框顶掉（原来切到编辑态铅笔/刷新/版本徽标整行消失）
+				React.createElement("div", { className: "dbt-row" },
+					React.createElement("span", { className: "dbt-muted" }, t("projectLabel", { path: projectPath })),
+					// 编辑图标：极简铅笔 SVG（验收要求无 emoji；svg aria-hidden，按钮 aria-label 提供语义）
+					// 开关语义：第一次点开输入框，再点一次收起（编辑态标题变为「结束编辑」）
+					React.createElement("button", {
+						className: projectEditing ? "dbt-btn active" : "dbt-btn",
+						// 路径未知时不可收起：那块输入是唯一入口
+						onClick: () => setProjectEdited((x) => (projectPath ? !x : false)),
+						"aria-label": t("edit"), "aria-pressed": projectEditing,
+						title: projectEditing ? t("projectEditClose") : t("projectEditTitle"),
+					},
+						React.createElement("svg", { width: 12, height: 12, viewBox: "0 0 12 12", fill: "none", "aria-hidden": "true" },
+							React.createElement("path", {
+								d: "M8.6 1.4 L10.6 3.4 L4.2 9.8 L1.6 10.4 L2.2 7.8 Z",
+								stroke: "currentColor", strokeWidth: 1.2, strokeLinejoin: "round",
+							})),
+					),
+					// 刷新：重拉所有已展开的库/模式/表（agents 等外部建库后点一下即可见）
+					React.createElement("button", {
+						className: "dbt-btn", onClick: () => setTreeRefresh((x) => x + 1), "aria-label": t("trRefresh"), title: t("trRefresh"),
+					},
+						React.createElement("svg", { width: 12, height: 12, viewBox: "0 0 12 12", fill: "none", "aria-hidden": "true" },
+							React.createElement("path", {
+								d: "M10.5 6a4.5 4.5 0 1 1-1.32-3.18M10.5 1v2.5H8",
+								stroke: "currentColor", strokeWidth: 1.2, strokeLinecap: "round", strokeLinejoin: "round",
+							})),
+					),
+					// 版本号胶囊：只在常驻行出现一次（编辑态不再重复；原来放编辑行是为了「点铅笔后徽标不消失」）
+					versionBadge,
+				),
+				// 编辑块挂在常驻行下面：输入框 + 语义提示
+				projectEditing
 					? React.createElement(
 						"div",
-						{ className: "dbt-row" },
-						// 填充式输入：裸 input 命中样式层 .dbt-row input 契约（去掉旧 dbt-card + 内联 padding hack）
-						React.createElement("input", {
-							placeholder: t("projectPathPlaceholder"), value: projectPath,
-							onChange: (e) => { setProjectPath(e.target.value); setProjectEdited(true); },
-							// 失焦时：输入与权威解析一致才收回自动跟随；用户填了自己的路径则保持手填态（不被权威值打回）
-							onBlur: (e) => {
-								const v = (e.target.value || "").trim();
-								if (!v || v === resolvedRef.current) setProjectEdited(false);
-							},
-						}),
-						// 编辑态同样显示版本号：否则用户一点铅笔，版本标签就消失
-						versionBadge,
+						{ style: { display: "flex", flexDirection: "column", gap: 4 } },
+						React.createElement(
+							"div",
+							{ className: "dbt-row" },
+							// 填充式输入：裸 input 命中样式层 .dbt-row input 契约（去掉旧 dbt-card + 内联 padding hack）
+							React.createElement("input", {
+								placeholder: t("projectPathPlaceholder"), value: projectPath,
+								onChange: (e) => { setProjectPath(e.target.value); setProjectEdited(true); },
+								// 失焦时：输入与权威解析一致才收回自动跟随；用户填了自己的路径则保持手填态（不被权威值打回）
+								onBlur: (e) => {
+									const v = (e.target.value || "").trim();
+									if (!v || v === resolvedRef.current) setProjectEdited(false);
+								},
+							}),
+						),
+						// 说明这里是「面板的项目键」，不是代理的工作目录：铅笔点击后的语义提示
+						React.createElement("div", { className: "dbt-muted" }, t("projectKeyHint")),
 					)
-					: React.createElement("div", { className: "dbt-row" },
-						React.createElement("span", { className: "dbt-muted" }, t("projectLabel", { path: projectPath })),
-						// 编辑图标：极简铅笔 SVG（验收要求无 emoji；svg aria-hidden，按钮 aria-label 提供语义）
-						React.createElement("button", {
-								className: "dbt-btn", onClick: () => setProjectEdited(true), "aria-label": t("edit"),
-							},
-								React.createElement("svg", { width: 12, height: 12, viewBox: "0 0 12 12", fill: "none", "aria-hidden": "true" },
-									React.createElement("path", {
-										d: "M8.6 1.4 L10.6 3.4 L4.2 9.8 L1.6 10.4 L2.2 7.8 Z",
-										stroke: "currentColor", strokeWidth: 1.2, strokeLinejoin: "round",
-									})),
-							),
-							// 刷新：重拉所有已展开的库/模式/表（agents 等外部建库后点一下即可见）
-							React.createElement("button", {
-								className: "dbt-btn", onClick: () => setTreeRefresh((x) => x + 1), "aria-label": t("trRefresh"), title: t("trRefresh"),
-							},
-								React.createElement("svg", { width: 12, height: 12, viewBox: "0 0 12 12", fill: "none", "aria-hidden": "true" },
-									React.createElement("path", {
-										d: "M10.5 6a4.5 4.5 0 1 1-1.32-3.18M10.5 1v2.5H8",
-										stroke: "currentColor", strokeWidth: 1.2, strokeLinecap: "round", strokeLinejoin: "round",
-									})),
-							)),
-						// 版本号胶囊（与编辑态共用同一份 versionBadge，保证两种状态位置一致）
-						versionBadge,
+					: null,
 				error ? React.createElement("div", { className: "dbt-err", "aria-live": "polite" }, t("error") + ": " + error) : null,
 				message ? React.createElement("div", { className: "dbt-msg", "aria-live": "polite" }, message) : null,
 				// 视图常驻挂载 + hidden 切换：切 tab 保留各视图内部状态（控制台 SQL、浏览选中不丢）；
