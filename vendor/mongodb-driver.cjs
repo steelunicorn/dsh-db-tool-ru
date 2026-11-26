@@ -212,6 +212,7 @@ var require_error = __commonJS({
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.MongoWriteConcernError = exports2.MongoServerSelectionError = exports2.MongoSystemError = exports2.MongoMissingDependencyError = exports2.MongoMissingCredentialsError = exports2.MongoCompatibilityError = exports2.MongoInvalidArgumentError = exports2.MongoParseError = exports2.MongoNetworkTimeoutError = exports2.MongoNetworkError = exports2.MongoClientClosedError = exports2.MongoTopologyClosedError = exports2.MongoCursorExhaustedError = exports2.MongoServerClosedError = exports2.MongoCursorInUseError = exports2.MongoOperationTimeoutError = exports2.MongoUnexpectedServerResponseError = exports2.MongoGridFSChunkError = exports2.MongoGridFSStreamError = exports2.MongoTailableCursorError = exports2.MongoChangeStreamError = exports2.MongoClientBulkWriteExecutionError = exports2.MongoClientBulkWriteCursorError = exports2.MongoClientBulkWriteError = exports2.MongoGCPError = exports2.MongoAzureError = exports2.MongoOIDCError = exports2.MongoAWSError = exports2.MongoKerberosError = exports2.MongoExpiredSessionError = exports2.MongoTransactionError = exports2.MongoNotConnectedError = exports2.MongoDecompressionError = exports2.MongoBatchReExecutionError = exports2.MongoStalePrimaryError = exports2.MongoRuntimeError = exports2.MongoAPIError = exports2.MongoDriverError = exports2.MongoServerError = exports2.MongoError = exports2.MongoErrorLabel = exports2.GET_MORE_RESUMABLE_CODES = exports2.MONGODB_ERROR_CODES = exports2.NODE_IS_RECOVERING_ERROR_MESSAGE = exports2.LEGACY_NOT_PRIMARY_OR_SECONDARY_ERROR_MESSAGE = exports2.LEGACY_NOT_WRITABLE_PRIMARY_ERROR_MESSAGE = void 0;
+    exports2.isNamespaceNotFoundError = isNamespaceNotFoundError;
     exports2.needsRetryableWriteLabel = needsRetryableWriteLabel;
     exports2.isRetryableWriteError = isRetryableWriteError;
     exports2.isRetryableReadError = isRetryableReadError;
@@ -253,6 +254,9 @@ var require_error = __commonJS({
       Reauthenticate: 391,
       ReadConcernMajorityNotAvailableYet: 134
     });
+    function isNamespaceNotFoundError(error) {
+      return Number(error?.code) === exports2.MONGODB_ERROR_CODES.NamespaceNotFound;
+    }
     exports2.GET_MORE_RESUMABLE_CODES = /* @__PURE__ */ new Set([
       exports2.MONGODB_ERROR_CODES.HostUnreachable,
       exports2.MONGODB_ERROR_CODES.HostNotFound,
@@ -3012,7 +3016,8 @@ var require_utils = __commonJS({
         try {
           url = new URL(urlString);
         } catch (urlError) {
-          const runtimeError = new error_1.MongoRuntimeError(`Unable to parse ${escapedHost} with URL`);
+          delete urlError.input;
+          const runtimeError = new error_1.MongoRuntimeError("Unable to parse host with URL");
           runtimeError.cause = urlError;
           throw runtimeError;
         }
@@ -8406,6 +8411,12 @@ var require_abstract_cursor = __commonJS({
         });
         return readable;
       }
+      /**
+       * Check if there is any document still available in the cursor.
+       *
+       * Do not call this method while a previous `hasNext()`, `next()` or `tryNext()` call on the same
+       * cursor is still pending. Overlapping calls are not supported.
+       */
       async hasNext() {
         this.signal?.throwIfAborted();
         if (this.cursorId === bson_1.Long.ZERO) {
@@ -8428,7 +8439,12 @@ var require_abstract_cursor = __commonJS({
         }
         return false;
       }
-      /** Get the next available document from the cursor, returns null if no more documents are available. */
+      /**
+       * Get the next available document from the cursor, returns null if no more documents are available.
+       *
+       * Do not call this method while a previous `hasNext()`, `next()` or `tryNext()` call on the same
+       * cursor is still pending. Overlapping calls are not supported.
+       */
       async next() {
         this.signal?.throwIfAborted();
         if (this.cursorId === bson_1.Long.ZERO) {
@@ -8456,6 +8472,9 @@ var require_abstract_cursor = __commonJS({
       }
       /**
        * Try to get the next available document from the cursor or `null` if an empty batch is returned
+       *
+       * Do not call this method while a previous `hasNext()`, `next()` or `tryNext()` call on the same
+       * cursor is still pending. Overlapping calls are not supported.
        */
       async tryNext() {
         this.signal?.throwIfAborted();
@@ -10322,8 +10341,7 @@ var require_drop = __commonJS({
         return { session: this.session, timeoutContext };
       }
       handleError(error) {
-        const isNamespaceNotFoundError = error instanceof error_1.MongoServerError && error.code === error_1.MONGODB_ERROR_CODES.NamespaceNotFound;
-        if (!isNamespaceNotFoundError) {
+        if (!(error instanceof error_1.MongoServerError && (0, error_1.isNamespaceNotFoundError)(error))) {
           throw error;
         }
       }
@@ -10721,9 +10739,9 @@ var require_collection = __commonJS({
           await (0, execute_operation_1.executeOperation)(this.client, new indexes_1.DropIndexOperation(this, "*", (0, utils_1.resolveOptions)(this, options)));
           return true;
         } catch (error) {
-          if (error instanceof error_1.MongoOperationTimeoutError)
-            throw error;
-          return false;
+          if (error instanceof error_1.MongoServerError && (0, error_1.isNamespaceNotFoundError)(error))
+            return false;
+          throw error;
         }
       }
       /**
@@ -11410,9 +11428,7 @@ var require_drop2 = __commonJS({
         return true;
       }
       handleError(error) {
-        if (!(error instanceof __1.MongoServerError))
-          throw error;
-        if (Number(error.code) !== error_1.MONGODB_ERROR_CODES.NamespaceNotFound)
+        if (!(error instanceof __1.MongoServerError && (0, error_1.isNamespaceNotFoundError)(error)))
           throw error;
         return false;
       }
@@ -12237,12 +12253,15 @@ var require_mongo_credentials = __commonJS({
         if ((this.mechanism === providers_1.AuthMechanism.MONGODB_GSSAPI || this.mechanism === providers_1.AuthMechanism.MONGODB_PLAIN || this.mechanism === providers_1.AuthMechanism.MONGODB_SCRAM_SHA1 || this.mechanism === providers_1.AuthMechanism.MONGODB_SCRAM_SHA256) && !this.username) {
           throw new error_1.MongoMissingCredentialsError(`Username required for mechanism '${this.mechanism}'`);
         }
+        if (this.mechanism === providers_1.AuthMechanism.MONGODB_PLAIN && (this.username.includes("\0") || this.password.includes("\0"))) {
+          throw new error_1.MongoInvalidArgumentError(`Username and password cannot contain NUL characters for mechanism '${this.mechanism}'`);
+        }
         if (this.mechanism === providers_1.AuthMechanism.MONGODB_OIDC) {
           if (this.username && this.mechanismProperties.ENVIRONMENT && this.mechanismProperties.ENVIRONMENT !== "azure") {
-            throw new error_1.MongoInvalidArgumentError(`username and ENVIRONMENT '${this.mechanismProperties.ENVIRONMENT}' may not be used together for mechanism '${this.mechanism}'.`);
+            throw new error_1.MongoInvalidArgumentError(`username and a non-azure ENVIRONMENT may not be used together for mechanism '${this.mechanism}'.`);
           }
           if (this.username && this.password) {
-            throw new error_1.MongoInvalidArgumentError(`No password is allowed in ENVIRONMENT '${this.mechanismProperties.ENVIRONMENT}' for '${this.mechanism}'.`);
+            throw new error_1.MongoInvalidArgumentError(`No password is allowed with a username for '${this.mechanism}'.`);
           }
           if ((this.mechanismProperties.ENVIRONMENT === "azure" || this.mechanismProperties.ENVIRONMENT === "gcp") && !this.mechanismProperties.TOKEN_RESOURCE) {
             throw new error_1.MongoInvalidArgumentError(TOKEN_RESOURCE_MISSING_ERROR);
@@ -12252,6 +12271,9 @@ var require_mongo_credentials = __commonJS({
           }
           if (!this.mechanismProperties.ENVIRONMENT && !this.mechanismProperties.OIDC_CALLBACK && !this.mechanismProperties.OIDC_HUMAN_CALLBACK) {
             throw new error_1.MongoInvalidArgumentError(`Either a ENVIRONMENT, OIDC_CALLBACK, or OIDC_HUMAN_CALLBACK must be specified for mechanism '${this.mechanism}'.`);
+          }
+          if (this.mechanismProperties.ENVIRONMENT && (this.mechanismProperties.OIDC_CALLBACK || this.mechanismProperties.OIDC_HUMAN_CALLBACK)) {
+            throw new error_1.MongoInvalidArgumentError(`ENVIRONMENT may not be used together with OIDC_CALLBACK or OIDC_HUMAN_CALLBACK for mechanism '${this.mechanism}'.`);
           }
           if (this.mechanismProperties.ALLOWED_HOSTS) {
             const hosts = this.mechanismProperties.ALLOWED_HOSTS;
@@ -12267,7 +12289,7 @@ var require_mongo_credentials = __commonJS({
         }
         if (providers_1.AUTH_MECHS_AUTH_SRC_EXTERNAL.has(this.mechanism)) {
           if (this.source != null && this.source !== "$external") {
-            throw new error_1.MongoAPIError(`Invalid source '${this.source}' for mechanism '${this.mechanism}' specified.`);
+            throw new error_1.MongoAPIError(`Invalid source for mechanism '${this.mechanism}' specified, it must be '$external'.`);
           }
         }
         if (this.mechanism === providers_1.AuthMechanism.MONGODB_PLAIN && this.source == null) {
@@ -12282,8 +12304,27 @@ var require_mongo_credentials = __commonJS({
         }
         const canonicalization = this.mechanismProperties.CANONICALIZE_HOST_NAME ?? false;
         if (!Object.values(gssapi_1.GSSAPICanonicalizationValue).includes(canonicalization)) {
-          throw new error_1.MongoAPIError(`Invalid CANONICALIZE_HOST_NAME value: ${canonicalization}`);
+          throw new error_1.MongoAPIError("Invalid CANONICALIZE_HOST_NAME value");
         }
+      }
+      /** @internal */
+      [/* @__PURE__ */ Symbol.for("nodejs.util.inspect.custom")](_depth, options, inspect) {
+        return inspect(this.toJSON(), options);
+      }
+      /** @internal */
+      toJSON() {
+        const redacted = {
+          ...this,
+          username: "<redacted>",
+          password: "<redacted>"
+        };
+        if (this.mechanismProperties.AWS_SESSION_TOKEN != null) {
+          redacted.mechanismProperties = {
+            ...this.mechanismProperties,
+            AWS_SESSION_TOKEN: "<redacted>"
+          };
+        }
+        return redacted;
       }
       static merge(creds, options) {
         return new _MongoCredentials({
@@ -12304,7 +12345,7 @@ var require_package = __commonJS({
   "node_modules/mongodb/package.json"(exports2, module2) {
     module2.exports = {
       name: "mongodb",
-      version: "7.8.0",
+      version: "7.9.1",
       description: "The official MongoDB driver for Node.js",
       main: "lib/index.js",
       files: [
@@ -12406,7 +12447,7 @@ var require_package = __commonJS({
         semver: "^7.8.5",
         sinon: "^18.0.1",
         "sinon-chai": "^4.0.1",
-        snappy: "7.3.3",
+        snappy: "^7.4.3",
         socks: "^2.8.9",
         "source-map-support": "^0.5.21",
         "ts-node": "^10.9.2",
@@ -17988,7 +18029,7 @@ var require_client_encryption = __commonJS({
     };
     exports2.ClientEncryption = ClientEncryption;
     function autoSelectSocketOptions(baseOptions) {
-      const options = { autoSelectFamily: true };
+      const options = {};
       if ("autoSelectFamily" in baseOptions) {
         options.autoSelectFamily = baseOptions.autoSelectFamily;
       }
@@ -21986,12 +22027,12 @@ var require_connection_string = __commonJS({
       if (parsedInt != null) {
         return parsedInt;
       }
-      throw new error_1.MongoParseError(`Expected ${name} to be stringified int value, got: ${value}`);
+      throw new error_1.MongoParseError(`Expected ${name} to be stringified int value`);
     }
     function getUIntFromOptions(name, value) {
       const parsedValue = getIntFromOptions(name, value);
       if (parsedValue < 0) {
-        throw new error_1.MongoParseError(`${name} can only be a positive int value, got: ${value}`);
+        throw new error_1.MongoParseError(`${name} can only be a positive int value, got: ${parsedValue}`);
       }
       return parsedValue;
     }
@@ -22036,7 +22077,15 @@ var require_connection_string = __commonJS({
       if (options.useBigInt64 && typeof options.promoteValues === "boolean" && !options.promoteValues) {
         throw new error_1.MongoAPIError("Must request either bigint or Long for int64 deserialization");
       }
-      const url = new mongodb_connection_string_url_1.default(uri);
+      let url;
+      try {
+        url = new mongodb_connection_string_url_1.default(uri);
+      } catch (error) {
+        if (error.message?.startsWith("Username contains unescaped characters")) {
+          throw new error_1.MongoParseError("Username contains unescaped characters");
+        }
+        throw error;
+      }
       const { hosts, isSRV } = url;
       const mongoOptions = /* @__PURE__ */ Object.create(null);
       mongoOptions.hosts = isSRV ? [] : hosts.map(utils_1.HostAddress.fromString);
@@ -22056,20 +22105,30 @@ var require_connection_string = __commonJS({
         }
         urlOptions.set("auth", [auth]);
       }
+      const supportedKeys = new Set(Object.keys(exports2.OPTIONS).map((s) => s.toLowerCase()));
+      const unsupportedPositions = Array.from(url.searchParams.keys()).flatMap((key, index) => supportedKeys.has(key.toLowerCase()) ? [] : [index + 1]);
+      if (unsupportedPositions.length !== 0) {
+        throw new error_1.MongoParseError(`connection string contains unsupported options, at position: ${unsupportedPositions.join(", ")}`);
+      }
       for (const key of url.searchParams.keys()) {
         const values = url.searchParams.getAll(key);
+        const name = Object.keys(exports2.OPTIONS).find((option) => option.toLowerCase() === key.toLowerCase());
         const isReadPreferenceTags = /readPreferenceTags/i.test(key);
         if (!isReadPreferenceTags && values.length > 1) {
-          throw new error_1.MongoInvalidArgumentError(`URI option "${key}" cannot appear more than once in the connection string`);
+          throw new error_1.MongoInvalidArgumentError(`URI option "${name}" cannot appear more than once in the connection string`);
         }
         if (!isReadPreferenceTags && values.includes("") && !isIgnoredOption(key)) {
-          throw new error_1.MongoAPIError(`URI option "${key}" cannot be specified with no value`);
+          throw new error_1.MongoAPIError(`URI option "${name}" cannot be specified with no value`);
         }
         if (!urlOptions.has(key)) {
           urlOptions.set(key, values);
         }
       }
       const objectOptions = new CaseInsensitiveMap(Object.entries(options).filter(([, v]) => v != null));
+      const [uriReadPreference] = urlOptions.get("readPreference") ?? [];
+      if (typeof uriReadPreference === "string" && !read_preference_1.ReadPreference.isValid(uriReadPreference)) {
+        throw new error_1.MongoInvalidArgumentError("readPreference is not a valid read preference mode");
+      }
       if (urlOptions.has("serverApi")) {
         throw new error_1.MongoParseError("URI cannot contain `serverApi`, it can only be passed to the client");
       }
@@ -22106,7 +22165,7 @@ var require_connection_string = __commonJS({
         }
       }
       checkTLSOptions(allProvidedOptions);
-      const unsupportedOptions = (0, utils_1.setDifference)(allProvidedKeys, Array.from(Object.keys(exports2.OPTIONS)).map((s) => s.toLowerCase()));
+      const unsupportedOptions = (0, utils_1.setDifference)(allProvidedKeys, supportedKeys);
       if (unsupportedOptions.size !== 0) {
         const optionWord = unsupportedOptions.size > 1 ? "options" : "option";
         const isOrAre = unsupportedOptions.size > 1 ? "are" : "is";
@@ -22218,7 +22277,22 @@ var require_connection_string = __commonJS({
       });
       mongoOptions.runtime = (0, runtime_adapters_1.resolveRuntimeAdapters)(options);
       mongoOptions.runtime.then(void 0, utils_1.squashError);
+      mongoOptions[INSPECT_CUSTOM] = inspectRedactedOptions;
+      mongoOptions.toJSON = redactOptions;
       return mongoOptions;
+    }
+    var INSPECT_CUSTOM = /* @__PURE__ */ Symbol.for("nodejs.util.inspect.custom");
+    function redactOptions() {
+      const redacted = { ...this };
+      delete redacted[INSPECT_CUSTOM];
+      for (const key of ["proxyUsername", "proxyPassword", "passphrase"]) {
+        if (redacted[key] != null)
+          redacted[key] = "<redacted>";
+      }
+      return redacted;
+    }
+    function inspectRedactedOptions(_depth, options, inspect) {
+      return inspect(redactOptions.call(this), options);
     }
     function validateLoadBalancedOptions(hosts, mongoOptions, isSrv) {
       if (mongoOptions.loadBalanced) {
@@ -22244,10 +22318,10 @@ var require_connection_string = __commonJS({
       }
       const suffix = (0, utils_1.dnsNameToASCII)(stripped);
       if (suffix == null) {
-        throw new error_1.MongoParseError(`srvAllowedHostsSuffix "${value}" is not a valid domain name`);
+        throw new error_1.MongoParseError("srvAllowedHostsSuffix is not a valid domain name");
       }
       if (!suffix.includes(".") && !VALID_SINGLE_LABEL_SUFFIXES.has(suffix)) {
-        throw new error_1.MongoParseError(`srvAllowedHostsSuffix "${value}" must contain at least two domain labels, or be one of: ${[
+        throw new error_1.MongoParseError(`srvAllowedHostsSuffix must contain at least two domain labels, or be one of: ${[
           ...VALID_SINGLE_LABEL_SUFFIXES
         ].join(", ")}`);
       }
@@ -22318,9 +22392,13 @@ var require_connection_string = __commonJS({
         target: "credentials",
         transform({ options, values: [value] }) {
           const mechanisms = Object.values(providers_1.AuthMechanism);
-          const [mechanism] = mechanisms.filter((m) => m.match(RegExp(String.raw`\b${value}\b`, "i")));
+          let mechanism;
+          try {
+            [mechanism] = mechanisms.filter((m) => m.match(RegExp(String.raw`\b${value}\b`, "i")));
+          } catch {
+          }
           if (!mechanism) {
-            throw new error_1.MongoParseError(`authMechanism one of ${mechanisms}, got ${value}`);
+            throw new error_1.MongoParseError(`authMechanism must be one of ${mechanisms}`);
           }
           let source = options.credentials?.source;
           if (mechanism === providers_1.AuthMechanism.MONGODB_PLAIN || providers_1.AUTH_MECHS_AUTH_SRC_EXTERNAL.has(mechanism)) {
@@ -22376,8 +22454,7 @@ var require_connection_string = __commonJS({
         type: "record"
       },
       autoSelectFamily: {
-        type: "boolean",
-        default: true
+        type: "boolean"
       },
       autoSelectFamilyAttemptTimeout: {
         type: "uint"
@@ -22416,7 +22493,7 @@ var require_connection_string = __commonJS({
               if (Object.keys(compression_1.Compressor).includes(String(c))) {
                 compressionList.add(String(c));
               } else {
-                throw new error_1.MongoInvalidArgumentError(`${c} is not a valid compression mechanism. Must be one of: ${Object.keys(compression_1.Compressor)}.`);
+                throw new error_1.MongoInvalidArgumentError(`compressors contains a value that is not a valid compression mechanism. Must be one of: ${Object.keys(compression_1.Compressor)}.`);
               }
             }
           }
@@ -22580,7 +22657,7 @@ var require_connection_string = __commonJS({
           if ((0, utils_1.isRecord)(value, ["createPk"]) && typeof value.createPk === "function") {
             return value;
           }
-          throw new error_1.MongoParseError(`Option pkFactory must be an object with a createPk function, got ${value}`);
+          throw new error_1.MongoParseError("Option pkFactory must be an object with a createPk function");
         }
       },
       promoteBuffers: {
@@ -22616,7 +22693,7 @@ var require_connection_string = __commonJS({
           if (value instanceof read_concern_1.ReadConcern || (0, utils_1.isRecord)(value, ["level"])) {
             return read_concern_1.ReadConcern.fromOptions({ ...options.readConcern, ...value });
           }
-          throw new error_1.MongoParseError(`ReadConcern must be an object, got ${JSON.stringify(value)}`);
+          throw new error_1.MongoParseError("ReadConcern must be an object");
         }
       },
       readConcernLevel: {
@@ -22831,7 +22908,7 @@ var require_connection_string = __commonJS({
               }
             });
           }
-          throw new error_1.MongoParseError(`Invalid WriteConcern cannot parse: ${JSON.stringify(value)}`);
+          throw new error_1.MongoParseError("Invalid WriteConcern cannot parse");
         }
       },
       wtimeout: {
@@ -25976,6 +26053,7 @@ var require_mongo_client = __commonJS({
             return true;
           }
         };
+        Object.defineProperty(this.s, "url", { enumerable: false });
         this.checkForNonGenuineHosts();
       }
       /**
@@ -27070,6 +27148,8 @@ var require_upload = __commonJS({
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.GridFSBucketWriteStream = void 0;
+    exports2.checkChunksIndex = checkChunksIndex;
+    exports2.checkIndexes = checkIndexes;
     var stream_1 = require("stream");
     var bson_1 = require_bson();
     var error_1 = require_error();
@@ -27191,7 +27271,7 @@ var require_upload = __commonJS({
           timeoutMS: remainingTimeMS
         }).toArray();
       } catch (error) {
-        if (error instanceof error_1.MongoError && error.code === error_1.MONGODB_ERROR_CODES.NamespaceNotFound) {
+        if (error instanceof error_1.MongoError && (0, error_1.isNamespaceNotFoundError)(error)) {
           indexes = [];
         } else {
           throw error;
@@ -27251,7 +27331,7 @@ var require_upload = __commonJS({
       try {
         indexes = await stream.files.listIndexes(listIndexesOptions).toArray();
       } catch (error) {
-        if (error instanceof error_1.MongoError && error.code === error_1.MONGODB_ERROR_CODES.NamespaceNotFound) {
+        if (error instanceof error_1.MongoError && (0, error_1.isNamespaceNotFoundError)(error)) {
           indexes = [];
         } else {
           throw error;
