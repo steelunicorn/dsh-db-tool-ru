@@ -7,6 +7,7 @@
  */
 import mysql from 'mysql2/promise';
 import { assertIdent, clampLimit, clampOffset, escapeLikePattern, humanize, normalizeCell, quoteIdent, validPort } from '../sql-shared/common.js';
+import { bareLikeDialect, buildFilterWhereSql, parseBrowseFilters } from '../sql-shared/filters.js';
 /** ro 模式下 query 允许的读语句首词白名单 */
 const RO_READ_PREFIX = /^(select|show|desc|describe|explain|use|help|table)\b/i;
 // 【历史教训，勿回退】'connection' 钩子里 SET 的失败处理只能走回调参数吞掉，
@@ -131,6 +132,8 @@ export async function createMysqlAdapter(conn, opts) {
     /** 跨列 LIKE 谓词（countRows/searchRows 共用）。显式 ESCAPE '#' 与其余方言统一；
      *  MySQL 默认 collation 大小写不敏感，跟随即可。 */
     const likeWhere = (cols) => '(' + cols.map((c) => `${quoteIdent(c, '`')} LIKE ? ESCAPE '#'`).join(' OR ') + ')';
+    /** 字段筛选方言（filterRows/countRows 共用）：裸列 LIKE（数字列隐式转文本）+ ? 占位 */
+    const filterDialect = bareLikeDialect((c) => quoteIdent(c, '`'), () => '?');
     /** 列名清单（内容搜索谓词用）：`SELECT * … WHERE 1=0` 借 fields 元数据一次往返 */
     async function columnNames(target) {
         const [, fields] = await pool.query(`SELECT * FROM ${target} WHERE 1=0`);
@@ -294,12 +297,21 @@ export async function createMysqlAdapter(conn, opts) {
                 return { columns: [], rows: [], rowCount: 0 };
             return toQueryResult(rows, fields);
         }),
-        countRows: (table, database, search) => humanize('mysql count rows', async () => {
+        countRows: (table, database, search, filters, logic) => humanize('mysql count rows', async () => {
             const db = quoteIdent(database ? assertIdent(database, '库名') : defaultDb(), '`');
             const tbl = quoteIdent(assertIdent(table, 'table name'), '`');
             let where = '';
             let params = [];
-            if (search != null && search !== '') {
+            if (filters != null) {
+                // 字段筛选计数：谓词与 filterRows 完全一致（parse 双保险，见 filters.ts）
+                const conds = parseBrowseFilters(filters);
+                if (conds.length === 0)
+                    return 0;
+                const built = buildFilterWhereSql(conds, logic ?? 'and', filterDialect);
+                where = ' WHERE ' + built.where;
+                params = built.params;
+            }
+            else if (search != null && search !== '') {
                 const cols = await columnNames(`${db}.${tbl}`);
                 if (cols.length === 0)
                     return 0; // 无列恒无匹配
@@ -319,6 +331,20 @@ export async function createMysqlAdapter(conn, opts) {
             if (cols.length === 0)
                 return { columns: [], rows: [], rowCount: 0 };
             const [rows, fields] = await pool.query(`SELECT * FROM ${db}.${tbl} WHERE ${likeWhere(cols)} LIMIT ? OFFSET ?`, [...cols.map(() => likePattern(keyword)), lim, off]);
+            if (!Array.isArray(rows))
+                return { columns: [], rows: [], rowCount: 0 };
+            return toQueryResult(rows, fields);
+        }),
+        filterRows: (table, filters, logic, limit, database, offset) => humanize('mysql filter rows', async () => {
+            const db = quoteIdent(database ? assertIdent(database, '库名') : defaultDb(), '`');
+            const tbl = quoteIdent(assertIdent(table, 'table name'), '`');
+            const lim = clampLimit(limit);
+            const off = clampOffset(offset);
+            const conds = parseBrowseFilters(filters);
+            if (conds.length === 0)
+                return { columns: [], rows: [], rowCount: 0 };
+            const { where, params } = buildFilterWhereSql(conds, logic, filterDialect);
+            const [rows, fields] = await pool.query(`SELECT * FROM ${db}.${tbl} WHERE ${where} LIMIT ? OFFSET ?`, [...params, lim, off]);
             if (!Array.isArray(rows))
                 return { columns: [], rows: [], rowCount: 0 };
             return toQueryResult(rows, fields);

@@ -27,6 +27,7 @@
 import db from 'dmdb';
 import { sqlHead, SQL_READ_HEADS } from '../../guard/index.js';
 import { escapeLikePattern, validPort } from '../sql-shared/common.js';
+import { buildFilterWhereSql, parseBrowseFilters, upperLikeDialect } from '../sql-shared/filters.js';
 import { conciseServerInfo } from '../connect-feedback.js';
 const ROWS_MAX = 500;
 const CELL_TRUNC = 1000;
@@ -57,6 +58,8 @@ function likePattern(kw) {
 function searchWhereSql(cols) {
     return '(' + cols.map((c, i) => `UPPER(TO_CHAR("${escIdent(c)}")) LIKE UPPER(:b${i + 1}) ESCAPE '#'`).join(' OR ') + ')';
 }
+/** 字段筛选方言（filterRows/countRows 共用）：TO_CHAR 文本化 + 两端 UPPER + :bN 位置绑定 */
+const filterDialect = upperLikeDialect((c) => `"${escIdent(c)}"`, (i) => `:b${i}`);
 function trunc(s, max = CELL_TRUNC) {
     return s.length > max ? `${s.slice(0, max)}…[truncated, ${s.length} chars total]` : s;
 }
@@ -567,13 +570,22 @@ export async function createDmAdapter(conn, opts) {
                 throw humanizeDmError(e);
             }
         },
-        async countRows(table, database, search) {
+        async countRows(table, database, search, filters, logic) {
             const owner = ownerOf(database);
             const tab = sanitizeIdentifier(table, 'table name'); // 拼接前经 escIdent 转义
             try {
                 let sql = `SELECT COUNT(*) AS N FROM "${escIdent(owner)}"."${escIdent(tab)}"`;
                 const binds = [];
-                if (search != null && search !== '') {
+                if (filters != null) {
+                    // 字段筛选计数：谓词与 filterRows 完全一致（parse 双保险，见 filters.ts）
+                    const conds = parseBrowseFilters(filters);
+                    if (conds.length === 0)
+                        return 0;
+                    const built = buildFilterWhereSql(conds, logic ?? 'and', filterDialect);
+                    sql += ' WHERE ' + built.where;
+                    binds.push(...built.params);
+                }
+                else if (search != null && search !== '') {
                     const cols = await searchColumnNames(owner, tab);
                     if (cols.length === 0)
                         return 0; // 无列恒无匹配
@@ -599,6 +611,24 @@ export async function createDmAdapter(conn, opts) {
                     return { columns: [], rows: [], rowCount: 0 };
                 // OFFSET/FETCH 内联整数（同 previewRows 的契约注释）；LIKE 谓词绑定正常位置
                 const r = await withConn((c) => c.execute(`SELECT * FROM "${escIdent(owner)}"."${escIdent(tab)}" WHERE ${searchWhereSql(cols)} OFFSET ${off} ROWS FETCH FIRST ${n} ROWS ONLY`, cols.map(() => likePattern(keyword)), execOpts));
+                return await rowsToQueryResult(r);
+            }
+            catch (e) {
+                throw humanizeDmError(e);
+            }
+        },
+        async filterRows(table, filters, logic, limit, database, offset) {
+            const owner = ownerOf(database);
+            const tab = sanitizeIdentifier(table, 'table name'); // 拼接前经 escIdent 转义
+            const n = Math.max(1, Math.min(Math.floor(limit) || 20, ROWS_MAX));
+            const off = Math.max(0, Math.floor(offset ?? 0) || 0);
+            try {
+                const conds = parseBrowseFilters(filters);
+                if (conds.length === 0)
+                    return { columns: [], rows: [], rowCount: 0 };
+                const { where, params } = buildFilterWhereSql(conds, logic, filterDialect);
+                // OFFSET/FETCH 内联整数（同 previewRows 的契约注释）；筛选谓词绑定正常位置
+                const r = await withConn((c) => c.execute(`SELECT * FROM "${escIdent(owner)}"."${escIdent(tab)}" WHERE ${where} OFFSET ${off} ROWS FETCH FIRST ${n} ROWS ONLY`, [...params], execOpts));
                 return await rowsToQueryResult(r);
             }
             catch (e) {

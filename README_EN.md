@@ -108,6 +108,7 @@ Every execution (including rejected requests) appends one line to `audit.jsonl`:
 - Table and view structure viewing and data preview (Oracle and DM list tables and views together; in MongoDB a view's description skips index lookups); the result grid supports sorting, paging and cell copying
 - Navicat-style pager: jump to a page by number, «First» / «Last» buttons, and the total row count of the table next to the page number
 - Content search: the search field above the table keeps rows whose any column contains the substring (case-insensitive), shows the number of matches and pages through them; Redis (a key-value store) has no row-level search, so the field is hidden there
+- Navicat-style column filters: each column can carry a condition (`contains`, `does not contain`, `begins with`, `ends with`, `is null`, `is not null`, `is empty`, `is between`, `is in list` and their negations); conditions of several columns are joined with `AND` or `OR`; filtering runs on the server, so paging and the row count are computed over the filtered set
 
 ### SQL console
 

@@ -26,6 +26,7 @@ import * as path from 'node:path';
 import oracledb from 'oracledb';
 import { sqlHead, SQL_READ_HEADS } from '../../guard/index.js';
 import { escapeLikePattern, validPort } from '../sql-shared/common.js';
+import { buildFilterWhereSql, parseBrowseFilters, upperLikeDialect } from '../sql-shared/filters.js';
 import { conciseServerInfo } from '../connect-feedback.js';
 // CLOB 统一按字符串返回；BLOB 统一按 Buffer 返回。均为官方全局按类型转换
 // （fetchInfo 的键是列名而非类型名，`{ BLOB: … }` 只会匹配恰好名为 "BLOB" 的列，
@@ -91,6 +92,8 @@ function likePattern(kw) {
 function searchWhereSql(cols) {
     return '(' + cols.map((c, i) => `UPPER(TO_CHAR("${escIdent(c)}")) LIKE UPPER(:b${i + 1}) ESCAPE '#'`).join(' OR ') + ')';
 }
+/** 字段筛选方言（filterRows/countRows 共用）：TO_CHAR 文本化 + 两端 UPPER + :bN 位置绑定 */
+const filterDialect = upperLikeDialect((c) => `"${escIdent(c)}"`, (i) => `:b${i}`);
 function trunc(s, max = CELL_TRUNC) {
     return s.length > max ? `${s.slice(0, max)}…[truncated, ${s.length} chars total]` : s;
 }
@@ -569,13 +572,22 @@ export async function createOracleAdapter(conn, opts) {
                 throw humanizeOraError(e);
             }
         },
-        async countRows(table, database, search) {
+        async countRows(table, database, search, filters, logic) {
             const owner = ownerOf(database);
             const tab = sanitizeIdentifier(table, 'table name'); // 拼接前经 escIdent 转义
             try {
                 let sql = `SELECT COUNT(*) AS N FROM "${escIdent(owner)}"."${escIdent(tab)}"`;
                 const binds = [];
-                if (search != null && search !== '') {
+                if (filters != null) {
+                    // 字段筛选计数：谓词与 filterRows 完全一致（parse 双保险，见 filters.ts）
+                    const conds = parseBrowseFilters(filters);
+                    if (conds.length === 0)
+                        return 0;
+                    const built = buildFilterWhereSql(conds, logic ?? 'and', filterDialect);
+                    sql += ' WHERE ' + built.where;
+                    binds.push(...built.params);
+                }
+                else if (search != null && search !== '') {
                     const cols = await searchColumnNames(owner, tab);
                     if (cols.length === 0)
                         return 0; // 无列恒无匹配
@@ -600,6 +612,23 @@ export async function createOracleAdapter(conn, opts) {
                 if (cols.length === 0)
                     return { columns: [], rows: [], rowCount: 0 };
                 const r = await withConn((c) => c.execute(`SELECT * FROM "${escIdent(owner)}"."${escIdent(tab)}" WHERE ${searchWhereSql(cols)} OFFSET :o ROWS FETCH NEXT :n ROWS ONLY`, [...cols.map(() => likePattern(keyword)), off, n], execOpts));
+                return await rowsToQueryResult(r);
+            }
+            catch (e) {
+                throw humanizeOraError(e);
+            }
+        },
+        async filterRows(table, filters, logic, limit, database, offset) {
+            const owner = ownerOf(database);
+            const tab = sanitizeIdentifier(table, 'table name'); // 拼接前经 escIdent 转义
+            const n = Math.max(1, Math.min(Math.floor(limit) || 20, ROWS_MAX));
+            const off = Math.max(0, Math.floor(offset ?? 0) || 0);
+            try {
+                const conds = parseBrowseFilters(filters);
+                if (conds.length === 0)
+                    return { columns: [], rows: [], rowCount: 0 };
+                const { where, params } = buildFilterWhereSql(conds, logic, filterDialect);
+                const r = await withConn((c) => c.execute(`SELECT * FROM "${escIdent(owner)}"."${escIdent(tab)}" WHERE ${where} OFFSET :o ROWS FETCH NEXT :n ROWS ONLY`, [...params, off, n], execOpts));
                 return await rowsToQueryResult(r);
             }
             catch (e) {

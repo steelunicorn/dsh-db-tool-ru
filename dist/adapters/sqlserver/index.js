@@ -29,6 +29,7 @@ import { createRequire } from 'node:module';
 import * as tls from 'node:tls';
 import { SQL_READ_HEADS, sqlHead } from '../../guard/index.js';
 import { assertIdent, clampLimit, clampOffset, escapeLikePattern, humanize, normalizeCell } from '../sql-shared/common.js';
+import { bareLikeDialect, buildFilterWhereSql, parseBrowseFilters } from '../sql-shared/filters.js';
 let vendorCache;
 /** 容错加载 vendor bundle：缺失返回 undefined，成功后缓存；失败不缓存 → 构建完成即可恢复 */
 function vendorOrNull() {
@@ -1166,6 +1167,8 @@ export async function createSqlserverAdapter(conn, opts) {
         ')';
     /** 方括号引用（与 previewRows 内局部 q 同款；helper 处独立声明避免引用闭包内后置定义） */
     const qIdent = (name) => `[${name.replaceAll(']', ']]')}]`;
+    /** 字段筛选方言（filterRows/countRows 共用）：NVARCHAR(MAX) 文本化 + @pN 命名占位 */
+    const filterDialect = bareLikeDialect(qIdent, (i) => `@p${i}`, (c) => `CAST(${c} AS NVARCHAR(MAX))`);
     /** 列名清单（内容搜索谓词用）：`SELECT TOP 0 *` 借 recordset.columns 元数据一次往返 */
     const searchColumnNames = async (box, target) => {
         const res = await box.pool.request().query(`SELECT TOP 0 * FROM ${target}`);
@@ -1384,7 +1387,7 @@ export async function createSqlserverAdapter(conn, opts) {
             const res = await req.query(`SELECT t.* FROM (SELECT *, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS [__dsh_rn] FROM ${target}) AS t WHERE t.[__dsh_rn] > @p1 AND t.[__dsh_rn] <= @p2`);
             return toQueryResult(res, ['__dsh_rn']);
         }),
-        countRows: (table, database, search) => wrap('sqlserver count rows', async () => {
+        countRows: (table, database, search, filters, logic) => wrap('sqlserver count rows', async () => {
             const { db, schema } = parseBrowseTarget(database, 'schema');
             const tbl = assertIdent(table, 'table name');
             const q = (name) => `[${name.replaceAll(']', ']]')}]`;
@@ -1392,7 +1395,16 @@ export async function createSqlserverAdapter(conn, opts) {
             const box = poolOf(db);
             let sql = `SELECT COUNT(*) AS [n] FROM ${target}`;
             const req = box.pool.request();
-            if (search != null && search !== '') {
+            if (filters != null) {
+                // 字段筛选计数：谓词与 filterRows 完全一致（parse 双保险，见 filters.ts）
+                const conds = parseBrowseFilters(filters);
+                if (conds.length === 0)
+                    return 0;
+                const built = buildFilterWhereSql(conds, logic ?? 'and', filterDialect);
+                sql += ' WHERE ' + built.where;
+                built.params.forEach((v, i) => req.input(`p${i + 1}`, v));
+            }
+            else if (search != null && search !== '') {
                 const cols = await searchColumnNames(box, target);
                 if (cols.length === 0)
                     return 0; // 无列恒无匹配
@@ -1418,6 +1430,34 @@ export async function createSqlserverAdapter(conn, opts) {
             const where = searchWhereSql(cols, 'p');
             const req = box.pool.request();
             cols.forEach((_, i) => req.input(`p${i + 1}`, searchPattern(keyword)));
+            if (major >= 11) {
+                // T-SQL 的 OFFSET/FETCH 强制要求 ORDER BY；(SELECT NULL) 是常量排序，等价于不指定顺序。
+                req.input('dsh_off', off);
+                req.input('dsh_lim', lim);
+                const res = await req.query(`SELECT * FROM ${target} WHERE ${where} ORDER BY (SELECT NULL) OFFSET @dsh_off ROWS FETCH NEXT @dsh_lim ROWS ONLY`);
+                return toQueryResult(res);
+            }
+            // 2008/2008 R2：谓词下推进 ROW_NUMBER 子查询，序号列在投影后剔除。
+            req.input('dsh_off', off);
+            req.input('dsh_end', off + lim);
+            const res = await req.query(`SELECT t.* FROM (SELECT *, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS [__dsh_rn] FROM ${target} WHERE ${where}) AS t WHERE t.[__dsh_rn] > @dsh_off AND t.[__dsh_rn] <= @dsh_end`);
+            return toQueryResult(res, ['__dsh_rn']);
+        }),
+        filterRows: (table, filters, logic, limit, database, offset) => wrap('sqlserver filter rows', async () => {
+            const { db, schema } = parseBrowseTarget(database, 'schema');
+            const tbl = assertIdent(table, 'table name');
+            const lim = clampLimit(limit);
+            const off = clampOffset(offset);
+            const q = (name) => `[${name.replaceAll(']', ']]')}]`;
+            const target = `${q(schema)}.${q(tbl)}`;
+            const box = poolOf(db);
+            const major = await box.major();
+            const conds = parseBrowseFilters(filters);
+            if (conds.length === 0)
+                return { columns: [], rows: [], rowCount: 0 };
+            const { where, params } = buildFilterWhereSql(conds, logic, filterDialect);
+            const req = box.pool.request();
+            params.forEach((v, i) => req.input(`p${i + 1}`, v));
             if (major >= 11) {
                 // T-SQL 的 OFFSET/FETCH 强制要求 ORDER BY；(SELECT NULL) 是常量排序，等价于不指定顺序。
                 req.input('dsh_off', off);
