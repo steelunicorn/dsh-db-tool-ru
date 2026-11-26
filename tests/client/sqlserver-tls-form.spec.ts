@@ -142,28 +142,39 @@ function rerenderForm(): El {
 	return reactStub.render(T.ConnForm, lastProps);
 }
 
-/** 点击「高级选项」入口展开，返回展开后的树（高级区默认收起，断言前必须显式展开） */
-function renderExpandedForm(initial?: any): El {
-	const tree = renderForm(initial);
-	const toggle = byLabel(tree, probe.t('advancedTls'));
-	if (!toggle) throw new Error('未找到「高级选项」入口');
-	toggle.props.onClick();
-	return rerenderForm();
-}
-
 /** 按 aria-label 找控件 */
 function byLabel(tree: El, label: string): El | undefined {
 	return collect(tree).find((n) => n.props && n.props['aria-label'] === label);
 }
 
-describe('1 高级区默认收起：sqlserver 分字段表单不再平铺 TLS 参数', () => {
-	it('默认收起：只留「高级选项」入口，五个高级控件与 tlsHint 都不渲染', () => {
+/** 分区标签按钮：按可见文字找（tab 没有 aria-label，文字就是标签） */
+function tabButton(tree: El, label: string): El | undefined {
+	return collect(tree).find((n) => n.type === 'button' && flatText(n) === label);
+}
+
+/** 切到指定分区并重渲染（stub 的 setState 只改状态槽，不自动渲染） */
+function openTab(label: string, initial?: any): El {
+	const tree = renderForm(initial);
+	const tab = tabButton(tree, label);
+	if (!tab) throw new Error('未找到分区标签: ' + label);
+	tab.props.onClick();
+	return rerenderForm();
+}
+
+/** 切到「SSL」分区 */
+function renderSslTab(initial?: any): El {
+	return openTab(probe.t('formTabSsl'), initial);
+}
+
+describe('1 分区「SSL」：sqlserver 的 TLS 参数不再平铺在分字段表单里', () => {
+	it('默认停在「参数」分区：SSL 分区未选中，五个 TLS 控件与 tlsHint 都不渲染', () => {
 		const tree = renderForm();
-		const toggle = byLabel(tree, probe.t('advancedTls'));
-		expect(toggle, '缺「高级选项」入口').toBeDefined();
-		expect(toggle!.type).toBe('button');
-		expect(toggle!.props['aria-expanded']).toBe(false);
-		expect(byLabel(tree, probe.t('fieldsEncrypt')), '收起时不应渲染 encrypt 控件').toBeUndefined();
+		const sslTab = tabButton(tree, probe.t('formTabSsl'));
+		expect(sslTab, '缺 SSL 分区标签').toBeDefined();
+		expect(sslTab!.props.role).toBe('tab');
+		expect(sslTab!.props['aria-selected']).toBe(false);
+		expect(tabButton(tree, probe.t('formTabParams'))!.props['aria-selected']).toBe(true);
+		expect(byLabel(tree, probe.t('fieldsEncrypt')), '参数分区不应渲染 encrypt 控件').toBeUndefined();
 		expect(byLabel(tree, probe.t('fieldsTlsMinVersion'))).toBeUndefined();
 		expect(byLabel(tree, probe.t('fieldsTrustCert'))).toBeUndefined();
 		expect(byLabel(tree, probe.t('fieldsServerName'))).toBeUndefined();
@@ -171,9 +182,9 @@ describe('1 高级区默认收起：sqlserver 分字段表单不再平铺 TLS �
 		expect(collect(tree).map((n) => flatText(n)).join('|')).not.toContain(probe.t('tlsHint'));
 	});
 
-	it('展开后：aria-expanded=true，五个控件 + tlsHint 全部出现', () => {
-		const tree = renderExpandedForm();
-		expect(byLabel(tree, probe.t('advancedTls'))!.props['aria-expanded']).toBe(true);
+	it('切到 SSL 分区：aria-selected=true，五个控件 + tlsHint 全部出现', () => {
+		const tree = renderSslTab();
+		expect(tabButton(tree, probe.t('formTabSsl'))!.props['aria-selected']).toBe(true);
 		expect(byLabel(tree, probe.t('fieldsEncrypt')), '缺 encrypt 控件').toBeDefined();
 		expect(byLabel(tree, probe.t('fieldsTlsMinVersion')), '缺 tlsMinVersion 控件').toBeDefined();
 		expect(byLabel(tree, probe.t('fieldsTrustCert')), '缺 trustServerCertificate 控件').toBeDefined();
@@ -182,43 +193,46 @@ describe('1 高级区默认收起：sqlserver 分字段表单不再平铺 TLS �
 		expect(collect(tree).map((n) => flatText(n)).join('|')).toContain(probe.t('tlsHint'));
 	});
 
-	it('折叠是双向的：展开后再次点击可收起', () => {
-		const expanded = renderExpandedForm();
-		expect(byLabel(expanded, probe.t('fieldsCaCert'))).toBeDefined();
-		byLabel(expanded, probe.t('advancedTls'))!.props.onClick();
-		const collapsed = rerenderForm();
-		expect(byLabel(collapsed, probe.t('advancedTls'))!.props['aria-expanded']).toBe(false);
-		expect(byLabel(collapsed, probe.t('fieldsCaCert'))).toBeUndefined();
+	it('分区切换是双向的：从 SSL 回「参数」后控件消失，值仍留在表单里', () => {
+		const ssl = renderSslTab();
+		expect(byLabel(ssl, probe.t('fieldsCaCert'))).toBeDefined();
+		tabButton(ssl, probe.t('formTabParams'))!.props.onClick();
+		const params = rerenderForm();
+		expect(tabButton(params, probe.t('formTabParams'))!.props['aria-selected']).toBe(true);
+		expect(byLabel(params, probe.t('fieldsCaCert'))).toBeUndefined();
+		// 隐藏不等于丢弃：主机的值照样在
+		expect(byLabel(params, probe.t('fieldsHost') + probe.t('requiredMark'))!.props.value).toBe(lastProps.initial.host);
 	});
 
-	it('编辑已有连接且存过高级字段 → 默认展开（让用户看到自己存过什么）', () => {
+	it('编辑已有连接且存过高级字段 → 直接打开 SSL 分区（让用户看到自己存过什么）', () => {
 		const tree = renderForm({ ...T.EMPTY_FORM, kind: 'sqlserver', mode: 'fields', serverName: 'db.corp.local' });
-		expect(byLabel(tree, probe.t('advancedTls'))!.props['aria-expanded']).toBe(true);
+		expect(tabButton(tree, probe.t('formTabSsl'))!.props['aria-selected']).toBe(true);
 		expect(byLabel(tree, probe.t('fieldsServerName'))).toBeDefined();
 	});
 
-	it('只存了 encrypt=auto（默认策略）不算高级配置 → 仍然默认收起', () => {
+	it('只存了 encrypt=auto（默认策略）不算高级配置 → 仍然停在「参数」分区', () => {
 		const tree = renderForm({ ...T.EMPTY_FORM, kind: 'sqlserver', mode: 'fields', encrypt: 'auto' });
-		expect(byLabel(tree, probe.t('advancedTls'))!.props['aria-expanded']).toBe(false);
+		expect(tabButton(tree, probe.t('formTabParams'))!.props['aria-selected']).toBe(true);
 	});
 
 	it('encrypt 下拉：auto 置首项，其后 true/false/strict（strict 是 TDS 8.0 的入口，不能缺）', () => {
-		const tree = renderExpandedForm();
+		const tree = renderSslTab();
 		const sel = byLabel(tree, probe.t('fieldsEncrypt'))!;
 		const values = collect(sel).filter((n) => n.type === 'option').map((n) => n.props.value);
 		expect(values).toEqual(['auto', 'true', 'false', 'strict']);
 	});
 
 	it('tdsVersion 不再出现在表单里（协议层天然降级，不把驱动已处理的问题转嫁用户）', () => {
-		const tree = renderExpandedForm();
+		const tree = renderSslTab();
 		const all = collect(tree).map((n) => flatText(n)).join('|');
+		// «TDS 8.0» в подписи strict — это имя протокола, а не отдельное поле; запрещён именно выбор tdsVersion
 		expect(all).not.toContain('tdsVersion');
-		expect(all).not.toContain('TDS 版本');
+		expect(collect(tree).some((n) => n.type === 'select' && String(n.props['aria-label']).includes('tds'))).toBe(false);
 	});
 
-	it('非 sqlserver 库（如 mysql）连「高级选项」入口都不渲染', () => {
-		const tree = renderForm({ ...T.EMPTY_FORM, kind: 'mysql', mode: 'fields', host: 'h', user: 'u' });
-		expect(byLabel(tree, probe.t('advancedTls'))).toBeUndefined();
+	it('非 sqlserver 库：SSL 分区仍在，但只给一行说明，不渲染 TLS 控件', () => {
+		const tree = openTab(probe.t('formTabSsl'), { ...T.EMPTY_FORM, kind: 'mysql', mode: 'fields', host: 'h', user: 'u' });
+		expect(collect(tree).map((n) => flatText(n)).join('|')).toContain(probe.t('sslTabEmpty'));
 		expect(byLabel(tree, probe.t('fieldsTrustCert'))).toBeUndefined();
 		expect(byLabel(tree, probe.t('fieldsCaCert'))).toBeUndefined();
 	});
@@ -282,18 +296,19 @@ describe('2 提交：draftBody 必须带出这些参数', () => {
 			},
 			busy: false, onSubmit: () => {}, onCancel: () => {},
 		};
-		// 编辑已存高级配置 → 默认展开；这里显式收起，模拟用户点了「收起」后直接保存/测试
+		// 编辑已存高级配置 → 默认停在 SSL 分区；这里切回「参数」，模拟用户没看 SSL 就直接保存/测试
 		const tree = reactStub.render(T.ConnForm, lastProps);
-		byLabel(tree, probe.t('advancedTls'))!.props.onClick();
+		expect(tabButton(tree, probe.t('formTabSsl'))!.props['aria-selected']).toBe(true);
+		tabButton(tree, probe.t('formTabParams'))!.props.onClick();
 		const collapsed = rerenderForm();
-		expect(byLabel(collapsed, probe.t('advancedTls'))!.props['aria-expanded']).toBe(false);
-		expect(byLabel(collapsed, probe.t('fieldsCaCert')), '收起后控件确实不渲染').toBeUndefined();
+		expect(tabButton(collapsed, probe.t('formTabParams'))!.props['aria-selected']).toBe(true);
+		expect(byLabel(collapsed, probe.t('fieldsCaCert')), 'на вкладке «Параметры»控件确实不渲染').toBeUndefined();
 		const testBtn = collect(collapsed).find((n) => n.type === 'button' && flatText(n) === probe.t('test'));
 		if (!testBtn) throw new Error('未找到「测试」按钮');
 		await testBtn.props.onClick();
 		const call = fetchCalls.find((c) => String(c.url).includes('test-draft'));
 		if (!call) throw new Error('未发出 test-draft 请求');
-		// 折叠只是不渲染，form 里的值原样提交
+		// 分区只是不渲染，form 里的值原样提交
 		expect(call.body.fields.serverName).toBe('db.corp.local');
 		expect(call.body.fields.caCert).toBe('/tmp/ca.pem');
 		expect(call.body.fields.trustServerCertificate).toBe(true);

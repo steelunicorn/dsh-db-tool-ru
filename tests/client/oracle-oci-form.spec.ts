@@ -174,44 +174,67 @@ describe('1 服务名 / SID 选择（对齐 Navicat 的连接标识）', () => {
 	});
 });
 
-describe('2 高级选项（OCI 库路径）折叠区', () => {
-	it('默认收起：只留「高级选项」入口，OCI 输入与提示不渲染', () => {
+/** 分区标签按钮：按可见文字找（tab 没有 aria-label，文字就是标签） */
+function tabButton(tree: El, label: string): El | undefined {
+	return collect(tree).find((n) => n.type === 'button' && flatText(n) === label);
+}
+
+describe('2 分区「高级」（OCI 库路径）', () => {
+	it('默认停在「参数」分区：OCI 输入与提示不渲染', () => {
 		const tree = renderForm();
-		const toggle = byLabel(tree, probe.t('advancedOra'));
-		expect(toggle, '缺 oracle「高级选项」入口').toBeDefined();
-		expect(toggle!.props['aria-expanded']).toBe(false);
-		expect(byLabel(tree, probe.t('fieldsOciLibDir')), '收起时不应渲染 OCI 输入').toBeUndefined();
+		const advTab = tabButton(tree, probe.t('formTabAdvanced'));
+		expect(advTab, '缺「高级」分区标签').toBeDefined();
+		expect(advTab!.props.role).toBe('tab');
+		expect(advTab!.props['aria-selected']).toBe(false);
+		expect(byLabel(tree, probe.t('fieldsOciLibDir')), '参数分区不应渲染 OCI 输入').toBeUndefined();
 		expect(collect(tree).map((n) => flatText(n)).join('|')).not.toContain(probe.t('ociHint'));
 	});
 
-	it('展开后：OCI 输入 + 行动指引出现；可再收起（双向折叠）', () => {
+	it('切到「高级」分区：OCI 输入 + 行动指引出现；切回「参数」后消失', () => {
 		const tree = renderForm();
-		byLabel(tree, probe.t('advancedOra'))!.props.onClick();
+		tabButton(tree, probe.t('formTabAdvanced'))!.props.onClick();
 		const expanded = rerenderForm();
-		expect(byLabel(expanded, probe.t('advancedOra'))!.props['aria-expanded']).toBe(true);
+		expect(tabButton(expanded, probe.t('formTabAdvanced'))!.props['aria-selected']).toBe(true);
 		expect(byLabel(expanded, probe.t('fieldsOciLibDir')), '缺 OCI 库路径输入').toBeDefined();
 		expect(collect(expanded).map((n) => flatText(n)).join('|')).toContain(probe.t('ociHint'));
-		byLabel(expanded, probe.t('advancedOra'))!.props.onClick();
+		tabButton(expanded, probe.t('formTabParams'))!.props.onClick();
 		const collapsed = rerenderForm();
 		expect(byLabel(collapsed, probe.t('fieldsOciLibDir'))).toBeUndefined();
 	});
 
-	it('编辑已有连接且存过 ociLibDir → 默认展开（让用户看到自己存过什么）', () => {
+	it('编辑已有连接且存过 ociLibDir → 默认打开「高级」分区（让用户看到自己存过什么）', () => {
 		const tree = renderForm({ ...T.EMPTY_FORM, kind: 'oracle', mode: 'fields', ociLibDir: '/opt/ic' });
-		expect(byLabel(tree, probe.t('advancedOra'))!.props['aria-expanded']).toBe(true);
+		expect(tabButton(tree, probe.t('formTabAdvanced'))!.props['aria-selected']).toBe(true);
 		expect(byLabel(tree, probe.t('fieldsOciLibDir'))!.props.value).toBe('/opt/ic');
 	});
 
-	it('kind 切走再切回：oracle 高级项「值」重置（不残留旧值误导；折叠开合态与 sqlserver 同口径，不随 kind 重置）', () => {
+	it('kind 切走再切回：oracle 高级项「值」重置（不残留旧值误导；分区选择与 kind 无关，仍停在「高级」并改显示空提示）', () => {
 		const tree = renderForm({ ...T.EMPTY_FORM, kind: 'oracle', mode: 'fields', serviceType: 'sid', ociLibDir: '/opt/ic' });
 		const kindSel = byLabel(tree, probe.t('fieldKind'))!;
 		kindSel.props.onChange({ target: { value: 'mysql' } });
 		const asMysql = rerenderForm();
 		expect(byLabel(asMysql, probe.t('fieldsServiceType'))).toBeUndefined();
+		// 分区不随 kind 重置：仍停在「高级」，只是内容换成「该类型没有额外参数」的说明
+		expect(tabButton(asMysql, probe.t('formTabAdvanced'))!.props['aria-selected']).toBe(true);
+		expect(collect(asMysql).map((n) => flatText(n)).join('|')).toContain(probe.t('advTabEmpty'));
+		expect(byLabel(asMysql, probe.t('fieldsOciLibDir'))).toBeUndefined();
+	});
+
+	it('切回 oracle：高级项值已重置（空=Thin），分区里重新出现 OCI 输入且为空', () => {
+		const tree = renderForm({ ...T.EMPTY_FORM, kind: 'oracle', mode: 'fields', serviceType: 'sid', ociLibDir: '/opt/ic' });
+		const kindSel = byLabel(tree, probe.t('fieldKind'))!;
+		kindSel.props.onChange({ target: { value: 'mysql' } });
+		rerenderForm();
 		kindSel.props.onChange({ target: { value: 'oracle' } });
 		const backToOra = rerenderForm();
-		expect(byLabel(backToOra, probe.t('fieldsServiceType'))!.props.value).toBe('service');
-		expect(byLabel(backToOra, probe.t('fieldsOciLibDir'))!.props.value).toBe(''); // 值已重置（空=Thin 模式）
+		// 分区跨 kind 保留：切回 oracle 时仍停在「高级」，所以先去「参数」看服务名/SID 已重置
+		tabButton(backToOra, probe.t('formTabParams'))!.props.onClick();
+		const backParams = rerenderForm();
+		expect(byLabel(backParams, probe.t('fieldsServiceType'))!.props.value).toBe('service');
+		// 再回「高级」：OCI 输入重新出现，且值为空（空 = Thin 模式）
+		tabButton(backParams, probe.t('formTabAdvanced'))!.props.onClick();
+		const backAdv = rerenderForm();
+		expect(byLabel(backAdv, probe.t('fieldsOciLibDir'))!.props.value).toBe('');
 	});
 });
 
