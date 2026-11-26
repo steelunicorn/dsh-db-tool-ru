@@ -43,12 +43,23 @@ const INSTALL_HINTS: Record<DbKind, string> = {
   sqlserver: 'npm run build:sqlserver (rebuilds vendor/sqlserver-driver.cjs; mssql is only a devDependency)',
 };
 
+/** 是否真的「模块不存在」。只有这种情况才该建议用户安装依赖：
+ *  ESM 导出不匹配、ABI 不兼容、语法错误等同样是「驱动不可用」，
+ *  但它们的成因是本包文件与运行进程不同步（半拷贝/旧缓存），建议 npm install 只会把人带偏。 */
+function isModuleMissing(cause: unknown): boolean {
+  const code = (cause as { code?: unknown } | undefined)?.code;
+  if (code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND' || code === 'ERR_MODULE_NOT_SUPPORTED') return true;
+  const text = cause instanceof Error ? cause.message : String(cause ?? '');
+  return /Cannot find (module|package)/i.test(text);
+}
+
 /** 生成带安装指引的驱动缺失错误 */
 export function driverMissingError(kind: DbKind, cause?: unknown): Error {
   const detail = cause instanceof Error ? cause.message : String(cause ?? '');
-  const err = new Error(
-    `${kind} driver unavailable${detail ? `: ${detail}` : ''}. Install/build it and retry: ${INSTALL_HINTS[kind]}`,
-  );
+  const hint = isModuleMissing(cause)
+    ? ` Install it and retry: ${INSTALL_HINTS[kind]}`
+    : ' This is not a missing dependency: the plugin files and the running process are out of sync — rebuild and reinstall the plugin, then restart DSH.';
+  const err = new Error(`${kind} driver unavailable${detail ? `: ${detail}` : ''}.${hint}`);
   err.name = 'DriverMissingError';
   return err;
 }
