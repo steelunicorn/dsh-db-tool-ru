@@ -80,7 +80,7 @@
     "@types/better-sqlite3": "latest",
     "@types/node": "latest",
     "esbuild": "^0.28.0",
-    "mongodb": "^7.6.0",
+    "mongodb": "^7.9.1",
     "mssql": "12.7.15",
     "semver": "^7.8.6",
     "sql-formatter": "^15.9.1",
