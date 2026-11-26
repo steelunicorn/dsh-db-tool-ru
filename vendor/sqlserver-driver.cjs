@@ -853,6 +853,9 @@ var require_connection_string_parser = __commonJS({
       function isTerminator(char) {
         return config().terminator === char;
       }
+      function isSkippable(char) {
+        return !char.trim() || collectionMode === CollectionMode.key && char === parserConfig.value.terminator;
+      }
       function isStartQuote(char) {
         return Object.keys(config().quotes).some((val) => char === val);
       }
@@ -882,17 +885,13 @@ var require_connection_string_parser = __commonJS({
       while (pointer < connectionString.length) {
         const current = connectionString.charAt(pointer);
         if (!finished) {
-          if (!started) {
-            if (current.trim()) {
-              start();
-              if (isStartQuote(current)) {
-                quoted = true;
-                quote = current;
-              } else {
-                push(current);
-              }
-            }
+          if (!started && isSkippable(current)) {
+          } else if (!started && isStartQuote(current)) {
+            start();
+            quoted = true;
+            quote = current;
           } else {
+            start();
             if (quoted && isEndQuote(current)) {
               const next = connectionString.charAt(pointer + 1);
               if (current === next) {
@@ -903,9 +902,11 @@ var require_connection_string_parser = __commonJS({
               }
             } else if (!quoted && isTerminator(current)) {
               const next = connectionString.charAt(pointer + 1);
-              if (current === next) {
+              if (collectionMode === CollectionMode.key && current === next) {
                 push(current);
                 pointer++;
+              } else if (collectionMode === CollectionMode.key && buffer === "") {
+                throw new Error("Malformed connection string");
               } else {
                 collect();
               }
@@ -996,12 +997,16 @@ var require_connection_string = __commonJS({
           callbackfn.call(thisArg ?? this, value, key, this);
         });
       }
+      // an empty boolean or number value is not set, so it gets the schema default
+      #isSet(key, type) {
+        return type !== "boolean" && type !== "number" || !!this.#parsed.get(key.toLowerCase())?.trim();
+      }
       // a way to extract a formatted object from the connection string
       toSchema(schema, { includeMissing } = {}) {
         return Object.fromEntries(Object.entries(schema).reduce((props, [key, { type, default: defaultValue, aliases }]) => {
           const prop = [key, ...aliases ?? []].find((k) => this.has(k));
           if (prop || includeMissing) {
-            props.push([key, prop ? this.get(prop.toLowerCase(), type) : defaultValue]);
+            props.push([key, prop && this.#isSet(prop, type) ? this.get(prop.toLowerCase(), type) : defaultValue]);
           }
           return props;
         }, []));
@@ -1035,7 +1040,10 @@ var require_builder = __commonJS({
       return false;
     }
     function needsQuotes(val) {
-      return !isQuoted(val) && !!val.match(/\[|]|{|}|\|\(|\)|,|;|\?|\*|=|!|@/)?.length;
+      if (isQuoted(val)) {
+        return false;
+      }
+      return val !== val.trim() || /^['"]/.test(val) || !!val.match(/\[|]|{|}|\|\(|\)|,|;|\?|\*|=|!|@/)?.length;
     }
     function encodeTuple(key, value) {
       if (value === null || value === void 0) {
@@ -1055,7 +1063,7 @@ var require_builder = __commonJS({
     }
     function build(data) {
       return Object.entries(data).map(([key, value]) => {
-        return encodeTuple(key.trim(), value).join("=");
+        return encodeTuple(key.trim().replace(/=/g, "=="), value).join("=");
       }).join(";");
     }
   }
@@ -2730,6 +2738,7 @@ var require_connection_pool = __commonJS({
     var { CHANNELS, tracePromise, traceCallback, publish } = require_diagnostics();
     var NODE_MSSQL_SCHEMA = {
       ...MSSQL_SCHEMA,
+      encrypt: { type: "boolean" },
       useutc: { type: "boolean" },
       stream: { type: "boolean" },
       parsejson: { type: "boolean" },
@@ -2919,9 +2928,11 @@ var require_connection_pool = __commonJS({
               break;
             }
             case "encrypt":
-              Object.assign(config.options, {
-                encrypt: !!value
-              });
+              if (typeof value === "boolean") {
+                Object.assign(config.options, {
+                  encrypt: value
+                });
+              }
               break;
             case "enlist":
               break;

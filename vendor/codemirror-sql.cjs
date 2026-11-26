@@ -26147,7 +26147,8 @@ var transactsql = {
       "&=",
       "^=",
       "::",
-      ":"
+      ":",
+      "||"
     ],
     propertyAccessOperators: [".."]
     // TODO: Support for money constants
