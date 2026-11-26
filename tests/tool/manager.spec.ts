@@ -348,4 +348,24 @@ describe('DbToolService: 数据库级授权白名单', () => {
       await fx.dispose();
     }
   });
+
+  it('内容搜索同样受白名单约束：未授权库 → DATABASE_NOT_GRANTED，不得借搜索绕开', async () => {
+    const fx = await makeFixture('rw', {
+      searchRows: async () => ({ columns: ['id'], rows: [[1]], rowCount: 1 }),
+      countRows: async () => 1,
+    });
+    try {
+      fx.store.grants.grant(fx.projectA, CONN_ID, 'rw', ['app']);
+      // 白名单内的库照常搜索
+      await expect(
+        fx.service.previewSearch(fx.projectA, CONN_ID, 'users', 'alice', 10, 'app', 0),
+      ).resolves.toBeTruthy();
+      // 白名单外：authorize 在连接前就拦下，绝不触达适配器
+      await expect(
+        fx.service.previewSearch(fx.projectA, CONN_ID, 'users', 'alice', 10, 'test', 0),
+      ).rejects.toMatchObject({ code: 'DATABASE_NOT_GRANTED' });
+    } finally {
+      await fx.dispose();
+    }
+  });
 });

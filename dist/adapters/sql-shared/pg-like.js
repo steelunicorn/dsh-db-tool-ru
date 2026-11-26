@@ -1,4 +1,4 @@
-import { assertIdent, clampLimit, clampOffset, humanize, normalizeCell, quoteIdent, validPort } from './common.js';
+import { assertIdent, clampLimit, clampOffset, escapeLikePattern, humanize, normalizeCell, quoteIdent, validPort } from './common.js';
 import { conciseServerInfo } from '../connect-feedback.js';
 /** 多主机 authority 逐台重组段（host[:port]） */
 function joinHostSeg(h) {
@@ -417,6 +417,21 @@ export async function createPgLikeAdapter(kind, Driver, conn, opts) {
             return `MERGE ${rows ?? 0}`;
         return driver;
     }
+    /** 内容搜索谓词（countRows/searchRows 共用）：全部列逐个 ILIKE 含绑定模式。
+     *  列名取 `SELECT * … LIMIT 0` 的 fields（与结果列同源的元数据，一次往返）；
+     *  `::text` 统一转文本（bytea→hex、json/数组→text 均可比），ILIKE 大小写不敏感。
+     *  返回 where=null 表示表无列（空探测不可能有匹配），调用方直接短路空结果。 */
+    async function buildSearchWhere(keyword, db, schema, tbl) {
+        const target = `${quoteIdent(schema)}.${quoteIdent(tbl)}`;
+        // 当前库保持事务路由（run）；跨库必须用该库自己的池（与 previewRows 同路由）
+        const probe = db ? await poolFor(db).query(`SELECT * FROM ${target} LIMIT 0`) : await run(`SELECT * FROM ${target} LIMIT 0`);
+        const cols = (probe.fields ?? []).map((f) => f.name);
+        if (cols.length === 0)
+            return { where: null, params: [] };
+        const params = cols.map(() => '%' + escapeLikePattern(keyword) + '%');
+        const preds = cols.map((c, i) => `${quoteIdent(c)}::text ILIKE $${i + 1} ESCAPE '#'`);
+        return { where: '(' + preds.join(' OR ') + ')', params };
+    }
     const tx = {
         begin: () => humanize(`${kind} transaction begin`, async () => {
             if (txClient)
@@ -594,6 +609,37 @@ export async function createPgLikeAdapter(kind, Driver, conn, opts) {
             const sql = `SELECT * FROM ${quoteIdent(schema)}.${quoteIdent(tbl)} LIMIT $1 OFFSET $2`;
             // 当前库保持事务路由（run）；跨库必须用该库自己的池
             const res = db ? await poolFor(db).query(sql, [lim, off]) : await run(sql, [lim, off]);
+            return toQueryResult(res);
+        }),
+        countRows: (table, database, search) => humanize(`${kind} count rows`, async () => {
+            const { db, schema } = parseBrowseTarget(database, 'schema');
+            const tbl = assertIdent(table, 'table name');
+            const target = `${quoteIdent(schema)}.${quoteIdent(tbl)}`;
+            let where = '';
+            let params = [];
+            if (search != null && search !== '') {
+                const w = await buildSearchWhere(search, db, schema, tbl);
+                if (!w.where)
+                    return 0; // 无列（空探测）恒无匹配
+                where = ' WHERE ' + w.where;
+                params = w.params;
+            }
+            // COUNT 返回 bigint（驱动常转字符串），Number 归一
+            const sql = `SELECT COUNT(*)::bigint AS n FROM ${target}${where}`;
+            const res = db ? await poolFor(db).query(sql, params) : await run(sql, params);
+            return res.rows[0] ? Number(res.rows[0].n) : 0;
+        }),
+        searchRows: (table, keyword, limit, database, offset) => humanize(`${kind} content search`, async () => {
+            const { db, schema } = parseBrowseTarget(database, 'schema');
+            const tbl = assertIdent(table, 'table name');
+            const lim = clampLimit(limit);
+            const off = clampOffset(offset);
+            const w = await buildSearchWhere(keyword, db, schema, tbl);
+            if (!w.where)
+                return { columns: [], rows: [], rowCount: 0 };
+            const sql = `SELECT * FROM ${quoteIdent(schema)}.${quoteIdent(tbl)} WHERE ${w.where} LIMIT $${w.params.length + 1} OFFSET $${w.params.length + 2}`;
+            const params = [...w.params, lim, off];
+            const res = db ? await poolFor(db).query(sql, params) : await run(sql, params);
             return toQueryResult(res);
         }),
         close: () => humanize(`${kind} close connection`, async () => {

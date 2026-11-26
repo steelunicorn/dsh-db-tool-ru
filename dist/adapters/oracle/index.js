@@ -25,7 +25,7 @@
 import * as path from 'node:path';
 import oracledb from 'oracledb';
 import { sqlHead, SQL_READ_HEADS } from '../../guard/index.js';
-import { validPort } from '../sql-shared/common.js';
+import { escapeLikePattern, validPort } from '../sql-shared/common.js';
 import { conciseServerInfo } from '../connect-feedback.js';
 // CLOB 统一按字符串返回；BLOB 统一按 Buffer 返回。均为官方全局按类型转换
 // （fetchInfo 的键是列名而非类型名，`{ BLOB: … }` 只会匹配恰好名为 "BLOB" 的列，
@@ -80,6 +80,16 @@ export function sanitizeIdentifier(name, label) {
 /** 双引号标识符转义（" → ""），拼接进 SQL 前必须过此函数 */
 function escIdent(name) {
     return name.replaceAll('"', '""');
+}
+/** LIKE 模式：通配符/转义符字面化（ESCAPE '#'）后 %…% 包裹（关键字本体走绑定） */
+function likePattern(kw) {
+    return '%' + escapeLikePattern(kw) + '%';
+}
+/** 内容搜索谓词（countRows/searchRows 共用）：UPPER(TO_CHAR(col)) LIKE UPPER(:bN)。
+ *  TO_CHAR 统一转文本（数字/日期按会话格式），UPPER 两端大小写不敏感；
+ *  绑定名逐列唯一（b1..bN，与 :o/:n 按出现顺序对应位置数组），避免重名绑定歧义。 */
+function searchWhereSql(cols) {
+    return '(' + cols.map((c, i) => `UPPER(TO_CHAR("${escIdent(c)}")) LIKE UPPER(:b${i + 1}) ESCAPE '#'`).join(' OR ') + ')';
 }
 function trunc(s, max = CELL_TRUNC) {
     return s.length > max ? `${s.slice(0, max)}…[truncated, ${s.length} chars total]` : s;
@@ -362,6 +372,11 @@ export async function createOracleAdapter(conn, opts) {
     function ownerOf(database) {
         return sanitizeIdentifier(database ?? currentUser, 'schema/owner name');
     }
+    /** 列名清单（内容搜索谓词用）：`WHERE 1=0` 借 metaData 元数据一次往返 */
+    async function searchColumnNames(owner, tab) {
+        const r = await withConn((c) => c.execute(`SELECT * FROM "${escIdent(owner)}"."${escIdent(tab)}" WHERE 1=0`, [], execOpts));
+        return (r.metaData ?? []).map((m) => String(m.name));
+    }
     const adapter = {
         kind: 'oracle',
         connId: conn.meta.id,
@@ -549,6 +564,43 @@ export async function createOracleAdapter(conn, opts) {
                     normRows.push(await Promise.all(Object.values(row).map(normalizeCell)));
                 }
                 return { columns, rows: normRows, rowCount: normRows.length };
+            }
+            catch (e) {
+                throw humanizeOraError(e);
+            }
+        },
+        async countRows(table, database, search) {
+            const owner = ownerOf(database);
+            const tab = sanitizeIdentifier(table, 'table name'); // 拼接前经 escIdent 转义
+            try {
+                let sql = `SELECT COUNT(*) AS N FROM "${escIdent(owner)}"."${escIdent(tab)}"`;
+                const binds = [];
+                if (search != null && search !== '') {
+                    const cols = await searchColumnNames(owner, tab);
+                    if (cols.length === 0)
+                        return 0; // 无列恒无匹配
+                    sql += ' WHERE ' + searchWhereSql(cols);
+                    binds.push(...cols.map(() => likePattern(search)));
+                }
+                const r = await withConn((c) => c.execute(sql, binds, execOpts));
+                const row = r.rows?.[0];
+                return row ? Number(row.N) : 0;
+            }
+            catch (e) {
+                throw humanizeOraError(e);
+            }
+        },
+        async searchRows(table, keyword, limit, database, offset) {
+            const owner = ownerOf(database);
+            const tab = sanitizeIdentifier(table, 'table name'); // 拼接前经 escIdent 转义
+            const n = Math.max(1, Math.min(Math.floor(limit) || 20, ROWS_MAX));
+            const off = Math.max(0, Math.floor(offset ?? 0) || 0);
+            try {
+                const cols = await searchColumnNames(owner, tab);
+                if (cols.length === 0)
+                    return { columns: [], rows: [], rowCount: 0 };
+                const r = await withConn((c) => c.execute(`SELECT * FROM "${escIdent(owner)}"."${escIdent(tab)}" WHERE ${searchWhereSql(cols)} OFFSET :o ROWS FETCH NEXT :n ROWS ONLY`, [...cols.map(() => likePattern(keyword)), off, n], execOpts));
+                return await rowsToQueryResult(r);
             }
             catch (e) {
                 throw humanizeOraError(e);

@@ -8,7 +8,7 @@
  *     自动排除该包，不影响插件整体安装，动态加载失败时回退到明确报错）
  */
 import { basename } from 'node:path';
-import { assertIdent, clampLimit, clampOffset, humanize, normalizeCell, quoteIdent } from '../sql-shared/common.js';
+import { assertIdent, clampLimit, clampOffset, escapeLikePattern, humanize, normalizeCell, quoteIdent } from '../sql-shared/common.js';
 let cached = null;
 let cachedFor = '';
 /**
@@ -111,6 +111,11 @@ export function stmtColumns(stmt, raw) {
     const first = raw[0];
     return first ? Object.keys(first) : [];
 }
+/** 内容搜索谓词（countRows/searchRows 共用）：全部列 CAST AS TEXT 后 LIKE。
+ *  显式 ESCAPE '#'（SQLite LIKE 无默认转义符）；LIKE 对 ASCII 默认大小写不敏感。 */
+export function sqliteSearchWhere(cols) {
+    return '(' + cols.map((c) => `CAST(${quoteIdent(c)} AS TEXT) LIKE ? ESCAPE '#'`).join(' OR ') + ')';
+}
 export async function createSqliteAdapter(conn, opts) {
     const readOnly = opts?.mode === 'ro';
     const { db, driver } = await openRaw(conn, readOnly);
@@ -118,6 +123,14 @@ export async function createSqliteAdapter(conn, opts) {
      *  而 manager 的 runScript 超时路径会对同一会话适配器重复 close
      *  （onTimeout 与 finally 各一次）——重复 close 必须为 no-op。 */
     let closed = false;
+    /** 列名清单（内容搜索谓词用）：PRAGMA table_info 一次往返（describeTable 同源）。
+     *  不走 stmtColumns——其旧 Node 降级路径对空结果集返回空列头，会误判「无列」。 */
+    function sqliteColumnNames(table) {
+        const raw = db
+            .prepare(`PRAGMA table_info(${quoteIdent(assertIdent(table, 'table name'))})`)
+            .all();
+        return raw.map((r) => String(r.name));
+    }
     return {
         kind: 'sqlite',
         connId: conn.meta.id,
@@ -176,6 +189,31 @@ export async function createSqliteAdapter(conn, opts) {
             const off = clampOffset(offset);
             const stmt = db.prepare(`SELECT * FROM ${tbl} LIMIT ? OFFSET ?`);
             const raw = stmt.all(lim, off);
+            return toQueryResult(raw, stmtColumns(stmt, raw));
+        }),
+        countRows: (table, _database, search) => humanize('sqlite count rows', async () => {
+            const tbl = quoteIdent(assertIdent(table, 'table name'));
+            let sql = `SELECT COUNT(*) AS n FROM ${tbl}`;
+            let params = [];
+            if (search != null && search !== '') {
+                const cols = await sqliteColumnNames(table);
+                if (cols.length === 0)
+                    return 0; // 无列恒无匹配
+                sql += ' WHERE ' + sqliteSearchWhere(cols);
+                params = cols.map(() => '%' + escapeLikePattern(search) + '%');
+            }
+            const row = db.prepare(sql).get(...params);
+            return row ? Number(row.n) : 0;
+        }),
+        searchRows: (table, keyword, limit, _database, offset) => humanize('sqlite content search', async () => {
+            const tbl = quoteIdent(assertIdent(table, 'table name'));
+            const lim = clampLimit(limit);
+            const off = clampOffset(offset);
+            const cols = await sqliteColumnNames(table);
+            if (cols.length === 0)
+                return { columns: [], rows: [], rowCount: 0 };
+            const stmt = db.prepare(`SELECT * FROM ${tbl} WHERE ${sqliteSearchWhere(cols)} LIMIT ? OFFSET ?`);
+            const raw = stmt.all(...cols.map(() => '%' + escapeLikePattern(keyword) + '%'), lim, off);
             return toQueryResult(raw, stmtColumns(stmt, raw));
         }),
         close: () => humanize('sqlite close connection', async () => {

@@ -26,7 +26,7 @@
  */
 import db from 'dmdb';
 import { sqlHead, SQL_READ_HEADS } from '../../guard/index.js';
-import { validPort } from '../sql-shared/common.js';
+import { escapeLikePattern, validPort } from '../sql-shared/common.js';
 import { conciseServerInfo } from '../connect-feedback.js';
 const ROWS_MAX = 500;
 const CELL_TRUNC = 1000;
@@ -46,6 +46,16 @@ export function sanitizeIdentifier(name, label) {
 /** 双引号标识符转义（" → ""），拼接进 SQL 前必须过此函数 */
 function escIdent(name) {
     return name.replaceAll('"', '""');
+}
+/** LIKE 模式：通配符/转义符字面化（ESCAPE '#'）后 %…% 包裹（关键字本体走绑定） */
+function likePattern(kw) {
+    return '%' + escapeLikePattern(kw) + '%';
+}
+/** 内容搜索谓词（countRows/searchRows 共用）：UPPER(TO_CHAR(col)) LIKE UPPER(:bN)。
+ *  TO_CHAR 统一转文本（数字/日期按会话格式），UPPER 两端大小写不敏感；
+ *  绑定名逐列唯一（b1..bN，位置数组按出现顺序对应），避免重名绑定歧义。 */
+function searchWhereSql(cols) {
+    return '(' + cols.map((c, i) => `UPPER(TO_CHAR("${escIdent(c)}")) LIKE UPPER(:b${i + 1}) ESCAPE '#'`).join(' OR ') + ')';
 }
 function trunc(s, max = CELL_TRUNC) {
     return s.length > max ? `${s.slice(0, max)}…[truncated, ${s.length} chars total]` : s;
@@ -362,6 +372,11 @@ export async function createDmAdapter(conn, opts) {
     /** DM 内建系统 schema：受安全体系保护，任何用户（含 SYSDBA）无 SELECT 权，列表中过滤 */
     const DM_SYSTEM_SCHEMAS = new Set(['SYS', 'SYSSSO', 'SYSAUDITOR', 'SYSSCO', 'CTISYS']);
     const connUser = resolveDmConn(conn).user.toUpperCase();
+    /** 列名清单（内容搜索谓词用）：`WHERE 1=0` 借 metaData 元数据一次往返 */
+    async function searchColumnNames(owner, tab) {
+        const r = await withConn((c) => c.execute(`SELECT * FROM "${escIdent(owner)}"."${escIdent(tab)}" WHERE 1=0`, [], execOpts));
+        return (r.metaData ?? []).map((m) => String(m.name));
+    }
     const adapter = {
         kind: 'dmdb',
         connId: conn.meta.id,
@@ -546,6 +561,44 @@ export async function createDmAdapter(conn, opts) {
                 // <offset>/<大小> 均为字面 <整数>（DM8 SQL 手册），绑定占位符能否用于该
                 // 位置无官方佐证 → 内联经 clamp 的整数（off/n 源自内部 offset/limit，无注入面）
                 const r = await withConn((c) => c.execute(`SELECT * FROM "${escIdent(owner)}"."${escIdent(tab)}" OFFSET ${off} ROWS FETCH FIRST ${n} ROWS ONLY`, [], execOpts));
+                return await rowsToQueryResult(r);
+            }
+            catch (e) {
+                throw humanizeDmError(e);
+            }
+        },
+        async countRows(table, database, search) {
+            const owner = ownerOf(database);
+            const tab = sanitizeIdentifier(table, 'table name'); // 拼接前经 escIdent 转义
+            try {
+                let sql = `SELECT COUNT(*) AS N FROM "${escIdent(owner)}"."${escIdent(tab)}"`;
+                const binds = [];
+                if (search != null && search !== '') {
+                    const cols = await searchColumnNames(owner, tab);
+                    if (cols.length === 0)
+                        return 0; // 无列恒无匹配
+                    sql += ' WHERE ' + searchWhereSql(cols);
+                    binds.push(...cols.map(() => likePattern(search)));
+                }
+                const r = await withConn((c) => c.execute(sql, binds, execOpts));
+                const row = r.rows?.[0];
+                return row ? Number(row.N) : 0;
+            }
+            catch (e) {
+                throw humanizeDmError(e);
+            }
+        },
+        async searchRows(table, keyword, limit, database, offset) {
+            const owner = ownerOf(database);
+            const tab = sanitizeIdentifier(table, 'table name'); // 拼接前经 escIdent 转义
+            const n = Math.max(1, Math.min(Math.floor(limit) || 20, ROWS_MAX));
+            const off = Math.max(0, Math.floor(offset ?? 0) || 0);
+            try {
+                const cols = await searchColumnNames(owner, tab);
+                if (cols.length === 0)
+                    return { columns: [], rows: [], rowCount: 0 };
+                // OFFSET/FETCH 内联整数（同 previewRows 的契约注释）；LIKE 谓词绑定正常位置
+                const r = await withConn((c) => c.execute(`SELECT * FROM "${escIdent(owner)}"."${escIdent(tab)}" WHERE ${searchWhereSql(cols)} OFFSET ${off} ROWS FETCH FIRST ${n} ROWS ONLY`, cols.map(() => likePattern(keyword)), execOpts));
                 return await rowsToQueryResult(r);
             }
             catch (e) {

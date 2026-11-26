@@ -106,6 +106,8 @@ DDL、`FLUSHALL`、`dropDatabase` 等语句先返回 `NEEDS_CONFIRMATION`，不�
 - 树中只出现当前账号可用的对象：PostgreSQL / GaussDB 隐藏无 `CONNECT` 的库、无 `USAGE` 或没有任何可 `SELECT` 表的 schema；SQL Server 隐藏无 `HAS_DBACCESS` 的库与无 `SELECT` 的 schema / 对象。项目授权仍是第二道独立限制
 - 库筛选 + 跨库表名模糊搜索（MySQL / PostgreSQL / GaussDB 走 `information_schema` 原生查询，其余库回退内存过滤）
 - 表 / 视图结构查看与数据预览（Oracle 与达梦表、视图合并列出；MongoDB 视图结构页不读索引），结果网格支持排序、分页、单元格复制
+- Navicat 式分页器：按页码直接跳转、「首页」/「末页」按钮，页码旁显示表的全量行数
+- 内容搜索：表格上方搜索框按「任意字段包含子串」筛选（不区分大小写），显示匹配行数并支持分页；Redis 为键值存储、没有行级搜索，故不显示该输入框
 
 ### SQL 控制台
 

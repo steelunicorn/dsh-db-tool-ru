@@ -95,6 +95,10 @@ export function normalizeMongoCell(v) {
 function isPlainObject(v) {
     return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
+/** $regex 关键字转义：元字符字面化，保证「包含匹配」语义而非模式语义 */
+export function escapeMongoRegex(kw) {
+    return kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 /** 可执行服务端 JS 的键（代码注入面） */
 const JS_INJECTION_KEYS = new Set(['$where', '$function', '$accumulator']);
 /** 有写副作用的聚合阶段（只读 query 通道禁止） */
@@ -175,6 +179,18 @@ export async function createMongoAdapter(conn, opts) {
      *  表清单/预览按所选库真实返回，避免「清单来自固定库、定位发所选库」的错位 */
     function dbOf(database) {
         return database && database !== dbName ? client.db(database) : db;
+    }
+    /** 内容搜索过滤（countRows/searchRows 共用）：抽样取字段并集后逐字段 $regex 包含匹配
+     *  （大小写不敏感）。非字符串值对 $regex 天然不匹配（不报错）；无关键字 → {} 全量；
+     *  空集合无字段可搜 → null（调用方短路空结果）。 */
+    async function searchFilter(name, database, search) {
+        if (search == null || search === '')
+            return {};
+        const sample = await dbOf(database).collection(name).findOne({});
+        const keys = sample ? Object.keys(sample) : [];
+        if (keys.length === 0)
+            return null;
+        return { $or: keys.map((k) => ({ [k]: { $regex: escapeMongoRegex(search), $options: 'i' } })) };
     }
     function wrap(e) {
         const M = vendorOrNull();
@@ -494,6 +510,31 @@ export async function createMongoAdapter(conn, opts) {
                 const n = Math.max(1, Math.min(Math.floor(limit) || 20, FIND_MAX_LIMIT));
                 const skip = Math.max(0, Math.floor(offset ?? 0) || 0);
                 const docs = await dbOf(database).collection(name).find({}).sort({ _id: 1 }).skip(skip).limit(n).toArray();
+                return docsToResult(docs, false);
+            }
+            catch (e) {
+                throw wrap(e);
+            }
+        },
+        async countRows(name, database, search) {
+            try {
+                const filter = await searchFilter(name, database, search);
+                if (filter === null)
+                    return 0; // 空集合无字段可搜
+                return await dbOf(database).collection(name).countDocuments(filter);
+            }
+            catch (e) {
+                throw wrap(e);
+            }
+        },
+        async searchRows(name, keyword, limit, database, offset) {
+            try {
+                const n = Math.max(1, Math.min(Math.floor(limit) || 20, FIND_MAX_LIMIT));
+                const skip = Math.max(0, Math.floor(offset ?? 0) || 0);
+                const filter = await searchFilter(name, database, keyword);
+                if (filter === null)
+                    return { columns: [], rows: [], rowCount: 0 }; // 空集合无字段可搜
+                const docs = await dbOf(database).collection(name).find(filter).sort({ _id: 1 }).skip(skip).limit(n).toArray();
                 return docsToResult(docs, false);
             }
             catch (e) {
