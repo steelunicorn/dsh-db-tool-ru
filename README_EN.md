@@ -105,7 +105,7 @@ Every execution (including rejected requests) appends one line to `audit.jsonl`:
 - Four-level tree: connection → database → schema → table
 - The tree lists only what the current account may use: in PostgreSQL / GaussDB databases without `CONNECT` and schemas without `USAGE` or without a single `SELECT`-able table are hidden; in SQL Server databases without `HAS_DBACCESS` and schemas/objects without `SELECT` are hidden. Project grants stay a second, independent restriction
 - Database filter plus cross-database table-name search (MySQL / PostgreSQL / GaussDB query `information_schema` natively; other kinds fall back to in-memory filtering)
-- Table structure viewing and data preview; the result grid supports sorting, paging and cell copying
+- Table and view structure viewing and data preview (Oracle and DM list tables and views together; in MongoDB a view's description skips index lookups); the result grid supports sorting, paging and cell copying
 
 ### SQL console
 

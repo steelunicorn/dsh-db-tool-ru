@@ -447,8 +447,11 @@ export async function createMongoAdapter(conn, opts) {
         async describeTable(name) {
             try {
                 const c = db.collection(name);
+                // 视图没有索引（listIndexes 报 CommandNotSupportedOnView，浏览树点开视图会整页报错）：
+                // 先探类型，视图跳过索引注入；集合路径行为不变
+                const infos = await db.listCollections({ name }).toArray();
+                const idxs = infos[0]?.type === 'view' ? [] : await c.indexes();
                 const sample = await c.find({}).limit(10).toArray();
-                const idxs = await c.indexes();
                 const cols = new Map();
                 for (const doc of sample) {
                     for (const [k, v] of Object.entries(doc)) {
