@@ -39,6 +39,34 @@ updates:
       stryker:
         patterns:
           - "@stryker-mutator/*"
+
+      # 开发依赖的 minor/patch 合成一个 PR：以前每周来五个 PR，且它们都改同一批
+      # package-lock.json 行，前三个合掉后剩下的立刻变 CONFLICTING，只能手工重做
+      # （#11/#12 就是这么处理的）。分组后一次解决，锁冲突面收敛到一个 PR。
+      #
+      # 注意：mongodb、mssql、sql-formatter 虽然声明在 devDependencies，却是要 esbuild
+      # 打进 vendor/*.cjs 的**运行时代码**（build-mongodb / build-sqlserver / build-codemirror）。
+      # 合并这类 PR 后必须 npm run build 并提交重生成的 vendor 文件，否则仓库里的
+      # 打包产物仍是旧版本——CI 只构建不提交，看不出这个差异。
+      dev-minor-patch:
+        patterns:
+          - "*"
+        dependency-type: "development"
+        update-types:
+          - "minor"
+          - "patch"
+
+      # 运行时依赖（pg、mysql2、oracledb、redis、dmdb、gaussdb-node、bson，以及
+      # optionalDependencies 里的 better-sqlite3）同样按 minor/patch 合并。
+      # better-sqlite3 是原生模块，升级后确认 tarball 里带 win32-x64 prebuilds 即可，
+      # 不需要 node-gyp。
+      runtime-minor-patch:
+        patterns:
+          - "*"
+        dependency-type: "production"
+        update-types:
+          - "minor"
+          - "patch"
     ignore:
       # minimatch：修复要求 >= 11.0.1，而 @stryker-mutator/core@10.1.1（latest）仍声明
       # dependencies.minimatch = ~10.2.4，10.x 全线无修复版；overrides 已钉 ^11.0.5。
